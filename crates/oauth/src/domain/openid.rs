@@ -487,8 +487,29 @@ pub fn userinfo_claims(subject: &str, scopes: &[String], person: &PersonClaims) 
     Value::Object(claims)
 }
 
+/// The values of `prompt` a tenant supports: `create` only when it is open
+/// to registration, since a tenant closed to it does not support the value
+/// (Initiating User Registration via OpenID Connect, section 4.2).
+#[must_use]
+pub fn prompt_values_supported(registration_open: bool) -> Vec<&'static str> {
+    let mut values = vec!["none", "login", "consent", "select_account"];
+    if registration_open {
+        values.push("create");
+    }
+    values
+}
+
+/// The tenant's discovery document as a tenant open to registration
+/// writes it, `create` among its prompts, when `registration_open`.
+#[must_use]
+pub fn with_registration(mut document: Value, registration_open: bool) -> Value {
+    document["prompt_values_supported"] = json!(prompt_values_supported(registration_open));
+    document
+}
+
 /// The tenant's discovery document (OpenID Connect Discovery 1.0 and RFC
-/// 8414). It names only what is built.
+/// 8414). It names only what is built; a tenant open to registration adds
+/// `create` through [`with_registration`].
 #[must_use]
 pub fn discovery_document(issuer: &str, acr_values: &[&str]) -> Value {
     json!({
@@ -527,7 +548,8 @@ pub fn discovery_document(issuer: &str, acr_values: &[&str]) -> Value {
             "email_verified", "groups"
         ],
         "acr_values_supported": acr_values,
-        "prompt_values_supported": ["none", "login", "consent", "select_account"],
+        "prompt_values_supported": prompt_values_supported(false),
+        "display_values_supported": crate::domain::authorization::DISPLAYS,
         "ui_locales_supported": UI_LOCALES,
         "authorization_response_iss_parameter_supported": true,
         // Request objects by value; `none` only for a client that chose it.
@@ -546,3 +568,29 @@ pub fn discovery_document(issuer: &str, acr_values: &[&str]) -> Value {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod registration_tests {
+    use super::*;
+
+    #[test]
+    fn create_is_named_by_a_tenant_open_to_registration_only() {
+        let closed = with_registration(
+            discovery_document("https://hodor.example.com/t/acme", &[]),
+            false,
+        );
+        assert_eq!(
+            closed["prompt_values_supported"],
+            json!(["none", "login", "consent", "select_account"])
+        );
+        let open = with_registration(closed, true);
+        assert_eq!(
+            open["prompt_values_supported"],
+            json!(["none", "login", "consent", "select_account", "create"])
+        );
+        assert_eq!(
+            open["display_values_supported"],
+            json!(["page", "popup", "touch"])
+        );
+    }
+}

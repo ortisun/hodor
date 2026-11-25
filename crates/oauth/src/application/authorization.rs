@@ -1,10 +1,12 @@
 //! The use cases of the authorization endpoint: checking a request,
 //! keeping it while the person signs in, issuing a code, and redeeming one.
 
+use crate::application::pairwise::{PairwiseSubjects, subject_for};
 use crate::application::ports::{
     ApplicationStore, AuthorizationCodeStore, AuthorizationRequestStore, ClientStore, GrantStore,
     PersonMemberships, ResourceServerStore,
 };
+use crate::application::userinfo::published_keys;
 use crate::domain::authorization::{
     AuthorizationCode, AuthorizationParameters, AuthorizationRefusal, AuthorizationRequest,
     BrowserSecret, CodeHash, CodePresentation, CodeRefusal, CodeValue, Grant, PendingAuthorization,
@@ -12,11 +14,13 @@ use crate::domain::authorization::{
 };
 use crate::domain::consent::ConsentWait;
 use crate::domain::event::OauthEvent;
+use crate::domain::logout::check_id_token_hint;
 use crate::domain::request_object::RequestObjectCheck;
 use hodor_kernel::{
     Caller, Clock, Digest, DomainError, EventEnvelope, EventMetadata, RandomSource,
     SignatureVerifier, TenantContext, Timestamp, UnitOfWork, UnitOfWorkFactory, UserId,
 };
+use hodor_keys::api::KeyService;
 use std::sync::Arc;
 
 /// The ports [`AuthorizationCodeService`] works through.
@@ -93,6 +97,8 @@ fn unknown_code() -> DomainError {
 #[derive(Clone)]
 pub struct AuthorizationCodeService {
     ports: AuthorizationCodePorts,
+    hints: Option<KeyService>,
+    pairwise: Option<PairwiseSubjects>,
 }
 
 impl std::fmt::Debug for AuthorizationCodeService {
@@ -106,7 +112,29 @@ impl AuthorizationCodeService {
     /// Wires the use cases to their ports.
     #[must_use]
     pub const fn new(ports: AuthorizationCodePorts) -> Self {
-        Self { ports }
+        Self {
+            ports,
+            hints: None,
+            pairwise: None,
+        }
+    }
+
+    /// Checks an `id_token_hint` with the tenant's published `keys` and
+    /// the ports' verifier. Without the keys, a request with a hint is refused
+    /// rather than answered as if it had none.
+    #[must_use]
+    pub fn with_id_token_hints(mut self, keys: KeyService) -> Self {
+        self.hints = Some(keys);
+        self
+    }
+
+    /// Compares the hint of a pairwise client with the session's person as
+    /// that client knows them, through `pairwise`. Without it, the hint of
+    /// a pairwise client never names the session's person.
+    #[must_use]
+    pub fn with_pairwise_subjects(mut self, pairwise: PairwiseSubjects) -> Self {
+        self.pairwise = Some(pairwise);
+        self
     }
 
     /// The time now, as the service sees it.
@@ -176,6 +204,72 @@ impl AuthorizationCodeService {
                 verifier: self.ports.verifier.as_ref(),
             },
         ))
+    }
+
+    /// Checks the `id_token_hint` of a checked request, if it has one,
+    /// given outside or inside its request object, as an ID token of the tenant whose issuer is `issuer`, issued
+    /// to the request's client; the request then keeps its `sub`. A hint
+    /// is checked as the end-session endpoint checks its own: by the
+    /// tenant's published keys and issuer, its expiry aside.
+    ///
+    /// # Errors
+    ///
+    /// The outer error is a failure of storage; the inner one is the
+    /// refusal, `invalid_request` at the redirect address, with the reason
+    /// for the logs.
+    pub async fn check_hint(
+        &self,
+        tenant: &TenantContext,
+        issuer: &str,
+        mut request: AuthorizationRequest,
+    ) -> Result<Result<AuthorizationRequest, (AuthorizationRefusal, &'static str)>, DomainError>
+    {
+        let Some(token) = request.given_hint.take() else {
+            return Ok(Ok(request));
+        };
+        let checked = match &self.hints {
+            Some(hints) => {
+                let keys = published_keys(hints, tenant).await?;
+                check_id_token_hint(&token, issuer, &keys, self.ports.verifier.as_ref())
+            }
+            None => Err("this service cannot check an id_token_hint"),
+        };
+        Ok(request.hinted(checked))
+    }
+
+    /// Whether `user` is the person the request's `id_token_hint` names, as
+    /// the request's client knows them: by the user identifier, or for a
+    /// pairwise client by its pairwise identifier. A request without a hint
+    /// names anyone; a client gone since, or a pairwise one this service
+    /// cannot name a person to, nobody.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if storage fails.
+    pub async fn hint_names(
+        &self,
+        tenant: &TenantContext,
+        request: &AuthorizationRequest,
+        user: UserId,
+    ) -> Result<bool, DomainError> {
+        if request.id_token_hint.is_none() {
+            return Ok(true);
+        }
+        let mut uow = self.ports.units_of_work.begin(tenant).await?;
+        let client = self
+            .ports
+            .clients
+            .get(uow.as_mut(), request.client_id)
+            .await?;
+        drop(uow);
+        let Some(client) = client else {
+            return Ok(false);
+        };
+        match subject_for(self.pairwise.as_ref(), tenant, &client, user).await {
+            Ok(subject) => Ok(request.names_person(&subject)),
+            Err(error) if error.code() == "oauth.pairwise_unavailable" => Ok(false),
+            Err(error) => Err(error),
+        }
     }
 
     /// Keeps a checked request while its person signs in. The browser gets

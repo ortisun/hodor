@@ -4255,6 +4255,86 @@ async fn a_pairwise_id_token_of_one_tenant_ends_no_session_at_another() {
     assert_eq!(status, StatusCode::OK, "Globex's session goes on");
 }
 
+/// The ID token a person gets at a tenant's first-party client, as it
+/// came, signed in with the shared address in `browser`.
+async fn raw_id_token(
+    world: &World,
+    tenant: &Tenant,
+    client: (&str, &str),
+    browser: &mut Browser,
+) -> String {
+    let back = authorized(browser, &authorize_path(tenant.slug, client.0)).await;
+    let (status, tokens) = oauth_form(
+        world,
+        tenant,
+        "token",
+        client,
+        &[
+            ("grant_type", "authorization_code"),
+            ("code", back.get("code").expect("a code")),
+            ("redirect_uri", REDIRECT),
+            ("code_verifier", VERIFIER),
+        ],
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{tokens}");
+    tokens["id_token"].as_str().expect("an ID token").to_owned()
+}
+
+#[tokio::test]
+async fn an_id_token_of_one_tenant_is_no_hint_at_another_tenants_authorization_endpoint() {
+    let world = world_with(&[("HODOR_SECRET_KEYS", ROOT_KEY)]).await;
+    let (acme, globex) = (&world.acme, &world.globex);
+    let (acme_client, acme_secret) = first_party_client(&world, acme).await;
+    let (globex_client, _) = first_party_client(&world, globex).await;
+    let mut acme_browser = Browser::not_following(&world.server);
+    let (_, body) = acme_browser.sign_in(acme.slug, EMAIL, PASSWORD).await;
+    assert_eq!(body["status"], "completed", "{body}");
+    let hint = raw_id_token(
+        &world,
+        acme,
+        (&acme_client, &acme_secret),
+        &mut acme_browser,
+    )
+    .await;
+    // The person with the same address, signed in to Globex.
+    let mut globex_browser = Browser::not_following(&world.server);
+    let (_, body) = globex_browser.sign_in(globex.slug, EMAIL, PASSWORD).await;
+    assert_eq!(body["status"], "completed", "{body}");
+
+    // Acme's ID token, the hint of a request of Globex's client at Globex,
+    // with `prompt=none` and without: not an ID token of Globex, so
+    // `invalid_request` at the client's redirect address, never a code and
+    // never a sign-in.
+    for more in [
+        vec![("id_token_hint", hint.as_str()), ("prompt", "none")],
+        vec![("id_token_hint", hint.as_str())],
+    ] {
+        let back = authorized(
+            &mut globex_browser,
+            &authorize_path_with(globex.slug, &globex_client, &more),
+        )
+        .await;
+        assert_eq!(
+            back.get("error").map(String::as_str),
+            Some("invalid_request")
+        );
+        assert_eq!(back.get("code"), None);
+        assert_eq!(back.get("state").map(String::as_str), Some("the state"));
+    }
+    // Where it belongs, with `prompt=none`, it is answered with a code.
+    let back = authorized(
+        &mut acme_browser,
+        &authorize_path_with(
+            acme.slug,
+            &acme_client,
+            &[("id_token_hint", hint.as_str()), ("prompt", "none")],
+        ),
+    )
+    .await;
+    assert!(back.contains_key("code"), "{back:?}");
+}
+
 /// The ID token and the access token a person gets at a tenant's
 /// first-party client, signed in with the shared address.
 async fn first_party_tokens(

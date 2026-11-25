@@ -22,6 +22,8 @@ fn request(scopes: &[&str], first_party: bool) -> AuthorizationRequest {
         first_party,
         organization: None,
         response_mode: crate::domain::response::ResponseMode::Query,
+        id_token_hint: None,
+        given_hint: None,
     }
 }
 

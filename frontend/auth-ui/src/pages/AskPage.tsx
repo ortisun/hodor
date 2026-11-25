@@ -12,13 +12,18 @@ import { asFailure, type PageProps } from "./shared";
 interface AskPageProps extends PageProps {
   /** What the link in the message will be for. */
   purpose: "registration" | "recovery";
+  /**
+   * An application sent the person here to register, with `prompt=create`:
+   * once they sign in, its request goes on.
+   */
+  forApplication?: boolean;
 }
 
 /**
  * Asking for a link by email, to register or to recover a password. The
  * answer shown is the same whatever the address.
  */
-export function AskPage({ tenant, client, text, path, purpose }: AskPageProps) {
+export function AskPage({ tenant, client, text, path, purpose, forApplication = false }: AskPageProps) {
   const [email, setEmail] = useState("");
   const [busy, setBusy] = useState(false);
   const [failure, setFailure] = useState<Failure | null>(null);
@@ -50,6 +55,12 @@ export function AskPage({ tenant, client, text, path, purpose }: AskPageProps) {
     void ask();
   }
 
+  const registering = purpose === "registration";
+  const forAnApplication = registering && forApplication;
+  // A person who signs in from here signs in for the application, even
+  // when someone is signed in already.
+  const signIn = forAnApplication ? `${path("sign-in")}?continue=authorization` : path("sign-in");
+
   if (sentTo !== null) {
     return (
       <Frame tenant={tenant} title={text.checkMailboxTitle} text={text}>
@@ -58,17 +69,17 @@ export function AskPage({ tenant, client, text, path, purpose }: AskPageProps) {
         <Action label={text.askAgain} onClick={() => setSentTo(null)} />
         <Ways>
           <li>
-            <PageLink href={path("sign-in")}>{text.backToSignIn}</PageLink>
+            <PageLink href={signIn}>{text.backToSignIn}</PageLink>
           </li>
         </Ways>
       </Frame>
     );
   }
 
-  const registering = purpose === "registration";
   return (
     <Frame tenant={tenant} title={registering ? text.registerTitle : text.recoverTitle} text={text}>
       <Words>{registering ? text.registerLead : text.recoverLead}</Words>
+      {forAnApplication ? <Words quiet>{text.registerForApplication}</Words> : null}
       {failure !== null ? <Notice kind="danger">{describe(failure, text)}</Notice> : null}
       <Form onSubmit={submit}>
         <Field
@@ -86,7 +97,7 @@ export function AskPage({ tenant, client, text, path, purpose }: AskPageProps) {
       <Ways>
         <li>
           {registering ? `${text.alreadyRegistered} ` : null}
-          <PageLink href={path("sign-in")}>{registering ? text.signIn : text.backToSignIn}</PageLink>
+          <PageLink href={signIn}>{registering ? text.signIn : text.backToSignIn}</PageLink>
         </li>
       </Ways>
     </Frame>

@@ -33,6 +33,16 @@ pub const MAX_REDIRECT_URIS: usize = 10;
 pub(crate) const MAX_REDIRECT_URI_LENGTH: usize = 2000;
 /// The most scopes a client may ask for.
 pub const MAX_SCOPES: usize = 50;
+/// The largest default max age: a year, in seconds, as `max_age` at the
+/// authorization endpoint.
+pub(crate) const MAX_DEFAULT_MAX_AGE: u32 = 31_536_000;
+/// The most default assurance levels a client may have.
+pub(crate) const MAX_DEFAULT_ACR_VALUES: usize = 10;
+/// The longest name of a default assurance level.
+const MAX_ACR_VALUE_LENGTH: usize = 128;
+/// The longest the default assurance levels may be once joined by spaces,
+/// as `acr_values` at the authorization endpoint.
+const MAX_ACR_VALUES_LENGTH: usize = 255;
 
 /// How a client's ID tokens are signed: its `id_token_signed_response_alg`
 /// of OpenID Connect Registration.
@@ -541,6 +551,15 @@ pub struct ClientSettings {
     /// For a pairwise client, the address whose host is its sector and
     /// which lists its redirect addresses, if it has one.
     pub sector_identifier_uri: Option<String>,
+    /// The `max_age` of a request that names none, its `default_max_age`.
+    pub default_max_age: Option<u32>,
+    /// The `acr_values` of a request that names none, in order, its
+    /// `default_acr_values`.
+    pub default_acr_values: Vec<String>,
+    /// Whether it needs `auth_time` in its ID tokens, its
+    /// `require_auth_time`. Every ID token carries it; this records what
+    /// the client relies on.
+    pub require_auth_time: bool,
     /// How long its tokens live.
     pub token_policy: TokenPolicy,
     /// The service account or agent it acts as, if any: its tokens are
@@ -563,6 +582,65 @@ pub struct ClientSettings {
     /// bound to the certificate its requests come with: its
     /// `tls_client_certificate_bound_access_tokens` of RFC 8705.
     pub certificate_bound_access_tokens: bool,
+}
+
+/// Checks a client's defaults for a sign-in: see
+/// `docs/architecture/contexts/oauth.md`, "Defaults for a sign-in".
+fn check_sign_in_defaults(
+    has_code: bool,
+    max_age: Option<u32>,
+    acr_values: &[String],
+    require_auth_time: bool,
+) -> Result<(), DomainError> {
+    let max_age_invalid = |reason: &'static str| {
+        DomainError::invalid(
+            "oauth.client_default_max_age_invalid",
+            "a default max age is 0 to 31536000 seconds, for a client with              `authorization_code` only",
+        )
+        .with_detail(reason)
+    };
+    let acr_values_invalid = |reason: &'static str| {
+        DomainError::invalid(
+            "oauth.client_default_acr_values_invalid",
+            "default assurance levels are at most 10 names of 1 to 128 printable characters              without spaces, 255 characters together, for a client with `authorization_code`              only",
+        )
+        .with_detail(reason)
+    };
+    if let Some(seconds) = max_age {
+        if !has_code {
+            return Err(max_age_invalid(
+                "a client without `authorization_code` has no default max age",
+            ));
+        }
+        if seconds > MAX_DEFAULT_MAX_AGE {
+            return Err(max_age_invalid("longer than a year"));
+        }
+    }
+    if !acr_values.is_empty() {
+        if !has_code {
+            return Err(acr_values_invalid(
+                "a client without `authorization_code` has no default assurance levels",
+            ));
+        }
+        let joined = acr_values.iter().map(String::len).sum::<usize>() + acr_values.len() - 1;
+        if acr_values.len() > MAX_DEFAULT_ACR_VALUES
+            || joined > MAX_ACR_VALUES_LENGTH
+            || !acr_values.iter().all(|value| {
+                !value.is_empty()
+                    && value.len() <= MAX_ACR_VALUE_LENGTH
+                    && value.bytes().all(|b| b.is_ascii_graphic())
+            })
+        {
+            return Err(acr_values_invalid("too many, too long, or not printable"));
+        }
+    }
+    if require_auth_time && !has_code {
+        return Err(DomainError::invalid(
+            "oauth.client_require_auth_time_invalid",
+            "only a client with `authorization_code` gets ID tokens, and may require              `auth_time` in them",
+        ));
+    }
+    Ok(())
 }
 
 fn redirect_invalid(reason: &'static str) -> DomainError {
@@ -722,6 +800,9 @@ impl ClientSettings {
             backchannel_logout_session_required: false,
             subject_type: SubjectType::Public,
             sector_identifier_uri: None,
+            default_max_age: None,
+            default_acr_values: Vec::new(),
+            require_auth_time: false,
             token_policy: TokenPolicy::default(),
             principal: None,
             exchange_rules: Vec::new(),
@@ -896,6 +977,13 @@ impl ClientSettings {
         {
             return Err(certificate_bound_invalid());
         }
+        let default_acr_values = without_repeats(self.default_acr_values);
+        check_sign_in_defaults(
+            has_code,
+            self.default_max_age,
+            &default_acr_values,
+            self.require_auth_time,
+        )?;
         let allowed_scopes = without_repeats(self.allowed_scopes);
         if allowed_scopes.len() > MAX_SCOPES || !allowed_scopes.iter().all(|s| text::is_scope(s)) {
             return Err(DomainError::invalid(
@@ -918,6 +1006,9 @@ impl ClientSettings {
             backchannel_logout_session_required: self.backchannel_logout_session_required,
             subject_type: self.subject_type,
             sector_identifier_uri: self.sector_identifier_uri,
+            default_max_age: self.default_max_age,
+            default_acr_values,
+            require_auth_time: self.require_auth_time,
             token_policy: self.token_policy.checked()?,
             principal: self.principal,
             exchange_rules,
@@ -1077,6 +1168,20 @@ impl Client {
     #[must_use]
     pub fn backchannel_logout_uri(&self) -> Option<&str> {
         self.state.settings.backchannel_logout_uri.as_deref()
+    }
+
+    /// The `max_age` of a request of this client that names none.
+    #[must_use]
+    pub const fn default_max_age(&self) -> Option<u32> {
+        self.state.settings.default_max_age
+    }
+
+    /// The `acr_values` of a request of this client that names none, joined
+    /// by spaces; `None` when it has no default assurance levels.
+    #[must_use]
+    pub fn default_acr_values(&self) -> Option<String> {
+        let values = &self.state.settings.default_acr_values;
+        (!values.is_empty()).then(|| values.join(" "))
     }
 
     /// How the client knows a person.
@@ -1449,6 +1554,104 @@ mod tests {
             .checked(ClientType::Confidential)
             .expect_err("fragment");
         assert_eq!(error.code(), "oauth.client_sector_identifier_uri_invalid");
+    }
+
+    #[test]
+    fn the_defaults_for_a_sign_in_are_for_a_client_that_signs_people_in() {
+        let with = |settings: ClientSettings| ClientSettings {
+            default_max_age: Some(3600),
+            default_acr_values: vec![
+                "urn:hodor:acr:mfa".to_owned(),
+                "urn:hodor:acr:single-factor".to_owned(),
+                "urn:hodor:acr:mfa".to_owned(),
+            ],
+            require_auth_time: true,
+            ..settings
+        };
+        let (client, _) = create(ClientType::Confidential, with(web())).expect("client");
+        assert_eq!(client.default_max_age(), Some(3600));
+        // Kept in order, without repeats, and joined as `acr_values`.
+        assert_eq!(
+            client.default_acr_values().as_deref(),
+            Some("urn:hodor:acr:mfa urn:hodor:acr:single-factor")
+        );
+        assert!(client.snapshot().settings.require_auth_time);
+        let (plain, _) = create(ClientType::Confidential, web()).expect("plain");
+        assert_eq!(plain.default_max_age(), None);
+        assert_eq!(plain.default_acr_values(), None);
+        assert!(!plain.snapshot().settings.require_auth_time);
+
+        // Zero and a year are the bounds, as for `max_age`.
+        for seconds in [0, MAX_DEFAULT_MAX_AGE] {
+            let settings = ClientSettings {
+                default_max_age: Some(seconds),
+                ..web()
+            };
+            assert!(settings.checked(ClientType::Confidential).is_ok());
+        }
+        let error = ClientSettings {
+            default_max_age: Some(MAX_DEFAULT_MAX_AGE + 1),
+            ..web()
+        }
+        .checked(ClientType::Confidential)
+        .expect_err("too long");
+        assert_eq!(error.code(), "oauth.client_default_max_age_invalid");
+
+        // Names: printable without spaces, at most 10, 255 characters
+        // together.
+        for values in [
+            vec![String::new()],
+            vec!["two words".to_owned()],
+            vec!["a".repeat(129)],
+            (0..11).map(|n| format!("level-{n}")).collect(),
+            (0..3).map(|n| format!("{n}{}", "a".repeat(90))).collect(),
+        ] {
+            let error = ClientSettings {
+                default_acr_values: values,
+                ..web()
+            }
+            .checked(ClientType::Confidential)
+            .expect_err("refused");
+            assert_eq!(error.code(), "oauth.client_default_acr_values_invalid");
+        }
+
+        // A client that signs nobody in has none of them.
+        let service = || {
+            ClientSettings::new(
+                "Payroll service",
+                ClientType::Confidential,
+                vec![GrantType::ClientCredentials],
+                Vec::new(),
+            )
+        };
+        let refused = |settings: ClientSettings| {
+            settings
+                .checked(ClientType::Confidential)
+                .expect_err("no code")
+                .code()
+                .to_owned()
+        };
+        assert_eq!(
+            refused(ClientSettings {
+                default_max_age: Some(60),
+                ..service()
+            }),
+            "oauth.client_default_max_age_invalid"
+        );
+        assert_eq!(
+            refused(ClientSettings {
+                default_acr_values: vec!["urn:hodor:acr:mfa".to_owned()],
+                ..service()
+            }),
+            "oauth.client_default_acr_values_invalid"
+        );
+        assert_eq!(
+            refused(ClientSettings {
+                require_auth_time: true,
+                ..service()
+            }),
+            "oauth.client_require_auth_time_invalid"
+        );
     }
 
     fn spa() -> ClientSettings {

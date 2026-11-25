@@ -415,6 +415,11 @@ struct ClientBody {
     subject_type: &'static str,
     /// The sector identifier address of a pairwise client, or `null`.
     sector_identifier_uri: Option<String>,
+    /// The `max_age` of a request that names none, or `null`.
+    default_max_age: Option<u32>,
+    /// The `acr_values` of a request that names none, in order.
+    default_acr_values: Vec<String>,
+    require_auth_time: bool,
     /// The service account or agent it acts as, or `null`.
     principal: Option<String>,
     exchange_rules: Vec<ExchangeRuleBody>,
@@ -460,6 +465,9 @@ impl From<&Client> for ClientBody {
             backchannel_logout_session_required: settings.backchannel_logout_session_required,
             subject_type: settings.subject_type.as_str(),
             sector_identifier_uri: settings.sector_identifier_uri.clone(),
+            default_max_age: settings.default_max_age,
+            default_acr_values: settings.default_acr_values.clone(),
+            require_auth_time: settings.require_auth_time,
             principal: settings.principal.map(|principal| principal.to_string()),
             exchange_rules: settings
                 .exchange_rules
@@ -539,6 +547,9 @@ struct NewClientBody {
     backchannel_logout_session_required: Option<bool>,
     subject_type: Option<String>,
     sector_identifier_uri: Option<String>,
+    default_max_age: Option<u32>,
+    default_acr_values: Option<Vec<String>>,
+    require_auth_time: Option<bool>,
     token_policy: Option<TokenPolicyInput>,
     secret_lifetime_days: Option<u32>,
     principal: Option<String>,
@@ -588,6 +599,11 @@ struct ClientChangesBody {
     /// Left out: unchanged; `null`: removed; an address: replaced.
     #[serde(default, deserialize_with = "present")]
     sector_identifier_uri: Option<Option<String>>,
+    /// Left out: unchanged; `null`: removed; a number: replaced.
+    #[serde(default, deserialize_with = "present")]
+    default_max_age: Option<Option<u32>>,
+    default_acr_values: Option<Vec<String>>,
+    require_auth_time: Option<bool>,
     token_policy: Option<TokenPolicyInput>,
     /// Left out: unchanged; `null`: removed; an identifier: replaced.
     #[serde(default, deserialize_with = "present")]
@@ -636,11 +652,12 @@ fn changed_identities(
 }
 
 /// A field that may be given as `null`, told apart from one left out.
-fn present<'de, D>(deserializer: D) -> Result<Option<Option<String>>, D::Error>
+fn present<'de, D, T>(deserializer: D) -> Result<Option<Option<T>>, D::Error>
 where
     D: serde::Deserializer<'de>,
+    T: Deserialize<'de>,
 {
-    Option::<String>::deserialize(deserializer).map(Some)
+    Option::<T>::deserialize(deserializer).map(Some)
 }
 
 /// The workload `given` names, if it is a service account or an agent of
@@ -790,6 +807,9 @@ async fn create_client(
                 settings.subject_type = SubjectType::parse(&subject_type).map_err(failed)?;
             }
             settings.sector_identifier_uri = new.sector_identifier_uri;
+            settings.default_max_age = new.default_max_age;
+            settings.default_acr_values = new.default_acr_values.unwrap_or_default();
+            settings.require_auth_time = new.require_auth_time.unwrap_or(false);
             if let Some(policy) = new.token_policy {
                 settings.token_policy = policy.over(settings.token_policy);
             }
@@ -928,6 +948,9 @@ async fn change_client(
                 sector_identifier_uri: changes
                     .sector_identifier_uri
                     .unwrap_or(now.sector_identifier_uri),
+                default_max_age: changes.default_max_age.unwrap_or(now.default_max_age),
+                default_acr_values: changes.default_acr_values.unwrap_or(now.default_acr_values),
+                require_auth_time: changes.require_auth_time.unwrap_or(now.require_auth_time),
                 token_policy: changes
                     .token_policy
                     .map_or(now.token_policy, |given| given.over(now.token_policy)),

@@ -358,7 +358,24 @@ async fn run(config: Config) -> Result<(), Box<dyn Error>> {
     // at startup.
     let authority = authority(&config, &database)?;
     let (interaction, invitations) = interaction(&config, &database)?;
-    let authorization = authorization(&config, &database, interaction.authentication.clone());
+    let mut authorization = authorization(&config, &database, interaction.authentication.clone());
+    // An `id_token_hint` is checked against the tenants' keys, and compared
+    // with a pairwise client's person through the pairwise secrets. Without
+    // keys there is no ID token, and a hint is refused.
+    if let Some(keys) = &keys {
+        authorization.authorization = authorization
+            .authorization
+            .with_id_token_hints(keys.clone());
+    }
+    if let Some(setting) = &config.secret_keys {
+        authorization.authorization =
+            authorization
+                .authorization
+                .with_pairwise_subjects(pairwise_subjects(
+                    &database,
+                    secret_box(setting, &database)?,
+                ));
+    }
     // SCIM ends a deprovisioned person's sessions and grants with these.
     let revoker = access_revoker(&database);
     let mut oauth2 = authorization_routes(authorization.clone());

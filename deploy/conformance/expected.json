@@ -1,7 +1,4 @@
 {
-  "oidcc-userinfo-post-body": {
-    "WARNING": "UserInfo reads the access token from the Authorization header only, as the oauth context specifies. RFC 6750 lets a resource server also take it in a form body (section 2.2, MAY); Hodor does not, and the suite counts that as a warning, not a failure."
-  },
   "oidcc-scope-profile": {
     "WARNING": "The suite wants every standard claim of `profile`. Hodor keeps a person's name and language and gives those with `updated_at`; it has no given or family name, nickname, picture, website, gender, birth date or time zone, and OpenID Connect Core returns only the claims a provider has (section 5.4)."
   },

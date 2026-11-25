@@ -28,7 +28,7 @@ use hodor_oauth::api::{
     Proof, ResponseMode, SessionDecision, SignedInPerson,
 };
 use hodor_session::api::{Assurance, ClientInfo, Session, SessionService};
-use hodor_tenant::api::{AssuranceLevels, AssuranceRequirement, TenantService};
+use hodor_tenant::api::{AssuranceLevels, AssuranceRequirement, RegistrationPolicy, TenantService};
 
 /// The cookie that holds a pending authorization request's identifier and
 /// the secret that binds it to the browser.
@@ -386,7 +386,11 @@ async fn hold(
     request: AuthorizationRequest,
     step_up: Option<String>,
 ) -> Response {
-    let location = sign_in_address(slug, &request);
+    let location = if request.asks_to_register() {
+        register_address(slug, &request)
+    } else {
+        sign_in_address(slug, &request)
+    };
     match state.authorization.hold(tenant, request).await {
         Ok((id, secret)) => {
             let mut response = redirect_to_path(&location);
@@ -464,6 +468,58 @@ async fn step_up(
     }
 }
 
+/// The checks of a request that read the tenant, made once the others
+/// passed: `prompt=create` against its registration policy, then
+/// `id_token_hint` against its published keys.
+async fn check_against_tenant(
+    state: &AuthorizationState,
+    tenant: &TenantContext,
+    slug: &str,
+    request: AuthorizationRequest,
+) -> Result<AuthorizationRequest, Box<Response>> {
+    if request.asks_to_register() {
+        let open = match state.tenants.get(tenant).await {
+            Ok(found) => found.snapshot().settings.registration == RegistrationPolicy::Open,
+            Err(error) => return Err(Box::new(Problem::from(error).into_response())),
+        };
+        if let Some(error) = request.registration_refusal(open) {
+            return Err(Box::new(redirect_error(&error, &issuer(state, slug))));
+        }
+    }
+    match state
+        .authorization
+        .check_hint(tenant, &issuer(state, slug), request)
+        .await
+    {
+        Ok(Ok(request)) => Ok(request),
+        Ok(Err((refusal, reason))) => {
+            tracing::info!(reason, "an id_token_hint was refused");
+            Err(Box::new(match refusal {
+                AuthorizationRefusal::NotRedirectable(code) => error_page(code),
+                AuthorizationRefusal::Redirect(error) => {
+                    redirect_error(&error, &issuer(state, slug))
+                }
+            }))
+        }
+        Err(error) => Err(Box::new(Problem::from(error).into_response())),
+    }
+}
+
+/// Whether the browser's session may answer `request`: it is the person
+/// its `id_token_hint` names, when it has one.
+async fn hinted_person(
+    state: &AuthorizationState,
+    tenant: &TenantContext,
+    request: &AuthorizationRequest,
+    session: &Session,
+) -> Result<bool, Box<Response>> {
+    state
+        .authorization
+        .hint_names(tenant, request, session.user_id())
+        .await
+        .map_err(|error| Box::new(Problem::from(error).into_response()))
+}
+
 async fn authorize(
     state: &AuthorizationState,
     tenant: &TenantContext,
@@ -484,9 +540,33 @@ async fn authorize(
         }
         Err(error) => return Problem::from(error).into_response(),
     };
+    let request = match check_against_tenant(state, tenant, slug, request).await {
+        Ok(request) => request,
+        Err(response) => return *response,
+    };
     let session = match signed_in(state, tenant, headers).await {
         Ok(session) => session,
         Err(response) => return *response,
+    };
+    // A session of another person than the hint names answers nothing: as
+    // without a session, the person signs in.
+    let session = match session {
+        Some(session) => match hinted_person(state, tenant, &request, &session).await {
+            Ok(true) => Some(session),
+            Ok(false) if request.prompts("none") => {
+                return redirect_error(
+                    &error_for(
+                        &request,
+                        "login_required",
+                        "the person signed in is not the one id_token_hint names",
+                    ),
+                    &issuer(state, slug),
+                );
+            }
+            Ok(false) => None,
+            Err(response) => return *response,
+        },
+        None => None,
     };
     let now = state.authorization.now();
     let standing = match &session {
@@ -541,6 +621,17 @@ fn sign_in_address(slug: &str, request: &AuthorizationRequest) -> String {
         query.append_pair("ui_locales", locales);
     }
     format!("/t/{slug}/account/sign-in?{}", query.finish())
+}
+
+/// The registration page, for `prompt=create`, told that an application's
+/// request waits for the person and given the request's `ui_locales`.
+fn register_address(slug: &str, request: &AuthorizationRequest) -> String {
+    let mut query = form_urlencoded::Serializer::new(String::new());
+    query.append_pair("continue", "authorization");
+    if let Some(locales) = &request.ui_locales {
+        query.append_pair("ui_locales", locales);
+    }
+    format!("/t/{slug}/account/register?{}", query.finish())
 }
 
 fn redirect_to_path(path: &str) -> Response {
@@ -652,6 +743,23 @@ async fn resume(
         (None, Some(session))
             if request.signed_in_as_asked(session.snapshot().signed_in_at, resumed.received_at) =>
         {
+            match hinted_person(&state, &tenant, &request, &session).await {
+                Ok(true) => {}
+                // Signed in, but as someone else than the hint names.
+                Ok(false) => {
+                    let mut response = redirect_error(
+                        &error_for(
+                            &request,
+                            "login_required",
+                            "the person signed in is not the one id_token_hint names",
+                        ),
+                        &issuer(&state, &slug),
+                    );
+                    forget_authorization(&mut response, &slug);
+                    return response;
+                }
+                Err(response) => return *response,
+            }
             match standing(
                 &state,
                 &tenant,

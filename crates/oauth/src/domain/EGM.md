@@ -107,10 +107,20 @@ randomness and hashing are passed in. Every module is `pub(crate)` in
   tokens name, and `Proof { method, proven_at }` a session's method; `PendingAuthorization`
   (`hold`, `hold_for_consent`, `belongs_to`, `is_live_at`, and `consent`,
   whom it waits for); `first_party` reads as `false` when a stored request
-  lacks it, and `prompts` says whether `prompt` holds a value; `Grant` (`make`, `revoke`);
+  lacks it, and `prompts` says whether `prompt` holds a value; Issue-125:
+  `prompt=create` (`asks_to_register`, counted as asking for a new sign-in,
+  `registration_refusal(open)`), `display` among `DISPLAYS` (`page`,
+  `popup`, `touch`), the client's `default_max_age` and
+  `default_acr_values` for a request without its own, and `id_token_hint`
+  (`given_hint`, the token as the checked parameters gave it, inside a
+  request object when there is one, never serialized; `hinted(checked)`
+  keeps the `sub` of a hint issued to the request's client,
+  `names_person(subject)`; read as `None` from a request stored before
+  it); `Grant` (`make`, `revoke`);
   `AuthorizationCode` (`issue`, `check_redemption`); `CodeHash`
   (`of_presented` answers `None` for a value without the shape of a code);
-  `s256_challenge`. Its cases are in `authorization/tests.rs`.
+  `s256_challenge`. Its cases are in `authorization/tests.rs`, and those of
+  Issue-125 in `authorization/parameter_tests.rs`.
 - `token.rs`: the token endpoint. `TokenRequest::parse(basic, pairs)`,
   then `with_forwarded(identity)`, which keeps what a trusted proxy
   forwarded in `forwarded`, for binding tokens, besides giving it to the
@@ -171,7 +181,9 @@ randomness and hashing are passed in. Every module is `pub(crate)` in
   and `userinfo_claims` (the claims of `profile` and `email`), and
   `discovery_document(issuer, acr_values)`, which names the revocation and introspection
   endpoints and their methods, and the response types and modes of
-  `ResponseType::ALL` and `ResponseMode::ALL`. Its cases are in `openid/tests.rs`.
+  `ResponseType::ALL` and `ResponseMode::ALL`, and `display_values_supported`;
+  `with_registration(document, open)` and `prompt_values_supported(open)`
+  add `create` for a tenant open to registration. Its cases are in `openid/tests.rs`.
 - `introspection.rs`: revocation and introspection. `TokenQuery::parse`
   (`token` required, a parameter twice or more than one way of proving who
   the client is `invalid_request`, no client named `invalid_client`),
@@ -215,7 +227,13 @@ randomness and hashing are passed in. Every module is `pub(crate)` in
   sector from `sector_of` or `oauth.client_sector_identifier_uri_required`,
   and `sector_identifier_uri`, only for a pairwise client, its form checked
   by `check_sector_identifier_uri`; `Client::subject_type` and
-  `Client::sector`. And `spiffe_id`, a `SpiffeId`, with `spiffe_jwt` and
+  `Client::sector`. And the defaults for a sign-in (Issue-125), only with
+  `authorization_code`: `default_max_age` 0 to 31 536 000
+  (`oauth.client_default_max_age_invalid`), `default_acr_values` at most 10
+  printable names without spaces, 255 characters joined
+  (`oauth.client_default_acr_values_invalid`), and `require_auth_time`
+  (`oauth.client_require_auth_time_invalid`); `Client::default_max_age`,
+  `Client::default_acr_values` (joined by spaces). And `spiffe_id`, a `SpiffeId`, with `spiffe_jwt` and
   `spiffe_x509` (`AuthenticationMethod::uses_spiffe_id`), and
   `linkerd_identity`, a `LinkerdIdentity`, with `linkerd_identity`;
   `tls_client_auth` has exactly one of the two, every other method neither,

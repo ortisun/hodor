@@ -384,6 +384,30 @@ impl World {
             .await
     }
 
+    /// UserInfo with `token` in a form body (RFC 6750, section 2.2)
+    /// rather than the `Authorization` header.
+    async fn userinfo_in_form(&self, token: &str, forwarded: &Forwarded) -> (StatusCode, String) {
+        let mut request = Client::new()
+            .post(format!("{}/t/acme/oauth2/userinfo", self.server.base))
+            .header("content-type", "application/x-www-form-urlencoded")
+            .body(
+                form_urlencoded::Serializer::new(String::new())
+                    .append_pair("access_token", token)
+                    .finish(),
+            );
+        if let Some((name, value)) = forwarded {
+            request = request.header(*name, value);
+        }
+        let response = request.send().await.expect("response");
+        let challenge = response
+            .headers()
+            .get("www-authenticate")
+            .and_then(|value| value.to_str().ok())
+            .unwrap_or_default()
+            .to_owned();
+        (response.status(), challenge)
+    }
+
     async fn administration(&self, token: &str, forwarded: &Forwarded) -> (StatusCode, String) {
         self.bearer(Method::GET, "/api/v1/admin/users", token, None, forwarded)
             .await
@@ -603,6 +627,11 @@ async fn a_public_client_s_tokens_and_refresh_tokens_are_bound_and_userinfo_chec
     assert_eq!(status, StatusCode::OK, "{challenge}");
     refused_as_invalid(&world.userinfo(&access, &None).await);
     refused_as_invalid(&world.userinfo(&access, &client_cert(&other)).await);
+    // The token read from a form body is held to the same certificate.
+    let (status, challenge) = world.userinfo_in_form(&access, &client_cert(&mine)).await;
+    assert_eq!(status, StatusCode::OK, "{challenge}");
+    refused_as_invalid(&world.userinfo_in_form(&access, &None).await);
+    refused_as_invalid(&world.userinfo_in_form(&access, &client_cert(&other)).await);
 
     // The refresh token is bound to the same certificate: another one is
     // refused, and ends nothing.

@@ -67,6 +67,8 @@ export const ptBR: Messages = {
   emailLabel: "Endereço de email",
   sendLink: "Enviar o link",
   alreadyRegistered: "Já tem uma conta?",
+  registerForApplication:
+    "Um aplicativo trouxe você aqui. Depois de escolher sua senha e entrar, você volta para ele.",
   checkMailboxTitle: "Confira sua caixa de entrada",
   checkMailbox: (email) =>
     `Se ${email} puder ser usado, uma mensagem está a caminho. Siga o link da mensagem para continuar.`,
