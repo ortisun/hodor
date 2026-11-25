@@ -1,6 +1,7 @@
 //! What the authentication context needs from storage.
 
 use crate::domain::attempt::{AttemptCounter, AttemptSubject};
+use crate::domain::email::{EmailMethod, EmailSecretHash, EmailSignIn, EmailUse};
 use crate::domain::transaction::{AuthTransaction, TransactionId};
 use crate::domain::verification::{TokenPurpose, VerificationToken, VerificationTokenHash};
 use hodor_kernel::{DomainError, Timestamp, UnitOfWork};
@@ -151,4 +152,51 @@ pub trait VerificationTokenStore: Send + Sync {
         purpose: TokenPurpose,
         now: Timestamp,
     ) -> Result<Option<VerificationToken>, DomainError>;
+}
+
+/// Keeps what was sent to sign in by email: one code or link per sign-in.
+/// Every method works inside the tenant the unit of work is bound to.
+#[async_trait::async_trait]
+pub trait EmailSignInStore: Send + Sync {
+    /// Stores what was sent for a sign-in, in place of whatever was sent
+    /// for it before.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if storage fails.
+    async fn replace(
+        &self,
+        uow: &mut dyn UnitOfWork,
+        sent: &EmailSignIn,
+    ) -> Result<(), DomainError>;
+
+    /// Loads what was sent for a sign-in of the tenant, whether or not it
+    /// is still good.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if storage fails.
+    async fn get(
+        &self,
+        uow: &mut dyn UnitOfWork,
+        transaction: TransactionId,
+    ) -> Result<Option<EmailSignIn>, DomainError>;
+
+    /// Uses up what was sent for a sign-in if it accepts `presented` for
+    /// `method` at `now` ([`EmailSignIn::accepts`]). Of any number of calls
+    /// made at the same moment with the right secret, exactly one gets
+    /// [`EmailUse::Accepted`]; the others get [`EmailUse::AlreadyUsed`].
+    /// Anything else is [`EmailUse::Refused`].
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if storage fails.
+    async fn use_up(
+        &self,
+        uow: &mut dyn UnitOfWork,
+        transaction: TransactionId,
+        method: EmailMethod,
+        presented: &EmailSecretHash,
+        now: Timestamp,
+    ) -> Result<EmailUse, DomainError>;
 }

@@ -73,10 +73,10 @@ Rules:
 
 ### What is kept, and for how long
 
-A message waiting to be sent contains what will be sent, including any link in it. A verification or recovery link is as good as the token inside it, so a waiting message is sensitive.
+A message waiting to be sent contains what will be sent, including any link or code in it. A verification or recovery link is as good as the token inside it, and a code to sign in as good as the code, so a waiting message is sensitive.
 
 - The variables are erased the moment the message is sent, fails for good or expires. What remains is the record that a message of a given kind was sent to a recipient.
-- A message never outlives the link it carries: it expires when the link does.
+- A message never outlives the link or the code it carries: it expires when they do.
 - Until then the variables are in the database as they will be sent. This is the one place where something equivalent to a token is stored in a readable form, for at most the life of the link. The alternative, sending within the request and losing the message when the mail server is down, was judged worse.
 
 Events about messages carry the message's identifier, its template and its status. They never carry the recipient or the variables.
@@ -92,6 +92,8 @@ A template is a subject and a body, in plain text, with named placeholders. Temp
 | `password_recovery` | A person asked to choose a new password | `link`, `tenant_name`, `expires_at` |
 | `password_changed` | A password was changed | `tenant_name` |
 | `organization_invitation` | A person is invited to join an organization | `link`, `tenant_name`, `organization_name`, `expires_at` |
+| `sign_in_code` | A person asked for a code to sign in with | `code`, `tenant_name`, `expires_at` |
+| `sign_in_link` | A person asked for a link to sign in with | `link`, `tenant_name`, `expires_at` |
 
 Rules:
 

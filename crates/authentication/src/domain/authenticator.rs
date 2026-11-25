@@ -117,8 +117,10 @@ pub enum StepOutcome {
 #[derive(Debug, Clone, PartialEq)]
 pub struct StepChallenge {
     /// Kept in the transaction and handed back to the authenticator with
-    /// the answer. Used once.
-    pub challenge: [u8; 32],
+    /// the answer. Used once. `None` for an authenticator that keeps what
+    /// it asked for elsewhere, under rules of its own, such as a code sent
+    /// by email.
+    pub challenge: Option<[u8; 32]>,
     /// What the browser needs to answer, in the authenticator's own terms.
     pub options: serde_json::Value,
 }
@@ -176,19 +178,36 @@ pub trait Authenticator: Send + Sync {
 
     /// Makes the challenge this step's answer must be to, for a step that
     /// can check an answer only to a question it asked. The engine keeps
-    /// the challenge in the transaction, and `perform` finds it there.
+    /// the challenge in the transaction, when there is one to keep, and
+    /// `perform` finds it there.
+    ///
+    /// `asked` holds what the person gave with the request, by name, such
+    /// as the address a code is to be sent to; for most authenticators it
+    /// is empty and they ignore it.
     ///
     /// An authenticator that needs no challenge keeps the default: `None`.
     ///
     /// # Errors
     ///
     /// Returns an error when the challenge could not be made, for example
-    /// because a dependency is unavailable.
+    /// because a dependency is unavailable or too much was asked.
     async fn challenge(
         &self,
         _tenant: &TenantContext,
         _transaction: &AuthTransaction,
+        _asked: &ExternalInput,
     ) -> Result<Option<StepChallenge>, DomainError> {
         Ok(None)
+    }
+
+    /// Whether the tenant offers this authenticator. Asked of alternatives
+    /// only: one the tenant does not offer is neither listed for the pages
+    /// nor accepted. Most authenticators keep the default: always.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the tenant's settings could not be read.
+    async fn offered(&self, _tenant: &TenantContext) -> Result<bool, DomainError> {
+        Ok(true)
     }
 }

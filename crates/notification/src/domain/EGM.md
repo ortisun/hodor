@@ -30,7 +30,7 @@ through `crate::api`.
 
 ### `template.rs`
 
-- `Template { EmailVerification, AlreadyRegistered, PasswordRecovery, PasswordChanged }`
+- `Template { EmailVerification, AlreadyRegistered, PasswordRecovery, PasswordChanged, OrganizationInvitation, SignInCode, SignInLink }`
   with `ALL`, `key()`, `from_key(&str)`, `variables()` and
   `render(recipient, locale, variables) -> Result<Email, DomainError>`.
 
@@ -40,6 +40,9 @@ through `crate::api`.
 | `AlreadyRegistered` | `already_registered` | `tenant_name` |
 | `PasswordRecovery` | `password_recovery` | `link`, `tenant_name`, `expires_at` |
 | `PasswordChanged` | `password_changed` | `tenant_name` |
+| `OrganizationInvitation` | `organization_invitation` | `link`, `tenant_name`, `organization_name`, `expires_at` |
+| `SignInCode` | `sign_in_code` | `code`, `tenant_name`, `expires_at` |
+| `SignInLink` | `sign_in_link` | `link`, `tenant_name`, `expires_at` |
 
 - `Email { recipient, subject, body }`; its `Debug` shows only the subject.
 

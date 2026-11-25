@@ -44,7 +44,8 @@ use hodor_keys::api::{KeyAlgorithm, KeyService, KeyUse, KeyVersion, KeyVersionId
 use hodor_oauth::api::{ApplicationService, ClientId, ConsentActor, ConsentService};
 use hodor_session::api::{Session, SessionId, SessionService};
 use hodor_tenant::api::{
-    AssuranceLevel, AssuranceLevels, AssuranceRequirement, Deprovisioning, TenantService,
+    AssuranceLevel, AssuranceLevels, AssuranceRequirement, Deprovisioning, EmailSignInPolicy,
+    TenantService,
 };
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
@@ -230,6 +231,8 @@ pub const ADMIN_OPERATIONS: &[(&str, &str, Permission)] = &[
     ),
     ("GET", "/scim-deprovisioning", Permission::UsersRead),
     ("PUT", "/scim-deprovisioning", Permission::UsersWrite),
+    ("GET", "/email-sign-in", Permission::UsersRead),
+    ("PUT", "/email-sign-in", Permission::UsersWrite),
     ("GET", "/assurance-levels", Permission::AssuranceLevelsRead),
     ("PUT", "/assurance-levels", Permission::AssuranceLevelsWrite),
     ("GET", "/decision-log", Permission::DecisionsRead),
@@ -700,6 +703,10 @@ fn shared_routes() -> Router<Shared> {
             "/scim-deprovisioning",
             get(read_scim_deprovisioning).put(set_scim_deprovisioning),
         )
+        .route(
+            "/email-sign-in",
+            get(read_email_sign_in).put(set_email_sign_in),
+        )
         .merge(applications::routes())
         .merge(factors::routes())
         .merge(decisions::routes())
@@ -840,6 +847,72 @@ async fn set_scim_deprovisioning(
             Ok(Json(ScimDeprovisioningBody {
                 deprovisioning: changed.snapshot().settings.provisioning.deprovisioning,
             })
+            .into_response())
+        }
+        .await,
+    )
+}
+
+/// The tenant's email sign-in policy, as the interface writes it: both
+/// fields, always.
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct EmailSignInBody {
+    code: bool,
+    link: bool,
+}
+
+impl From<EmailSignInPolicy> for EmailSignInBody {
+    fn from(policy: EmailSignInPolicy) -> Self {
+        Self {
+            code: policy.code,
+            link: policy.link,
+        }
+    }
+}
+
+async fn read_email_sign_in(
+    State(state): State<Shared>,
+    Extension(tenant): Extension<TenantContext>,
+    headers: HeaderMap,
+) -> Response {
+    respond(
+        async {
+            authorize(&state, &tenant, &headers, "GET", "/email-sign-in").await?;
+            let found = state.tenants.get(&tenant).await.map_err(failed)?;
+            Ok(Json(EmailSignInBody::from(
+                found.snapshot().settings.authentication.email_sign_in,
+            ))
+            .into_response())
+        }
+        .await,
+    )
+}
+
+async fn set_email_sign_in(
+    State(state): State<Shared>,
+    Extension(tenant): Extension<TenantContext>,
+    headers: HeaderMap,
+    bytes: Bytes,
+) -> Response {
+    respond(
+        async {
+            let caller = authorize(&state, &tenant, &headers, "PUT", "/email-sign-in").await?;
+            let asked: EmailSignInBody = body(&bytes)?;
+            let found = state.tenants.get(&tenant).await.map_err(failed)?;
+            let mut settings = found.snapshot().settings.clone();
+            settings.authentication.email_sign_in = EmailSignInPolicy {
+                code: asked.code,
+                link: asked.link,
+            };
+            let changed = state
+                .tenants
+                .change_settings(&tenant, settings, caller)
+                .await
+                .map_err(failed)?;
+            Ok(Json(EmailSignInBody::from(
+                changed.snapshot().settings.authentication.email_sign_in,
+            ))
             .into_response())
         }
         .await,

@@ -120,6 +120,9 @@ routes and the whole router.
 | POST | `/sign-in/steps/recovery_code` | `submit_recovery_code` (body `{ "code" }`), a substitute of the `webauthn` and `totp` steps |
 | POST | `/sign-in/steps/passkey/options` | `passkey_options` (the challenge of the passkey alternative) |
 | POST | `/sign-in/steps/passkey` | `submit_passkey` |
+| GET | `/sign-in/alternatives` | `offered_alternatives` (`AuthenticationService::alternatives`; no sign-in needed) |
+| POST | `/sign-in/steps/email_code/send`, `/sign-in/steps/email_link/send` | `ask_for_code`, `ask_for_link` (body `{ "email", "locale"? }`; the challenge of the email alternative, answered `202` `{ "status": "accepted" }`) |
+| POST | `/sign-in/steps/email_code`, `/sign-in/steps/email_link` | `submit_email_code` (body `{ "code" }`), `submit_email_link` (body `{ "token" }`) |
 | GET | `/sign-in/providers` | `offered_providers` |
 | POST | `/sign-in/providers/{alias}` | `choose_provider` |
 | POST | `/sign-in/providers/{alias}/callback` | `finish_with_provider` |
@@ -212,6 +215,11 @@ A client's `principal` is checked there through `AdminState.identity`
 (`principal_of`, which also asks for an agent when the grants hold token exchange, the kept principal included on `PATCH`): a service account or an agent of the tenant that is not
 Deleted, otherwise `422` `oauth.client_principal_invalid`; `PATCH` tells a
 `principal` left out from one given as `null`, which removes it.
+
+`GET` and `PUT /email-sign-in` (`read_email_sign_in`, `set_email_sign_in`
+in `admin.rs`, `users:read` and `users:write`) read and replace the
+tenant's `authentication.email_sign_in` as `{ "code", "link" }`, both
+required and nothing else (`422` `request.body_invalid`).
 
 Service accounts and agents live in `admin/workloads.rs`, merged into
 `shared_routes`, and need `WorkloadService` in `AdminState.workloads`. One

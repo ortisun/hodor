@@ -108,6 +108,8 @@ It needs `HODOR_DATABASE_URL`, like the tenant commands.
 | `PATCH /resource-servers/{resource_server_id}` | `applications:write` | Change its name or its scopes |
 | `GET /scim-deprovisioning` | `users:read` | Read the tenant's SCIM deprovisioning policy |
 | `PUT /scim-deprovisioning` | `users:write` | Set it |
+| `GET /email-sign-in` | `users:read` | Read whether people of the tenant may sign in with a code or a link by email |
+| `PUT /email-sign-in` | `users:write` | Set it |
 | `GET /assurance-levels` | `assurance-levels:read` | Read the tenant's assurance levels |
 | `PUT /assurance-levels` | `assurance-levels:write` | Replace the tenant's assurance levels |
 | `GET /decision-log` | `decisions:read` | Read the settings of the record of decisions |
@@ -582,6 +584,16 @@ The tenant's [SCIM deprovisioning policy](../architecture/contexts/tenant.md#sci
 ```
 
 `GET /scim-deprovisioning` answers the policy in force, `deactivate` when none was set. `PUT /scim-deprovisioning` takes the same document and answers it as it is now; a change applies to requests that arrive after it, and is recorded as `tenant.settings_changed`. Any value other than `deactivate` and `delete`, or another body, is `422` with `request.body_invalid`.
+
+### Email sign-in
+
+The tenant's [email sign-in policy](../architecture/contexts/tenant.md#email-sign-in-policy): whether people may sign in with a code, or with a link, sent to their address.
+
+```json
+{ "code": true, "link": false }
+```
+
+`GET /email-sign-in` answers the policy in force, both `false` when none was set. `PUT /email-sign-in` takes the same document, both fields required, and answers it as it is now; a change applies to requests that arrive after it, and is recorded as `tenant.settings_changed`. Another body is `422` with `request.body_invalid`.
 
 ### The record of decisions
 

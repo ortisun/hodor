@@ -42,6 +42,12 @@ if (root !== null && place !== null) {
   const providerAnswer = providerAnswerOf(window.location.search);
   // What a provider sent back is read once and taken out of the address,
   // so that the code stays out of the browser's history.
+  const token = tokenOf(window.location.hash);
+  // The token of a link to sign in is read once and taken out of the
+  // address, so that it does not stay in the browser's history.
+  if (place.page === "sign-in-link") {
+    window.history.replaceState(null, "", window.location.pathname);
+  }
   if (notice !== null || place.page === "provider-callback") {
     // Said once: reloading the page does not say it again.
     window.history.replaceState(null, "", window.location.pathname + window.location.hash);
@@ -58,7 +64,7 @@ if (root !== null && place !== null) {
         client={new Client(place.tenant)}
         text={text}
         notice={notice}
-        token={tokenOf(window.location.hash)}
+        token={token}
         go={go}
         leave={(url) => window.location.assign(url)}
         providerAnswer={providerAnswer}

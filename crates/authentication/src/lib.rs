@@ -19,6 +19,7 @@ pub mod api {
         IdentifierAuthenticator, PasskeyAuthenticator, PasswordAuthenticator,
         RecoveryCodeAuthenticator, TotpAuthenticator, WebAuthnAuthenticator,
     };
+    pub use crate::application::email::{EmailAuthenticator, EmailSignInPorts};
     pub use crate::application::factors::{
         FactorService, Factors, RECENT_SIGN_IN, RegisteredKey, Remover, recent_sign_in_required,
         recent_sign_in_until, signed_in_recently,
@@ -27,7 +28,9 @@ pub mod api {
     pub use crate::application::invitations::{
         InvitationContexts, InvitationDescription, InvitationService,
     };
-    pub use crate::application::ports::{AttemptStore, TransactionStore, VerificationTokenStore};
+    pub use crate::application::ports::{
+        AttemptStore, EmailSignInStore, TransactionStore, VerificationTokenStore,
+    };
     pub use crate::application::service::{
         AuthenticationService, SignIn, StartedSignIn, StepUp, StepUpRequest,
     };
@@ -35,6 +38,9 @@ pub mod api {
     pub use crate::domain::authenticator::{
         Authenticator, AuthenticatorTraits, ExternalInput, Factor, StepChallenge, StepInput,
         StepOutcome,
+    };
+    pub use crate::domain::email::{
+        EmailMethod, EmailSecret, EmailSecretHash, EmailSignIn, EmailSignInSnapshot, EmailUse,
     };
     pub use crate::domain::engine::{FlowEngine, Progress};
     pub use crate::domain::event::AuthenticationEvent;

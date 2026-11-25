@@ -477,7 +477,7 @@ async fn an_administrators_token_is_refused_by_every_operation_of_another_tenant
             tried += 1;
         }
     }
-    assert_eq!(tried, 134, "every documented operation was tried");
+    assert_eq!(tried, 136, "every documented operation was tried");
 
     // The token is good where it belongs, and nothing happened in Globex:
     // it has its two users, both active.
@@ -3544,4 +3544,129 @@ async fn one_tenants_webhooks_and_their_deliveries_are_out_of_reach_of_another()
         )
         .await;
     assert_eq!(still["items"], listed["items"]);
+}
+
+/// Turns on both ways of signing in by email in a tenant.
+async fn offer_by_email(world: &World, tenant: &Tenant) {
+    let tenants = TenantService::new(
+        Arc::new(world.database.app().clone()),
+        Arc::new(PgTenantRepository),
+        Arc::new(PgTenantDirectory::new(world.database.app().clone())),
+        Arc::new(SystemClock),
+    );
+    let mut settings = tenants
+        .get(&tenant.context)
+        .await
+        .expect("tenant")
+        .snapshot()
+        .settings
+        .clone();
+    settings.authentication.email_sign_in.code = true;
+    settings.authentication.email_sign_in.link = true;
+    tenants
+        .change_settings(&tenant.context, settings, Caller::system())
+        .await
+        .expect("settings");
+}
+
+/// A browser that started a sign-in in a tenant and asked for `step` for
+/// the shared address, and what the message carries.
+async fn asked_by_email(
+    world: &World,
+    tenant: &Tenant,
+    step: &str,
+    variable: &str,
+) -> (Browser, String) {
+    let mut browser = Browser::new(&world.server);
+    browser
+        .send(
+            Method::POST,
+            &format!("/t/{}/interaction/sign-in", tenant.slug),
+            None,
+        )
+        .await;
+    let (status, _) = browser
+        .send(
+            Method::POST,
+            &format!("/t/{}/interaction/sign-in/steps/{step}/send", tenant.slug),
+            Some(serde_json::json!({ "email": EMAIL })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::ACCEPTED);
+    let sent: String = sqlx::query_scalar(
+        "SELECT variables->>$2 FROM notification.message
+         WHERE tenant_id = $1 AND variables ? $2
+         ORDER BY created_at DESC, id DESC LIMIT 1",
+    )
+    .bind(tenant.context.tenant_id().as_uuid())
+    .bind(variable)
+    .fetch_one(world.database.owner())
+    .await
+    .expect("a message");
+    let sent = match variable {
+        "link" => sent.split_once("#token=").expect("a token").1.to_owned(),
+        _ => sent,
+    };
+    (browser, sent)
+}
+
+async fn present_by_email(
+    browser: &mut Browser,
+    tenant: &Tenant,
+    step: &str,
+    field: &str,
+    value: &str,
+) -> (StatusCode, serde_json::Value) {
+    browser
+        .send(
+            Method::POST,
+            &format!("/t/{}/interaction/sign-in/steps/{step}", tenant.slug),
+            Some(serde_json::json!({ field: value })),
+        )
+        .await
+}
+
+#[tokio::test]
+async fn a_code_or_a_link_sent_in_one_tenant_signs_nobody_in_at_another() {
+    let world = world().await;
+    let (acme, globex) = (&world.acme, &world.globex);
+    offer_by_email(&world, acme).await;
+    offer_by_email(&world, globex).await;
+
+    for (step, field, variable) in [
+        ("email_code", "code", "code"),
+        ("email_link", "token", "link"),
+    ] {
+        let (mut in_acme, acme_sent) = asked_by_email(&world, acme, step, variable).await;
+        // Globex's own sign-in asked for the same address.
+        let (mut in_globex, globex_sent) = asked_by_email(&world, globex, step, variable).await;
+
+        // Acme's code or token, presented to Globex's sign-in.
+        if acme_sent != globex_sent {
+            let (_, body) = present_by_email(&mut in_globex, globex, step, field, &acme_sent).await;
+            assert_eq!(body["status"], "rejected", "{step}: {body}");
+        }
+        // Acme's browser, cookie and CSRF token, on Globex's path.
+        let (status, body) = present_by_email(&mut in_acme, globex, step, field, &acme_sent).await;
+        assert_eq!(status, StatusCode::NOT_FOUND, "{step}");
+        assert_eq!(body["code"], "authentication.transaction_not_found");
+        assert!(!in_globex.cookies.contains_key(SESSION_COOKIE));
+
+        // Each still signs its own person in where it belongs.
+        for (browser, tenant, sent, person) in [
+            (&mut in_acme, acme, &acme_sent, acme.ana),
+            (&mut in_globex, globex, &globex_sent, globex.ana),
+        ] {
+            let (_, body) = present_by_email(browser, tenant, step, field, sent).await;
+            assert_eq!(body["status"], "completed", "{step}: {body}");
+            let (_, who) = browser
+                .send(
+                    Method::GET,
+                    &format!("/t/{}/interaction/session", tenant.slug),
+                    None,
+                )
+                .await;
+            assert_eq!(who["user_id"], person.to_string());
+        }
+    }
 }

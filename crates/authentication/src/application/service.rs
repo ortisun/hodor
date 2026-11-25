@@ -1,7 +1,7 @@
 //! The use cases of the authentication context: running a sign-in.
 
 use crate::application::ports::TransactionStore;
-use crate::domain::authenticator::StepInput;
+use crate::domain::authenticator::{ExternalInput, StepInput};
 use crate::domain::engine::{FlowEngine, Progress};
 use crate::domain::event::AuthenticationEvent;
 use crate::domain::flow::AuthFlow;
@@ -264,6 +264,16 @@ impl AuthenticationService {
         self.engine.assurance_of_methods(methods)
     }
 
+    /// The alternatives a sign-in of the tenant may take at its start, in
+    /// the order of the flow, for the pages to offer.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the tenant's settings cannot be read.
+    pub async fn alternatives(&self, tenant: &TenantContext) -> Result<Vec<String>, DomainError> {
+        self.engine.offered_alternatives(tenant, &self.flow).await
+    }
+
     /// Says which step a sign-in is waiting for, so that its page can be
     /// shown again.
     ///
@@ -282,25 +292,35 @@ impl AuthenticationService {
         self.pending(&transaction)
     }
 
-    /// Asks the current step of a sign-in for a challenge, for a step that
-    /// needs one, and returns what the browser needs to answer it.
+    /// Asks the current step of a sign-in, or an alternative while no step
+    /// has been satisfied, for a challenge, with what the person gave in
+    /// `asked`, and returns what the browser needs to answer it. For the
+    /// email alternatives this sends the code or the link.
     ///
     /// # Errors
     ///
     /// Returns `NotFound` if there is no such sign-in, `Conflict` if it is
-    /// not in progress or was advanced by another request meanwhile, and
-    /// `Invalid` if `step` is not the current step or needs no challenge.
+    /// not in progress or was advanced by another request meanwhile,
+    /// `Invalid` if the step is not the current step or needs no challenge,
+    /// `Forbidden` for an alternative the tenant does not offer, and
+    /// `RateLimited` when too much was asked.
     pub async fn challenge(
         &self,
         tenant: &TenantContext,
         id: TransactionId,
         secret: &str,
-        step: &str,
+        asked: ExternalInput,
     ) -> Result<serde_json::Value, DomainError> {
         let mut transaction = self.load(tenant, id, secret).await?;
         let options = self
             .engine
-            .challenge(tenant, &self.flow, &mut transaction, step, self.clock.now())
+            .challenge(
+                tenant,
+                &self.flow,
+                &mut transaction,
+                &asked,
+                self.clock.now(),
+            )
             .await?;
         self.store(tenant, &transaction, None).await?;
         Ok(options)

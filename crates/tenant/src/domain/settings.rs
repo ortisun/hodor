@@ -344,6 +344,23 @@ pub struct AuthenticationPolicy {
     /// before they existed read as the default.
     #[serde(default)]
     pub assurance_levels: AssuranceLevels,
+    /// Whether people may sign in with a code or a link by email.
+    /// Settings stored before this policy existed read as the default.
+    #[serde(default)]
+    pub email_sign_in: EmailSignInPolicy,
+}
+
+/// Whether people of the tenant may sign in with a code or a link sent to
+/// their address, each on its own. Both are off by default. Specified in
+/// `docs/architecture/contexts/tenant.md`, "Email sign-in policy".
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct EmailSignInPolicy {
+    /// A code sent to the address.
+    #[serde(default)]
+    pub code: bool,
+    /// A link sent to the address, opened in the browser that asked.
+    #[serde(default)]
+    pub link: bool,
 }
 
 /// The bound on how deep groups may be nested.
@@ -512,6 +529,32 @@ mod tests {
         settings.provisioning.deprovisioning = Deprovisioning::Delete;
         let stored = serde_json::to_value(&settings).expect("serializes");
         assert_eq!(stored["provisioning"]["deprovisioning"], "delete");
+    }
+
+    #[test]
+    fn signing_in_by_email_is_off_by_default_and_read_from_older_settings() {
+        let mut settings = TenantSettings::default();
+        assert_eq!(
+            settings.authentication.email_sign_in,
+            EmailSignInPolicy {
+                code: false,
+                link: false
+            }
+        );
+        let mut stored = serde_json::to_value(&settings).expect("serializes");
+        stored["authentication"]
+            .as_object_mut()
+            .expect("an object")
+            .remove("email_sign_in");
+        let read: TenantSettings = serde_json::from_value(stored).expect("older settings read");
+        assert_eq!(read, TenantSettings::default());
+        settings.authentication.email_sign_in.link = true;
+        let stored = serde_json::to_value(&settings).expect("serializes");
+        assert_eq!(
+            stored["authentication"]["email_sign_in"],
+            serde_json::json!({ "code": false, "link": true })
+        );
+        settings.validate().expect("valid");
     }
 
     #[test]

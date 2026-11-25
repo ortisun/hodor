@@ -3580,6 +3580,116 @@
         }
       }
     },
+    "/email-sign-in": {
+      "get": {
+        "operationId": "readEmailSignIn",
+        "summary": "Read whether people of the tenant may sign in with a code or a link by email",
+        "x-hodor-permission": "users:read",
+        "responses": {
+          "401": {
+            "description": "No access token, or one that is not good in this tenant. The same in every case.",
+            "headers": {
+              "WWW-Authenticate": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The token is good and its user may not do this.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "200": {
+            "description": "The policy in force, both `false` when none was set.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EmailSignIn"
+                }
+              }
+            }
+          }
+        }
+      },
+      "put": {
+        "operationId": "setEmailSignIn",
+        "summary": "Set whether people of the tenant may sign in with a code or a link by email",
+        "x-hodor-permission": "users:write",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/EmailSignIn"
+              }
+            }
+          }
+        },
+        "responses": {
+          "401": {
+            "description": "No access token, or one that is not good in this tenant. The same in every case.",
+            "headers": {
+              "WWW-Authenticate": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The token is good and its user may not do this.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "200": {
+            "description": "The policy now in force.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EmailSignIn"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "A body that is not this document (`request.body_invalid`).",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/assurance-levels": {
       "get": {
         "operationId": "readAssuranceLevels",
@@ -13609,6 +13719,24 @@
               "delete"
             ],
             "description": "What a SCIM client's `DELETE` of a user or `active: false` does: deactivate the person, or delete them. Either way their sessions and grants end."
+          }
+        }
+      },
+      "EmailSignIn": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "code",
+          "link"
+        ],
+        "properties": {
+          "code": {
+            "type": "boolean",
+            "description": "Whether a person may sign in with a code sent to their address."
+          },
+          "link": {
+            "type": "boolean",
+            "description": "Whether a person may sign in with a link sent to their address, opened in the browser that asked for it."
           }
         }
       },

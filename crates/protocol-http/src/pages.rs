@@ -33,6 +33,7 @@ pub const PAGE_PATHS: &[&str] = &[
     "/account/security",
     "/account/consent",
     "/account/accept-invitation",
+    "/account/sign-in-link",
 ];
 
 /// The page an identity provider sends a person back to. It is the one

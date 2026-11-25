@@ -44,7 +44,9 @@ mod webhooks;
 pub use access_list::PgAccessListStore;
 pub use api_key::PgApiKeyStore;
 pub use audit::PgAuditLog;
-pub use authentication::{PgAttemptStore, PgTransactionStore, PgVerificationTokenStore};
+pub use authentication::{
+    PgAttemptStore, PgEmailSignInStore, PgTransactionStore, PgVerificationTokenStore,
+};
 pub use authorization::{PgEngineBindingStore, PgNativeRoleStore, PgRoleAssignmentStore};
 pub use cleanup::{
     AccessTokenCleanup, CleanupReport, ExpiredKind, ExpiredRowCleanup, PendingAuthorizationCleanup,

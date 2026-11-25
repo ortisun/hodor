@@ -149,6 +149,64 @@ async fn the_depth_of_groups_is_set_within_its_bounds() {
 }
 
 #[tokio::test]
+async fn signing_in_by_email_is_turned_on_and_off_one_method_at_a_time() {
+    let database = TestDatabase::start().await;
+    let created = cli(&database, &["create", "--slug", "acme", "--name", "Acme"]);
+    assert!(created.status.success(), "{}", stderr(&created));
+    let read = || async {
+        let (policy,): (Option<String>,) = sqlx::query_as(
+            "SELECT (settings -> 'authentication' -> 'email_sign_in')::text FROM tenant.tenant",
+        )
+        .fetch_one(database.owner())
+        .await
+        .expect("the setting");
+        policy
+    };
+    let shown = cli(&database, &["email-sign-in", "--slug", "acme"]);
+    assert!(shown.status.success(), "{}", stderr(&shown));
+    assert_eq!(stdout(&shown), "acme email-sign-in code off link off");
+
+    let set = cli(
+        &database,
+        &["email-sign-in", "--slug", "acme", "--code", "on"],
+    );
+    assert!(set.status.success(), "{}", stderr(&set));
+    assert_eq!(stdout(&set), "acme email-sign-in code on link off");
+    let set = cli(
+        &database,
+        &["email-sign-in", "--slug", "acme", "--link", "on"],
+    );
+    assert_eq!(stdout(&set), "acme email-sign-in code on link on");
+    let set = cli(
+        &database,
+        &[
+            "email-sign-in",
+            "--slug",
+            "acme",
+            "--code",
+            "off",
+            "--link",
+            "on",
+        ],
+    );
+    assert_eq!(stdout(&set), "acme email-sign-in code off link on");
+    assert_eq!(
+        read().await.as_deref(),
+        Some(r#"{"code": false, "link": true}"#)
+    );
+    let refused = cli(
+        &database,
+        &["email-sign-in", "--slug", "acme", "--code", "yes"],
+    );
+    assert!(!refused.status.success(), "an unknown value was accepted");
+    let unknown = cli(
+        &database,
+        &["email-sign-in", "--slug", "nowhere", "--code", "on"],
+    );
+    assert!(!unknown.status.success(), "an unknown tenant was accepted");
+}
+
+#[tokio::test]
 async fn the_scim_deprovisioning_policy_is_set_by_name() {
     let database = TestDatabase::start().await;
     let created = cli(&database, &["create", "--slug", "acme", "--name", "Acme"]);

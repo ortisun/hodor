@@ -369,6 +369,32 @@ export class Client {
     return options as Record<string, unknown>;
   }
 
+  /** The ways to sign in, other than the identifier and the password, that the tenant offers. */
+  async alternatives(): Promise<string[]> {
+    const reply = await this.#send("GET", "/sign-in/alternatives");
+    const listed = reply.body["alternatives"];
+    return Array.isArray(listed) ? listed.filter((entry): entry is string => typeof entry === "string") : [];
+  }
+
+  /**
+   * Asks for a code or a link to be sent to an address, in place of the
+   * identifier and the password. The answer is the same whoever the
+   * address belongs to.
+   */
+  async askByEmail(method: "code" | "link", email: string, locale: string): Promise<void> {
+    await this.#send("POST", `/sign-in/steps/email_${method}/send`, { email, locale });
+  }
+
+  /** Sends the code that came by email. */
+  async submitEmailCode(code: string): Promise<SignInAnswer> {
+    return this.#signIn(await this.#send("POST", "/sign-in/steps/email_code", { code }));
+  }
+
+  /** Sends the token of the link that came by email, within this browser's sign-in. */
+  async submitEmailLink(token: string): Promise<SignInAnswer> {
+    return this.#signIn(await this.#send("POST", "/sign-in/steps/email_link", { token }));
+  }
+
   /** Sends one of the person's recovery codes, in place of their security key or the code of their application. */
   async submitRecoveryCode(code: string): Promise<SignInAnswer> {
     return this.#signIn(await this.#send("POST", "/sign-in/steps/recovery_code", { code }));

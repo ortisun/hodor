@@ -1,7 +1,7 @@
 //! What happens during sign-ins, as other contexts hear about it.
 //!
 //! Events never carry the identifier that was typed, an email address, a
-//! token, a link or anything about a password.
+//! token, a code, a link or anything about a password.
 
 use hodor_kernel::{DomainEvent, Timestamp, UserId};
 use serde::Serialize;
@@ -50,6 +50,13 @@ pub enum AuthenticationEvent {
         /// Whose password it is.
         user_id: UserId,
     },
+    /// A code or a link to sign in was sent to a person.
+    EmailSignInSent {
+        /// Who may sign in with it.
+        user_id: UserId,
+        /// `email_code` or `email_link`.
+        method: &'static str,
+    },
 }
 
 impl DomainEvent for AuthenticationEvent {
@@ -61,6 +68,7 @@ impl DomainEvent for AuthenticationEvent {
             Self::RegistrationCompleted { .. } => "authentication.registration_completed",
             Self::RecoveryRequested { .. } => "authentication.recovery_requested",
             Self::PasswordReset { .. } => "authentication.password_reset",
+            Self::EmailSignInSent { .. } => "authentication.email_sign_in_sent",
         }
     }
 }

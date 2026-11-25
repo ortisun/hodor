@@ -156,6 +156,8 @@ pub enum ExpiredKind {
     SignIns,
     /// Registration and recovery links that were used, replaced or expired.
     VerificationTokens,
+    /// Codes and links to sign in by email that expired.
+    EmailSignIns,
     /// Messages that were sent, failed or expired.
     Messages,
     /// Security key and passkey registrations never finished.
@@ -212,10 +214,11 @@ macro_rules! expired_rows {
 
 impl ExpiredKind {
     /// Every kind, in the order the worker starts their jobs.
-    pub const ALL: [Self; 14] = [
+    pub const ALL: [Self; 15] = [
         Self::Sessions,
         Self::SignIns,
         Self::VerificationTokens,
+        Self::EmailSignIns,
         Self::Messages,
         Self::WebauthnRegistrations,
         Self::AuthorizationRequests,
@@ -236,6 +239,7 @@ impl ExpiredKind {
             Self::Sessions => "sessions",
             Self::SignIns => "sign_ins",
             Self::VerificationTokens => "verification_tokens",
+            Self::EmailSignIns => "email_sign_ins",
             Self::Messages => "messages",
             Self::WebauthnRegistrations => "webauthn_registrations",
             Self::AuthorizationRequests => "authorization_requests",
@@ -256,7 +260,7 @@ impl ExpiredKind {
     pub const fn default_retention_days(self) -> u32 {
         match self {
             Self::WebauthnRegistrations | Self::AuthorizationRequests | Self::ClientAssertions => 0,
-            Self::SignIns | Self::AuthorizationCodes => 1,
+            Self::SignIns | Self::EmailSignIns | Self::AuthorizationCodes => 1,
             Self::Sessions | Self::VerificationTokens => 7,
             Self::Messages
             | Self::RevokedGrants
@@ -276,6 +280,11 @@ impl ExpiredKind {
                  OR last_activity_at + idle_timeout_seconds * interval '1 second' <= $1)"
             ),
             Self::SignIns => expired_rows!("authentication.transaction", "expires_at <= $1"),
+            // A used one expires ten minutes after it was made at the
+            // latest, so its expiry says when it stopped being useful.
+            Self::EmailSignIns => {
+                expired_rows!("authentication.email_sign_in", "expires_at <= $1")
+            }
             Self::VerificationTokens => expired_rows!(
                 "authentication.verification_token",
                 "(used_at <= $1 OR replaced_at <= $1 OR expires_at <= $1)"

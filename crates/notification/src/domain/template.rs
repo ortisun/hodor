@@ -19,16 +19,22 @@ pub enum Template {
     PasswordChanged,
     /// A person is invited to join an organization.
     OrganizationInvitation,
+    /// A person asked for a code to sign in with.
+    SignInCode,
+    /// A person asked for a link to sign in with.
+    SignInLink,
 }
 
 impl Template {
     /// Every template.
-    pub const ALL: [Self; 5] = [
+    pub const ALL: [Self; 7] = [
         Self::EmailVerification,
         Self::AlreadyRegistered,
         Self::PasswordRecovery,
         Self::PasswordChanged,
         Self::OrganizationInvitation,
+        Self::SignInCode,
+        Self::SignInLink,
     ];
 
     /// The name the template is stored and reported under.
@@ -40,6 +46,8 @@ impl Template {
             Self::PasswordRecovery => "password_recovery",
             Self::PasswordChanged => "password_changed",
             Self::OrganizationInvitation => "organization_invitation",
+            Self::SignInCode => "sign_in_code",
+            Self::SignInLink => "sign_in_link",
         }
     }
 
@@ -64,9 +72,10 @@ impl Template {
     #[must_use]
     pub const fn variables(self) -> &'static [&'static str] {
         match self {
-            Self::EmailVerification | Self::PasswordRecovery => {
+            Self::EmailVerification | Self::PasswordRecovery | Self::SignInLink => {
                 &["link", "tenant_name", "expires_at"]
             }
+            Self::SignInCode => &["code", "tenant_name", "expires_at"],
             Self::AlreadyRegistered | Self::PasswordChanged => &["tenant_name"],
             Self::OrganizationInvitation => {
                 &["link", "tenant_name", "organization_name", "expires_at"]
@@ -165,6 +174,46 @@ impl Template {
                  Se ainda não tiver uma conta, você escolherá uma senha lá. \
                  O link funciona uma única vez e deixa de funcionar em {expires_at}.\n\n\
                  Se não souber por que foi convidado, ignore esta mensagem e nada acontecerá.\n",
+            ),
+            (Self::SignInCode, Language::English) => (
+                "Your code to sign in to {tenant_name}",
+                "Hello,\n\n\
+                 Someone, hopefully you, asked to sign in to {tenant_name} with this address.\n\n\
+                 Type this code on the sign-in page, in the browser where you asked for it:\n\n\
+                 {code}\n\n\
+                 The code works once and stops working on {expires_at}. Nobody from {tenant_name} \
+                 will ever ask you for it.\n\n\
+                 If it was not you, ignore this message. Nobody can sign in with it without the browser that asked.\n",
+            ),
+            (Self::SignInCode, Language::Portuguese) => (
+                "Seu código para entrar em {tenant_name}",
+                "Olá,\n\n\
+                 Alguém, esperamos que você, pediu para entrar em {tenant_name} com este endereço.\n\n\
+                 Digite este código na página de entrada, no navegador em que o pediu:\n\n\
+                 {code}\n\n\
+                 O código funciona uma única vez e deixa de funcionar em {expires_at}. Ninguém de \
+                 {tenant_name} vai pedi-lo a você.\n\n\
+                 Se não foi você, ignore esta mensagem. Ninguém entra com ele sem o navegador que o pediu.\n",
+            ),
+            (Self::SignInLink, Language::English) => (
+                "Your link to sign in to {tenant_name}",
+                "Hello,\n\n\
+                 Someone, hopefully you, asked to sign in to {tenant_name} with this address.\n\n\
+                 To sign in, open this link in the browser where you asked for it:\n\n\
+                 {link}\n\n\
+                 The link works once and stops working on {expires_at}. Opened in another browser, \
+                 it signs nobody in.\n\n\
+                 If it was not you, ignore this message and nothing will happen.\n",
+            ),
+            (Self::SignInLink, Language::Portuguese) => (
+                "Seu link para entrar em {tenant_name}",
+                "Olá,\n\n\
+                 Alguém, esperamos que você, pediu para entrar em {tenant_name} com este endereço.\n\n\
+                 Para entrar, abra este link no navegador em que o pediu:\n\n\
+                 {link}\n\n\
+                 O link funciona uma única vez e deixa de funcionar em {expires_at}. Aberto em outro \
+                 navegador, não faz ninguém entrar.\n\n\
+                 Se não foi você, ignore esta mensagem e nada acontecerá.\n",
             ),
         }
     }
@@ -298,6 +347,7 @@ mod tests {
                     .render("person@example.com", locale, &variables(template))
                     .expect("renders");
                 assert!(!email.subject.contains("<link>"));
+                assert!(!email.subject.contains("<code>"));
                 assert!(!email.subject.contains('\n'));
             }
         }

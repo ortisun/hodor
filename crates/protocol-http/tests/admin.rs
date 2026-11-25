@@ -658,7 +658,7 @@ fn the_document_and_the_routes_list_the_same_operations_and_permissions() {
         })
         .collect();
     assert_eq!(documented, served);
-    assert_eq!(served.len(), 134);
+    assert_eq!(served.len(), 136);
 
     // Every operation says how it refuses.
     let document: serde_json::Value = serde_json::from_str(ADMIN_OPENAPI).expect("valid JSON");
@@ -3870,6 +3870,53 @@ async fn an_administrator_reads_and_sets_the_scim_deprovisioning_policy() {
         assert_eq!(answer.status, StatusCode::UNPROCESSABLE_ENTITY);
         assert_eq!(answer.body["code"], "request.body_invalid");
     }
+}
+
+#[tokio::test]
+async fn an_administrator_reads_and_sets_the_email_sign_in_policy() {
+    let world = world().await;
+    let read = world
+        .as_administrator(Method::GET, "/email-sign-in", None)
+        .await;
+    assert_eq!(read.status, StatusCode::OK, "{:?}", read.body);
+    assert_eq!(
+        read.body,
+        serde_json::json!({ "code": false, "link": false })
+    );
+    let set = world
+        .as_administrator(
+            Method::PUT,
+            "/email-sign-in",
+            Some(serde_json::json!({ "code": true, "link": false })),
+        )
+        .await;
+    assert_eq!(set.status, StatusCode::OK, "{:?}", set.body);
+    assert_eq!(set.body, serde_json::json!({ "code": true, "link": false }));
+    let read = world
+        .as_administrator(Method::GET, "/email-sign-in", None)
+        .await;
+    assert_eq!(
+        read.body,
+        serde_json::json!({ "code": true, "link": false })
+    );
+    for refused in [
+        serde_json::json!({ "code": true }),
+        serde_json::json!({ "code": "yes", "link": false }),
+        serde_json::json!({ "code": true, "link": false, "sms": true }),
+    ] {
+        let answer = world
+            .as_administrator(Method::PUT, "/email-sign-in", Some(refused))
+            .await;
+        assert_eq!(answer.status, StatusCode::UNPROCESSABLE_ENTITY);
+        assert_eq!(answer.body["code"], "request.body_invalid");
+    }
+    let read = world
+        .as_administrator(Method::GET, "/email-sign-in", None)
+        .await;
+    assert_eq!(
+        read.body,
+        serde_json::json!({ "code": true, "link": false })
+    );
 }
 
 #[tokio::test]

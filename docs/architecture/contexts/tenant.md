@@ -104,10 +104,22 @@ Settings are the tenant's policies. Other contexts read them; only the tenant co
 |---|---|---|
 | Second factor | Not required | Not required, or required |
 | Assurance levels | Two levels | See [assurance levels](#assurance-levels) |
+| Signing in by email | Neither a code nor a link | See [email sign-in policy](#email-sign-in-policy) |
 
 When a second factor is required, no sign-in to the tenant completes with one factor ([what a sign-in must reach](authentication.md#what-a-sign-in-must-reach)). Settings stored before this policy existed read as the default.
 
 The policy is set with `hodor-cli tenant second-factor --slug <slug> --policy required` (or `not-required`). Turning it on refuses every sign-in of a person who has no second factor yet, since enrolling one during a sign-in is not built; people add one first from [their security page](../hosted-pages.md#a-persons-own-factors), or an operator enrolls one with `hodor-cli totp`.
+
+### Email sign-in policy
+
+| Setting | Default | Allowed |
+|---|---|---|
+| A code by email | Off | On or off |
+| A link by email | Off | On or off |
+
+Whether people of the tenant may sign in with [a code or a link sent to their address](authentication.md#signing-in-with-a-code-or-a-link-by-email), each on its own. Turned off, the sign-in page does not offer it, and asking for one or presenting one is refused; a code or a link sent before it was turned off is no longer accepted. Settings stored before this policy existed read as the default.
+
+The policy is set with `hodor-cli tenant email-sign-in --slug <slug> --code <on|off> --link <on|off>`, or with `PUT /email-sign-in` of [the administration interface](../../api/admin-api.md#email-sign-in), and applies to requests that arrive after it.
 
 ### Group policy
 
@@ -226,6 +238,7 @@ Resolving a request starts from a slug, before any tenant is known, so it cannot
 | `hodor-cli tenant reactivate --slug <slug>` | Reactivates a suspended tenant | The tenant's new status |
 | `hodor-cli tenant second-factor --slug <slug> --policy <required\|not-required>` | Sets the [authentication policy](#authentication-policy) | The policy now in force |
 | `hodor-cli tenant group-depth --slug <slug> --depth <1 to 10>` | Sets the [group policy](#group-policy) | The depth now allowed |
+| `hodor-cli tenant email-sign-in --slug <slug> [--code <on\|off>] [--link <on\|off>]` | Sets the [email sign-in policy](#email-sign-in-policy); what is not given stays as it was | The policy now in force: `<slug> email-sign-in code <on\|off> link <on\|off>` |
 | `hodor-cli tenant scim-deprovisioning --slug <slug> --policy <deactivate\|delete>` | Sets the [SCIM deprovisioning policy](#scim-deprovisioning-policy) | The policy now in force |
 | `hodor-cli tenant assurance-levels --slug <slug> [--level <name>=<requirement> …]` | Replaces the [assurance levels](#assurance-levels); without `--level`, prints them | One line per level: its name and its requirement |
 

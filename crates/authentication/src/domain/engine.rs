@@ -1,6 +1,6 @@
 //! The engine that interprets flows.
 
-use crate::domain::authenticator::{Authenticator, Factor, StepInput, StepOutcome};
+use crate::domain::authenticator::{Authenticator, ExternalInput, Factor, StepInput, StepOutcome};
 use crate::domain::flow::{AuthFlow, Condition, FlowStep, Requirement};
 use crate::domain::transaction::{AuthTransaction, TransactionStatus};
 use hodor_kernel::{DomainError, TenantContext, Timestamp};
@@ -211,9 +211,10 @@ impl FlowEngine {
     /// # Errors
     ///
     /// Returns `Conflict` if the transaction is not in progress, `Invalid`
-    /// if the input is for another step, and whatever error the
-    /// authenticator reports when the step could not be performed at all.
-    /// In every error case the transaction is left unchanged.
+    /// if the input is for another step, `Forbidden` for an alternative the
+    /// tenant does not offer, and whatever error the authenticator reports
+    /// when the step could not be performed at all. In every error case
+    /// the transaction is left unchanged.
     pub async fn submit(
         &self,
         tenant: &TenantContext,
@@ -263,6 +264,9 @@ impl FlowEngine {
         };
 
         let authenticator = self.authenticator_of_kind(&step.key, kind)?;
+        if is_alternative {
+            Self::require_offered(authenticator, tenant).await?;
+        }
         let misbehaved = || {
             DomainError::internal(
                 "authentication.authenticator_misbehaved",
@@ -312,23 +316,28 @@ impl FlowEngine {
 
     /// Asks the current step's authenticator for a challenge, keeps it in
     /// the transaction in place of any earlier one, and returns what the
-    /// browser needs. While no step has been satisfied, `step` may also be
-    /// an alternative. The caller stores the transaction.
+    /// browser needs. While no step has been satisfied, the step may also
+    /// be an alternative. The caller stores the transaction.
+    ///
+    /// `asked` names the step and holds what the person gave with the
+    /// request, which only the step's authenticator understands.
     ///
     /// # Errors
     ///
     /// Returns `Conflict` if the transaction is not in progress, `Invalid`
-    /// if `step` is neither the current step nor an alternative that may
-    /// still be taken, or needs no challenge, and whatever error the
+    /// if the step is neither the current step nor an alternative that may
+    /// still be taken, or needs no challenge, `Forbidden` for an
+    /// alternative the tenant does not offer, and whatever error the
     /// authenticator reports.
     pub async fn challenge(
         &self,
         tenant: &TenantContext,
         flow: &AuthFlow,
         transaction: &mut AuthTransaction,
-        step: &str,
+        asked: &ExternalInput,
         now: Timestamp,
     ) -> Result<serde_json::Value, DomainError> {
+        let step = asked.step.as_str();
         transaction.require_in_progress(now)?;
         let alternative = (transaction.snapshot().current_step == 0)
             .then(|| {
@@ -338,7 +347,10 @@ impl FlowEngine {
             })
             .flatten();
         let current = match alternative {
-            Some(alternative) => alternative,
+            Some(alternative) => {
+                Self::require_offered(self.authenticator(alternative)?, tenant).await?;
+                alternative
+            }
             None => {
                 let current = flow
                     .steps
@@ -360,7 +372,7 @@ impl FlowEngine {
         };
         let made = self
             .authenticator(current)?
-            .challenge(tenant, transaction)
+            .challenge(tenant, transaction, asked)
             .await?
             .ok_or_else(|| {
                 DomainError::invalid(
@@ -368,8 +380,47 @@ impl FlowEngine {
                     format!("the `{step}` step needs no challenge"),
                 )
             })?;
-        transaction.record_challenge(made.challenge);
+        if let Some(challenge) = made.challenge {
+            transaction.record_challenge(challenge);
+        }
         Ok(made.options)
+    }
+
+    /// The keys of the alternatives of `flow` that the tenant offers, in
+    /// the order of the flow.
+    ///
+    /// # Errors
+    ///
+    /// Returns an `Invalid` error for an alternative whose authenticator is
+    /// unknown, and whatever error an authenticator reports.
+    pub async fn offered_alternatives(
+        &self,
+        tenant: &TenantContext,
+        flow: &AuthFlow,
+    ) -> Result<Vec<String>, DomainError> {
+        let mut offered = Vec::new();
+        for alternative in &flow.alternatives {
+            if self.authenticator(alternative)?.offered(tenant).await? {
+                offered.push(alternative.key.clone());
+            }
+        }
+        Ok(offered)
+    }
+
+    /// Refuses an alternative the tenant does not offer.
+    async fn require_offered(
+        authenticator: &Arc<dyn Authenticator>,
+        tenant: &TenantContext,
+    ) -> Result<(), DomainError> {
+        if authenticator.offered(tenant).await? {
+            Ok(())
+        } else {
+            Err(DomainError::new(
+                hodor_kernel::ErrorKind::Forbidden,
+                "authentication.method_not_offered",
+                "this way of signing in is not offered here",
+            ))
+        }
     }
 
     /// Passes over the steps from the current one on that are not to be

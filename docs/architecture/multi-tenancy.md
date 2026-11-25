@@ -125,6 +125,7 @@ Every case has the same shape. First something is shown to work in the tenant it
 | A sign-in in progress: its cookie and CSRF token, on every step | No such sign-in; it continues where it belongs |
 | An administrator's access token, on every operation in the OpenAPI document | Not authenticated |
 | A registration link's token and a recovery link's token | The link does not work; it still works where it belongs |
+| A code and a link to sign in by email, presented to a sign-in of the other tenant that asked for one for the same address | Rejected, as any wrong code; both still sign in where they belong |
 | The identifier of a user or of a session, asked for by the other tenant's own administrator | No such user, no such session |
 | A code of the person's authenticator application, and one of their recovery codes | Rejected, as any wrong code; both still work where they belong |
 | A passkey, in place of the identifier | Rejected: the credential is unknown there |

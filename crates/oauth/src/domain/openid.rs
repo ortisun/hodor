@@ -69,6 +69,18 @@ fn facts(method: &str) -> MethodFacts {
             knows: true,
             ..none
         },
+        // A code or a link sent to the person's mailbox counts as an
+        // identity provider does: something known. A code is a one-time
+        // password; RFC 8176 has no name for a link.
+        "email_code" => MethodFacts {
+            amr: &["otp"],
+            knows: true,
+            ..none
+        },
+        "email_link" => MethodFacts {
+            knows: true,
+            ..none
+        },
         // Anything unknown: nothing is claimed about it.
         _ => none,
     }

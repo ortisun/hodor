@@ -123,6 +123,7 @@ Many rows are only useful for a while: a session that ended, a link that was use
 | `sessions` | It was ended, or it expired, idle or absolute | 7 days | — |
 | `sign_ins` | The sign-in in progress expired | 1 day | — |
 | `verification_tokens` | The registration or recovery link was used, replaced or expired | 7 days | — |
+| `email_sign_ins` | The code or the link to sign in by email expired. A used one expires ten minutes after it was made, at the latest | 1 day | — |
 | `messages` | It was sent, failed or expired. Its contents were already erased | 30 days | — |
 | `webauthn_registrations` | A security key or passkey registration was never finished and expired | 0 | — |
 | `authorization_requests` | The request kept while the person signs in expired | 0 | — |

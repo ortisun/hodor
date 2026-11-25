@@ -124,6 +124,8 @@ Every route of the [administration interface](admin-api.md#routes) exists here a
 | `DELETE /agents/{agent_id}` | `workloads:write` |
 | `GET /scim-deprovisioning` | `users:read` |
 | `PUT /scim-deprovisioning` | `users:write` |
+| `GET /email-sign-in` | `users:read` |
+| `PUT /email-sign-in` | `users:write` |
 | `GET /webhook-event-types` | `webhooks:read` |
 | `GET /webhook-endpoints` | `webhooks:read` |
 | `POST /webhook-endpoints` | `webhooks:write` |

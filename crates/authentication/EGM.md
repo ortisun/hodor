@@ -15,7 +15,7 @@ contexts, which this crate calls through their services. The specification is
 - [src](./src/EGM.md): the public surface `hodor_authentication::api`, the
   `testing` module, and links to `application` and `domain`.
 - Port traits implemented by adapters: `AttemptStore`, `TransactionStore`,
-  `VerificationTokenStore` (implemented in
+  `VerificationTokenStore`, `EmailSignInStore` (implemented in
   `crates/adapters-postgres/src/authentication.rs`).
 - Service entry points: `AuthenticationService` (`start`, `describe`,
   `submit`, `cancel`), `AccountService` (`request_registration`,
@@ -24,10 +24,13 @@ contexts, which this crate calls through their services. The specification is
 - Domain events: `AuthenticationEvent` (`authentication.succeeded`,
   `authentication.failed`, `authentication.locked_out`,
   `authentication.registration_completed`,
-  `authentication.recovery_requested`, `authentication.password_reset`).
+  `authentication.recovery_requested`, `authentication.password_reset`,
+  `authentication.email_sign_in_sent`).
 - Extension point: the `Authenticator` trait, with the built-in
-  `IdentifierAuthenticator`, `PasswordAuthenticator`, `TotpAuthenticator` and
-  `RecoveryCodeAuthenticator`, a substitute of the second factor step.
+  `IdentifierAuthenticator`, `PasswordAuthenticator`, `TotpAuthenticator`,
+  `RecoveryCodeAuthenticator`, a substitute of the second factor step, and
+  the alternatives `PasskeyAuthenticator` and `EmailAuthenticator` (a code
+  or a link by email).
 
 ### Workspace dependencies (`Cargo.toml`)
 

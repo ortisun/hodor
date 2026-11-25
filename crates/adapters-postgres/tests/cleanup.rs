@@ -329,6 +329,46 @@ async fn links_are_removed_a_retention_after_they_were_used_replaced_or_expired(
     assert_eq!(report.removed, 3, "the link still good is kept");
 }
 
+#[tokio::test]
+async fn codes_and_links_to_sign_in_are_removed_a_day_after_they_expired() {
+    let database = TestDatabase::start().await;
+    let now = now();
+    let tenant = TenantContext::assume(TenantId::generate());
+    let mut transaction = database.app().begin(&tenant).await.expect("begin");
+    let insert = "INSERT INTO authentication.email_sign_in (tenant_id, transaction_id, method,
+                      secret_hash, identifier_key, user_id, created_at, expires_at, used_at)
+                  VALUES ($1, $2, 'email_code', $3, $3, $4, $5, $6, $7)";
+    let two_days_ago = now - Duration::days(2);
+    let rows: [(Timestamp, Option<Timestamp>); 3] = [
+        // Expired two days ago, used or not.
+        (two_days_ago, Some(two_days_ago - Duration::minutes(5))),
+        (two_days_ago, None),
+        // Expired within the retention.
+        (now - Duration::hours(1), None),
+    ];
+    for (seed, (expires, used)) in (0_u128..).zip(rows) {
+        sqlx::query(insert)
+            .bind(tenant.tenant_id().as_uuid())
+            .bind(Uuid::now_v7())
+            .bind(hash(seed + 500))
+            .bind(Uuid::now_v7())
+            .bind(expires - Duration::minutes(10))
+            .bind(expires)
+            .bind(used)
+            .execute(transaction.connection())
+            .await
+            .expect("a code");
+    }
+    transaction.commit().await.expect("commit");
+
+    let report = job(&database, ExpiredKind::EmailSignIns)
+        .run(now, 10)
+        .await
+        .expect("a pass");
+    assert_eq!(report.removed, 2, "the one expired within a day is kept");
+    assert_eq!(ExpiredKind::EmailSignIns.default_retention_days(), 1);
+}
+
 #[test]
 fn kinds_are_named_once_each() {
     let mut names: Vec<&str> = ExpiredKind::ALL.iter().map(|kind| kind.name()).collect();

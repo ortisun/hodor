@@ -15,23 +15,23 @@ use hodor_adapters_postgres::{
     Database, PgAccessListStore, PgAccessTokenRecordStore, PgAccessTokenStore, PgApiKeyStore,
     PgApplicationStore, PgAttemptStore, PgAuditLog, PgAuthorizationCodeStore,
     PgAuthorizationRequestStore, PgBundleStore, PgClientAssertionStore, PgClientStore,
-    PgConsentStore, PgDecisionLogStore, PgDeliveryStore, PgDeprovisioningPolicy, PgEndpointStore,
-    PgEngineBindingStore, PgGrantStore, PgGroupPolicy, PgGroupRepository, PgInstanceStatusStore,
-    PgInstanceStore, PgInvitationRepository, PgKeyStore, PgLinkStore, PgMessageQueue,
-    PgNativeRoleStore, PgOrganizationRepository, PgPasswordStore, PgPendingAuthorizationStore,
-    PgPolicyVersionStore, PgProviderStore, PgProvisionedGroupRepository,
-    PgProvisionedUserRepository, PgPublicationStore, PgRecoveryCodeStore, PgRefreshTokenStore,
-    PgResourceServerStore, PgRoleAssignmentStore, PgSealingStateStore, PgSessionStore,
-    PgSimulationStore, PgTenantDirectory, PgTenantRepository, PgTotpStore, PgTransactionStore,
-    PgUploadedDecisionStore, PgUserRepository, PgVerificationTokenStore, PgWebAuthnStore,
-    PgWorkloadRepository,
+    PgConsentStore, PgDecisionLogStore, PgDeliveryStore, PgDeprovisioningPolicy,
+    PgEmailSignInStore, PgEndpointStore, PgEngineBindingStore, PgGrantStore, PgGroupPolicy,
+    PgGroupRepository, PgInstanceStatusStore, PgInstanceStore, PgInvitationRepository, PgKeyStore,
+    PgLinkStore, PgMessageQueue, PgNativeRoleStore, PgOrganizationRepository, PgPasswordStore,
+    PgPendingAuthorizationStore, PgPolicyVersionStore, PgProviderStore,
+    PgProvisionedGroupRepository, PgProvisionedUserRepository, PgPublicationStore,
+    PgRecoveryCodeStore, PgRefreshTokenStore, PgResourceServerStore, PgRoleAssignmentStore,
+    PgSealingStateStore, PgSessionStore, PgSimulationStore, PgTenantDirectory, PgTenantRepository,
+    PgTotpStore, PgTransactionStore, PgUploadedDecisionStore, PgUserRepository,
+    PgVerificationTokenStore, PgWebAuthnStore, PgWorkloadRepository,
 };
 use hodor_audit::api::AuditService;
 use hodor_authentication::api::{
-    AccountService, AttemptGuard, AuthFlow, AuthenticationService, Condition, FactorService,
-    FlowEngine, IdentifierAuthenticator, InvitationContexts, InvitationService, LockoutRules,
-    PasskeyAuthenticator, PasswordAuthenticator, RecoveryCodeAuthenticator, Requirement,
-    TotpAuthenticator, WebAuthnAuthenticator,
+    AccountService, AttemptGuard, AuthFlow, AuthenticationService, Condition, EmailAuthenticator,
+    EmailSignInPorts, FactorService, FlowEngine, IdentifierAuthenticator, InvitationContexts,
+    InvitationService, LockoutRules, PasskeyAuthenticator, PasswordAuthenticator,
+    RecoveryCodeAuthenticator, Requirement, TotpAuthenticator, WebAuthnAuthenticator,
 };
 use hodor_authorization::api::{
     AccessListService, AuthorizationService, DecisionLog, EngineRegistry, EvaluationService,
@@ -577,6 +577,24 @@ fn interaction(
             tenants.clone(),
             guard.clone(),
         )));
+    // A code or a link by email: two more alternatives, each offered only
+    // where the tenant turned it on. The server queues the message; the
+    // worker delivers it.
+    let by_email = EmailSignInPorts {
+        units_of_work: units(),
+        sent: Arc::new(PgEmailSignInStore),
+        identity: identity.clone(),
+        tenants: tenants.clone(),
+        notifier: Notifier::new(Arc::new(PgMessageQueue), clock.clone()),
+        guard: guard.clone(),
+        digest: digest.clone(),
+        random: random.clone(),
+        clock: clock.clone(),
+        public_url: config.public_url.clone(),
+    };
+    engine = engine
+        .with(Arc::new(EmailAuthenticator::code(by_email.clone())))
+        .with(Arc::new(EmailAuthenticator::link(by_email)));
     // A person who registered a security key is asked for it after the
     // first factor, unless the sign-in is multi-factor already. A passkey
     // is an alternative of the flow, which is multi-factor by itself.
@@ -595,7 +613,9 @@ fn interaction(
             stronger,
         )
         .with_substitute(WebAuthnAuthenticator::KIND, RecoveryCodeAuthenticator::KIND)
-        .with_alternative(PasskeyAuthenticator::KIND, PasskeyAuthenticator::KIND);
+        .with_alternative(PasskeyAuthenticator::KIND, PasskeyAuthenticator::KIND)
+        .with_alternative(EmailAuthenticator::CODE_KIND, EmailAuthenticator::CODE_KIND)
+        .with_alternative(EmailAuthenticator::LINK_KIND, EmailAuthenticator::LINK_KIND);
     if let Some(totp) = totp_service(config, database, random.clone())? {
         engine = engine.with(Arc::new(TotpAuthenticator::new(
             totp,

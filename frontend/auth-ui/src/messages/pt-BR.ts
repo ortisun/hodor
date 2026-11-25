@@ -39,6 +39,21 @@ export const ptBR: Messages = {
   securityKeyUnavailable: "Este navegador não consegue usar chaves de segurança. Entre por outro navegador.",
   signInWithPasskey: "Entrar com uma chave de acesso",
   passkeyNoAnswer: "A chave de acesso não respondeu. Tente de novo, ou digite seu e-mail ou nome de usuário.",
+  emailMeACode: "Enviar um código por e-mail",
+  emailMeALink: "Enviar um link por e-mail",
+  typeAddressFirst: "Digite seu e-mail primeiro.",
+  emailCodeSent: (email: string) => `Se ${email} tiver uma conta aqui, enviamos um código para ele.`,
+  emailCodeLabel: "Código da mensagem",
+  emailCodeHint: "Seis dígitos. O código funciona uma única vez, por dez minutos.",
+  emailLinkSent: (email: string) =>
+    `Se ${email} tiver uma conta aqui, enviamos um link para ele. Abra-o neste navegador em até dez minutos.`,
+  sendAnotherCode: "Enviar outro código",
+  sendAnotherLink: "Enviar outro link",
+  signInLinkTitle: "Entrando",
+  signInLinkElsewhere:
+    "Este link só funciona no navegador em que foi pedido, por dez minutos. Abra-o lá, ou entre por aqui.",
+  signInLinkRefused: "Esse link não funcionou. Ele pode já ter sido usado, ou ter expirado.",
+  methodNotOffered: "Esta forma de entrar não é oferecida aqui.",
 
   registerTitle: "Criar uma conta",
   registerLead: "Informe seu endereço de email. Uma mensagem vai levar um link para você terminar.",

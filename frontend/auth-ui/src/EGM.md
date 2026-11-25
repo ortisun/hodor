@@ -29,12 +29,15 @@ its header); the pages see plain values.
   `signInAgainPath`. It renders `sign-in` as `SignInPage`,
   `register` / `recover` as `AskPage`, `complete-registration` /
   `reset-password` as `FinishPage`, `account` as `AccountPage`, `sign-out`
-  as `SignOutPage`, `security` as `SecurityPage`,
+  as `SignOutPage`, `security` as `SecurityPage`, `sign-in-link` as
+  `SignInLinkPage` (`main.tsx` reads the token and takes the fragment out of
+  the address for it),
   `provider-callback` as `ComingBackPage`, and anything else as a "page not
   found" frame with a link to sign-in.
 - `address.ts`:
   - `PAGES` / `PageName` - `sign-in`, `register`, `complete-registration`,
-    `recover`, `reset-password`, `consent`, `account`, `security`.
+    `recover`, `reset-password`, `consent`, `account`, `security`,
+    `accept-invitation`, `sign-in-link`.
   - `continuationOf(search)` - `"authorization"`, `"security"` or `null`, from
     `?continue=`; `signInAgainPath(tenant)` is
     `/t/{tenant}/account/sign-in?continue=security`.
@@ -91,6 +94,10 @@ its header); the pages see plain values.
     | `withdrawConsent(clientId)` | `DELETE /consents/{clientId}` (404 is not an error) |
     | `passkeyOptions()` | `POST /sign-in/steps/passkey/options` (answers `public_key`) |
     | `submitPasskey(answer)` | `POST /sign-in/steps/passkey` |
+    | `alternatives()` | `GET /sign-in/alternatives` (answers the keys) |
+    | `askByEmail("code" or "link", email, locale)` | `POST /sign-in/steps/email_code/send` or `/email_link/send` |
+    | `submitEmailCode(code)` | `POST /sign-in/steps/email_code` |
+    | `submitEmailLink(token)` | `POST /sign-in/steps/email_link` |
     | `askToRegister(email, locale)` | `POST /registration` |
     | `completeRegistration(token, password, displayName)` | `POST /registration/complete` |
     | `askToRecover(email, locale)` | `POST /recovery` |
