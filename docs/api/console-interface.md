@@ -131,6 +131,8 @@ Every route of the [administration interface](admin-api.md#routes) exists here a
 | `PUT /scim-deprovisioning` | `users:write` |
 | `GET /email-sign-in` | `users:read` |
 | `PUT /email-sign-in` | `users:write` |
+| `GET /pushed-authorization-requests` | `applications:read` |
+| `PUT /pushed-authorization-requests` | `applications:write` |
 | `GET /webhook-event-types` | `webhooks:read` |
 | `GET /webhook-endpoints` | `webhooks:read` |
 | `POST /webhook-endpoints` | `webhooks:write` |
