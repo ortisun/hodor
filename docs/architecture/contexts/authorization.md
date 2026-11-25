@@ -46,6 +46,8 @@ A permission names something that can be done: a kind of resource and an action 
 | `webhooks:write` | Registering and removing webhook endpoints, replacing their subscriptions, rotating their secrets, and delivering again what was set aside |
 | `access-entries:read` | Seeing the entries of the access control lists of resource servers |
 | `access-entries:write` | Granting and removing entries of access control lists |
+| `certificate-authority:read` | Seeing the tenant's [certificate authority](keys.md#the-certificate-authority-of-a-tenant): its certificate, its request and its name constraints. Listed only on an installation that turns the authority on |
+| `certificate-authority:write` | Creating the tenant's certificate authority, installing its certificate and removing it |
 
 ## Roles
 
@@ -54,7 +56,7 @@ A role is a named set of permissions. The roles of Hodor's administration are fi
 | Role | Permissions | Meant for |
 |---|---|---|
 | `tenant_administrator` | All of the above | The people who run a tenant |
-| `tenant_auditor` | `users:read`, `sessions:read`, `audit:read`, `identity-providers:read`, `keys:read`, `applications:read`, `assurance-levels:read`, `credentials:read`, `decisions:read`, `roles:read`, `bindings:read`, `policies:read`, `groups:read`, `organizations:read`, `workloads:read`, `webhooks:read`, `access-entries:read` | People who must be able to see everything and change nothing |
+| `tenant_auditor` | `users:read`, `sessions:read`, `audit:read`, `identity-providers:read`, `keys:read`, `applications:read`, `assurance-levels:read`, `credentials:read`, `decisions:read`, `roles:read`, `bindings:read`, `policies:read`, `groups:read`, `organizations:read`, `workloads:read`, `webhooks:read`, `access-entries:read`, `certificate-authority:read` | People who must be able to see everything and change nothing |
 
 A user holds a role in one tenant. Holding a role in one tenant means nothing in another: an assignment is a row of its tenant, like everything else.
 

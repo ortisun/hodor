@@ -2186,7 +2186,7 @@
             }
           },
           "409": {
-            "description": "It changed while it was being replaced: `keys.trust_domain_changed`.",
+            "description": "It changed while it was being replaced: `keys.trust_domain_changed`, or `keys.trust_domain_of_authority` for a trust domain the certificate authority added.",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -11682,6 +11682,273 @@
           }
         }
       }
+    },
+    "/certificate-authority": {
+      "get": {
+        "operationId": "getCertificateAuthority",
+        "summary": "Read the tenant's certificate authority",
+        "x-hodor-permission": "certificate-authority:read",
+        "description": "Nothing of its key is answered. Routed only when the installation sets `HODOR_CERTIFICATE_AUTHORITY` to `on` or `development`; otherwise this document does not name it.",
+        "responses": {
+          "401": {
+            "description": "No access token, or one that is not good in this tenant. The same in every case.",
+            "headers": {
+              "WWW-Authenticate": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The token is good and its user may not do this.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "200": {
+            "description": "The authority.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CertificateAuthority"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The tenant has no certificate authority: `keys.authority_not_found`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "operationId": "createCertificateAuthority",
+        "summary": "Create the tenant's certificate authority",
+        "x-hodor-permission": "certificate-authority:write",
+        "description": "A root is signed by its own key, made in a key provider that signs inside itself, and is active at once; its trust domains are added to the tenant's with the source `authority`. An intermediate answers a certificate signing request for the tenant's own root to sign. Routed only when the installation sets `HODOR_CERTIFICATE_AUTHORITY` to `on` or `development`; otherwise this document does not name it.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/NewCertificateAuthority"
+              }
+            }
+          }
+        },
+        "responses": {
+          "401": {
+            "description": "No access token, or one that is not good in this tenant. The same in every case.",
+            "headers": {
+              "WWW-Authenticate": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The token is good and its user may not do this.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "201": {
+            "description": "The authority.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CertificateAuthority"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "`keys.authority_exists`, `keys.authority_provider_unsuitable`, `keys.authority_trust_domain_taken` or `keys.too_many_trust_domains`. Nothing is stored.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "A value breaks its rule, or the body is not of the expected shape: `keys.authority_request_invalid` or `keys.authority_trust_domain_invalid`. Nothing is stored.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "operationId": "removeCertificateAuthority",
+        "summary": "Remove the tenant's certificate authority",
+        "x-hodor-permission": "certificate-authority:write",
+        "description": "The trust domains it added that still have the source `authority` are removed with it. Its key stays in the key provider. Routed only when the installation sets `HODOR_CERTIFICATE_AUTHORITY` to `on` or `development`; otherwise this document does not name it.",
+        "responses": {
+          "401": {
+            "description": "No access token, or one that is not good in this tenant. The same in every case.",
+            "headers": {
+              "WWW-Authenticate": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The token is good and its user may not do this.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "204": {
+            "description": "Removed."
+          },
+          "404": {
+            "description": "The tenant has no certificate authority: `keys.authority_not_found`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/certificate-authority:install": {
+      "post": {
+        "operationId": "installCertificateAuthorityCertificate",
+        "summary": "Install an intermediate's certificate",
+        "x-hodor-permission": "certificate-authority:write",
+        "description": "The certificate the tenant's own root signed for the authority's request. It must hold the authority's key, be an authority valid now, and carry name constraints within the authority's trust domains. The authority becomes active and its trust domains are added to the tenant's. Routed only when the installation sets `HODOR_CERTIFICATE_AUTHORITY` to `on` or `development`; otherwise this document does not name it.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CertificateAuthorityCertificate"
+              }
+            }
+          }
+        },
+        "responses": {
+          "401": {
+            "description": "No access token, or one that is not good in this tenant. The same in every case.",
+            "headers": {
+              "WWW-Authenticate": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The token is good and its user may not do this.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "200": {
+            "description": "The authority, now active.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CertificateAuthority"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The tenant has no certificate authority: `keys.authority_not_found`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "`keys.authority_not_awaiting_certificate`, `keys.authority_trust_domain_taken`, `keys.too_many_trust_domains` or `keys.authority_changed`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "`keys.authority_certificate_unsuitable`, with the reason as its detail, or a body that is not of the expected shape.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
     }
   },
   "components": {
@@ -15471,8 +15738,10 @@
             "enum": [
               "uploaded",
               "bundle_endpoint",
-              "mesh"
-            ]
+              "mesh",
+              "authority"
+            ],
+            "description": "`authority` for a trust domain the tenant's certificate authority added: it cannot be replaced, only removed."
           },
           "bundle_endpoint_url": {
             "type": "string",
@@ -15527,6 +15796,227 @@
             }
           },
           "created_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "updated_at": {
+            "type": "string",
+            "format": "date-time"
+          }
+        }
+      },
+      "NewCertificateAuthority": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "kind",
+          "trust_domains"
+        ],
+        "properties": {
+          "kind": {
+            "type": "string",
+            "enum": [
+              "root",
+              "intermediate"
+            ]
+          },
+          "trust_domains": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 10,
+            "items": {
+              "type": "string",
+              "description": "A DNS name: labels of lowercase letters, digits and `-`."
+            }
+          },
+          "common_name": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64,
+            "description": "`Hodor certificate authority` unless given."
+          },
+          "lifetime_days": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 3650,
+            "description": "A root's only: 1826 unless given."
+          },
+          "intermediate_lifetime_days": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 365,
+            "description": "The longest an intermediate it signs may live: 30 unless given."
+          }
+        }
+      },
+      "CertificateAuthorityCertificate": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "certificate"
+        ],
+        "properties": {
+          "certificate": {
+            "type": "string",
+            "description": "PEM."
+          },
+          "chain": {
+            "type": "array",
+            "maxItems": 5,
+            "items": {
+              "type": "string",
+              "description": "PEM."
+            },
+            "description": "The certificates above it, nearest first. Kept and answered as given."
+          }
+        }
+      },
+      "CertificateAuthority": {
+        "type": "object",
+        "required": [
+          "id",
+          "kind",
+          "state",
+          "trust_domains",
+          "common_name",
+          "intermediate_lifetime_days",
+          "for_development",
+          "key",
+          "name_constraints",
+          "chain",
+          "created_at",
+          "updated_at"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "kind": {
+            "type": "string",
+            "enum": [
+              "root",
+              "intermediate"
+            ]
+          },
+          "state": {
+            "type": "string",
+            "enum": [
+              "awaiting_certificate",
+              "active"
+            ]
+          },
+          "trust_domains": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "common_name": {
+            "type": "string"
+          },
+          "lifetime_days": {
+            "type": "integer",
+            "description": "A root's only."
+          },
+          "intermediate_lifetime_days": {
+            "type": "integer"
+          },
+          "for_development": {
+            "type": "boolean",
+            "description": "Made on an installation set to `development`, whose key provider may keep the key where Hodor can read it."
+          },
+          "key": {
+            "type": "object",
+            "required": [
+              "id",
+              "provider",
+              "algorithm"
+            ],
+            "properties": {
+              "id": {
+                "type": "string",
+                "format": "uuid"
+              },
+              "provider": {
+                "type": "string"
+              },
+              "algorithm": {
+                "type": "string",
+                "enum": [
+                  "ES256"
+                ]
+              }
+            }
+          },
+          "name_constraints": {
+            "type": "object",
+            "required": [
+              "permitted_uris",
+              "permitted_dns_names",
+              "excluded_ip_ranges"
+            ],
+            "properties": {
+              "permitted_uris": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                },
+                "description": "Hosts a URI below it must have."
+              },
+              "permitted_dns_names": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "excluded_ip_ranges": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "certificate_signing_request": {
+            "type": "string",
+            "description": "PEM; for an intermediate awaiting its certificate."
+          },
+          "certificate": {
+            "type": "string",
+            "description": "PEM; once active."
+          },
+          "serial_number": {
+            "type": "string",
+            "description": "Hexadecimal; once active."
+          },
+          "not_before": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "not_after": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "certificate_sha256": {
+            "type": "string"
+          },
+          "chain": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "PEM certificates above an intermediate, as given."
+          },
+          "bundle_endpoint": {
+            "type": "string",
+            "description": "Where its bundle is published; once active."
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "activated_at": {
             "type": "string",
             "format": "date-time"
           },

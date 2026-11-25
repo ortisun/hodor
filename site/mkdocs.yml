@@ -255,6 +255,7 @@ nav:
       - decisions/0055-spiffe-jwt-client-authentication.md
       - decisions/0056-forwarded-client-identity.md
       - decisions/0057-certificate-bound-access-tokens.md
+      - decisions/0062-the-certificate-authority-of-a-tenant.md
   - Contributing:
       - development/conventions.md
       - development/documentation-site.md

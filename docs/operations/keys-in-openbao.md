@@ -2,7 +2,7 @@
 
 By default the tenants' signing keys are made and used inside Hodor, wrapped under the root keys of `HODOR_SECRET_KEYS` ([the local provider](../architecture/contexts/keys.md#the-local-provider)). Anyone who holds both the database and the server's configuration then holds every key. With the **OpenBao key provider**, the signing keys are made in [OpenBao](https://openbao.org)'s Transit secrets engine instead, are never exportable, and every signature is made by OpenBao: Hodor keeps a key's name and its public key, never the key.
 
-The certificate authority of a tenant, in Milestone 12, can only be created on such a provider ([Decision 0030](../decisions/0030-optional-certificate-authority.md#what-protects-the-key)). The tenants' token signing keys can be put there too, which this page describes.
+The [certificate authority of a tenant](#the-certificate-authority-of-a-tenant) can only be created on such a provider ([Decision 0030](../decisions/0030-optional-certificate-authority.md#what-protects-the-key)). The tenants' token signing keys can be put there too, which this page describes.
 
 What stays local: the data keys that seal the tenants' secrets, and the root keys that wrap them ([secrets at rest](../security/secrets-at-rest.md)). `HODOR_SECRET_KEYS` is still required.
 
@@ -80,6 +80,20 @@ A setting that cannot be used stops the process at startup with `keys.provider_s
 Hodor calls OpenBao's address and nothing else, never through a proxy and without following redirects ([outbound HTTP](../security/outbound-http.md#what-does-not-go-through-this-client)). Plain HTTP is accepted, for a development stack; anywhere else use HTTPS, since the token and what is signed travel on that connection.
 
 On Kubernetes, the chart's `keyProvider` values set all of this, mount the service account's token and the authority's certificate, and refuse `signingKeys: openbao` without OpenBao ([installing on Kubernetes](install-on-kubernetes.md#settings)). With Docker, set the variables in `.env` ([installing with Docker](install-with-docker.md)).
+
+## The certificate authority of a tenant
+
+`HODOR_CERTIFICATE_AUTHORITY`, read by `hodor-server`, turns on the [certificate authority of a tenant](../architecture/contexts/keys.md#the-certificate-authority-of-a-tenant):
+
+| Value | Meaning |
+|---|---|
+| `off` (the default) | No authority: no route, no bundle endpoint, nothing in the administration interface's document |
+| `on` | A tenant's administrator may create the tenant's authority. Its key is made in OpenBao whenever `HODOR_OPENBAO_ADDRESS` is set, whatever `HODOR_KEY_PROVIDER` says; without OpenBao, creating one is refused with `keys.authority_provider_unsuitable` |
+| `development` | The same, and without OpenBao the key is made by the local provider, under the root keys of `HODOR_SECRET_KEYS`. Anyone holding the database and the configuration then holds the authority's key: every answer about such an authority says `for_development: true`, and its certificate's name ends in `(development)`. Never on an installation that serves anyone |
+
+`on` and `development` need `HODOR_SECRET_KEYS`: the server refuses to start without it.
+
+The authority's key is named in Transit as a version's is, `tenant-<tenant>-version-<key identifier>`, and is used through the same policy: Hodor can make it and sign with it, never read its private part, export it or delete it. Removing a tenant's authority leaves its key in OpenBao; delete it there, as OpenBao's administrator, if it is to be gone. Back the Transit keys up with OpenBao: a lost authority key cannot sign again, and the tenant's meshes then need a new authority.
 
 ## How a key is kept
 

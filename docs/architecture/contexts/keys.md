@@ -4,7 +4,7 @@ The `keys` context owns the keys a tenant's tokens are signed with and, later, t
 
 It holds no cryptography of its own. Keys are made, kept and used by a **key provider**, a port with two implementations: the local provider of `hodor-adapters-crypto`, on `aws-lc-rs` ([Decision 0008](../../decisions/0008-cryptography.md)), and the OpenBao provider of `hodor-adapters-kms`, where keys are made and used in OpenBao and never leave it ([Decision 0030](../../decisions/0030-optional-certificate-authority.md#what-protects-the-key)). This context decides which key is used when, and keeps what the provider hands back.
 
-This page specifies what Issues 50, 51, 52, 105 and 115 build. Issue-50: key sets, key versions and their states, the key provider port, the local provider and the storage. Issue-51: rotation on a schedule, the published key set, and managing keys with the command-line tool and the administration interface. Issue-52: [secrets sealed under data keys](#secrets-under-data-keys), which moves the secrets of Milestone 2 under managed keys. Issue-105: [trust domains](#trust-domains) and their bundles, which [Decision 0042](../../decisions/0042-trust-domains.md) puts in this context. Issue-115: [the OpenBao provider](#the-openbao-provider), signatures in two encodings, and [several providers at once](#choosing-the-provider).
+This page specifies what Issues 50, 51, 52, 105, 115 and 116 build. Issue-50: key sets, key versions and their states, the key provider port, the local provider and the storage. Issue-51: rotation on a schedule, the published key set, and managing keys with the command-line tool and the administration interface. Issue-52: [secrets sealed under data keys](#secrets-under-data-keys), which moves the secrets of Milestone 2 under managed keys. Issue-105: [trust domains](#trust-domains) and their bundles, which [Decision 0042](../../decisions/0042-trust-domains.md) puts in this context. Issue-115: [the OpenBao provider](#the-openbao-provider), signatures in two encodings, and [several providers at once](#choosing-the-provider). Issue-116: [the certificate authority of a tenant](#the-certificate-authority-of-a-tenant), which [Decision 0062](../../decisions/0062-the-certificate-authority-of-a-tenant.md) puts in this context.
 
 ## Key sets and key versions
 
@@ -207,6 +207,7 @@ An installation may use both providers at once. `KeyProviders`, in this context,
 
 - **new signing keys** are made by the provider the operator chose, `HODOR_KEY_PROVIDER`: `local` (the default) or `openbao`;
 - **new data keys** are always made by the local provider: the policy Hodor holds in OpenBao allows signing and nothing else, and the root keys of [secrets at rest](../../security/secrets-at-rest.md) stay as they are ([Decision 0030](../../decisions/0030-optional-certificate-authority.md#what-protects-the-key));
+- **the key of a [certificate authority](#the-certificate-authority-of-a-tenant)** is made by OpenBao whenever OpenBao is configured, whatever `HODOR_KEY_PROVIDER` says, and by the local provider otherwise, which only an installation of the authority for development accepts. Each provider says whether it **signs inside itself**: whether its keys are made and used where Hodor cannot read them. OpenBao does, the local provider does not;
 - **every version is used by the provider whose name it was stored with**, and by no other. A version whose provider is not configured is refused with `keys.provider_not_configured`. Nothing ever falls back: when OpenBao does not answer, a version made there does not sign, `keys.provider_unavailable`, and no key is made elsewhere instead, so a tenant whose signing keys are in OpenBao issues no token until it answers again.
 
 Changing `HODOR_KEY_PROVIDER` changes where new keys are made, never where a version is used. An installation that moves its signing keys into OpenBao sets it to `openbao` and [rotates](#rotating-and-revoking-by-hand) each tenant's keys, or waits for the schedule to replace them; one that moves them back sets it to `local` and keeps OpenBao's address while a version made there may sign. The server, the worker and the command-line tool must have the same settings: the worker makes keys the server signs with.
@@ -267,20 +268,21 @@ A workload in a service mesh, or under SPIRE, is named by a SPIFFE identifier, `
 |---|---|
 | Identifier | A `TrustDomainId` |
 | Name | The trust domain's name, as it appears in a SPIFFE identifier: 1 to 255 characters, each a lowercase letter `a` to `z`, a digit, `.`, `-` or `_` (the SPIFFE identifier specification, section 2.1). Never changes |
-| Source | Where its bundle comes from: `uploaded`, `bundle_endpoint` or `mesh` (below) |
+| Source | Where its bundle comes from: `uploaded`, `bundle_endpoint`, `mesh` or `authority` (below) |
 | Bundle endpoint | For `bundle_endpoint`: the address of its SPIFFE bundle endpoint |
 | Bundle | For `uploaded` and `bundle_endpoint`: the bundle in force, with its sequence number and refresh hint if it has them, and when it last changed. `mesh` has none |
 | Refresh | For `bundle_endpoint`: when the bundle was last fetched, when it is fetched next, and, while fetching fails, since when and why |
 | Created at, updated at | |
 | Version | Incremented on every change, for optimistic locking |
 
-**The three sources.**
+**The four sources.**
 
 | Source | The bundle | What trusting it means |
 |---|---|---|
 | `uploaded` | Given by an administrator, and replaced only by an administrator | The administrator keeps it current, by hand, when the trust domain's authorities change |
 | `bundle_endpoint` | Fetched from the trust domain's SPIFFE bundle endpoint (the `https_web` profile of SPIFFE Federation) when the trust domain is saved, and fetched again by the worker | The bundle follows the authorities' rotation without anyone acting |
 | `mesh` | None | The mesh in front of Hodor checked the workload's certificate itself. Only the identity a trusted proxy forwards can name such a trust domain ([an identity forwarded by a proxy](oauth.md#an-identity-forwarded-by-a-proxy)); no JWT-SVID or certificate can be checked against it, since it has no bundle, and a JWT-SVID of it is refused |
+| `authority` | The bundle of the tenant's [certificate authority](#the-certificate-authority-of-a-tenant), added when the authority becomes active | Hodor trusts what the tenant's own authority signed, without anyone uploading its bundle |
 
 Rules:
 
@@ -289,6 +291,7 @@ Rules:
 - **The name is fixed.** Changing a trust domain replaces its source and its bundle; a trust domain of another name is added, and the old one removed.
 - **Saving checks the bundle first.** Adding or replacing an `uploaded` trust domain reads the bundle given; adding or replacing a `bundle_endpoint` one checks the address and fetches the bundle once. If the bundle does not read, or the address may not be called, or the fetch fails, the request is refused with its reason and nothing is stored: a replaced trust domain keeps the source and the bundle it had.
 - **Removing a trust domain** removes its bundle. A workload of that trust domain is no longer trusted from the next request.
+- **A trust domain of source `authority`** is added and removed by the [certificate authority](#the-certificate-authority-of-a-tenant) alone. Adding one with that source, or replacing one that has it, is refused with `keys.trust_domain_source_invalid` and `keys.trust_domain_of_authority`; removing one is allowed, and stops Hodor trusting that trust domain. The worker never fetches it.
 
 ### Reading a bundle
 
@@ -391,11 +394,11 @@ These go to the audit log. Every change of a trust domain or of the bundle it tr
 
 | Event type | When | Fields |
 |---|---|---|
-| `keys.trust_domain_added` | A trust domain was added | `trust_domain_id`, `name`, `source`, and for a bundle its summary |
+| `keys.trust_domain_added` | A trust domain was added, by an administrator or by the certificate authority | `trust_domain_id`, `name`, `source`, and for a bundle its summary |
 | `keys.trust_domain_replaced` | An administrator replaced its source or bundle | `trust_domain_id`, `name`, `source`, and for a bundle its summary |
 | `keys.trust_bundle_refreshed` | The worker fetched a bundle that differs from the one in force, and it replaced it | `trust_domain_id`, `name`, the new bundle's summary, and the sequence it replaced |
 | `keys.trust_bundle_refresh_failed` | A fetch failed, or its bundle was refused, after the last one had read | `trust_domain_id`, `name`, `reason`, the code of the refusal |
-| `keys.trust_domain_removed` | A trust domain was removed | `trust_domain_id`, `name` |
+| `keys.trust_domain_removed` | A trust domain was removed, by an administrator or with the certificate authority | `trust_domain_id`, `name` |
 
 A bundle's summary is `bundle_sha256`, the SHA-256 of the bundle as it is kept, in hexadecimal; `sequence`; and the number of `x509_authorities` and `jwt_authorities` it holds. No event carries the address of a bundle endpoint, which can hold a token in its query, or the keys themselves, which the trust domain's row holds.
 
@@ -408,6 +411,139 @@ A bundle's summary is `bundle_sha256`, the SHA-256 of the bundle as it is kept, 
 | `DestinationCheck` (kernel) | Whether a bundle endpoint could be called now |
 | `HttpClient` (kernel) | Fetch a bundle; the guarded client |
 | `Digest` (kernel) | The SHA-256 of a bundle, for events |
+
+## The certificate authority of a tenant
+
+A tenant may have a certificate authority of its own, which signs the intermediate certificates of its service meshes so that every mesh of the tenant trusts one root ([Decision 0030](../../decisions/0030-optional-certificate-authority.md)). This section specifies the authority itself: how it is turned on, its key, its certificate and name constraints, its published bundle and how Hodor trusts it. Signing the meshes' intermediates is Issue-117. Why it is built this way is [Decision 0062](../../decisions/0062-the-certificate-authority-of-a-tenant.md).
+
+### Turning it on
+
+| Setting of `hodor-server` | Default | Meaning |
+|---|---|---|
+| `HODOR_CERTIFICATE_AUTHORITY` | `off` | `off`: the authority does not exist. `on`: a tenant's administrator may create the tenant's authority, on a key provider that signs inside itself. `development`: the same, and the local key provider is accepted, for a machine of one's own |
+
+- **Off is nothing.** With `off`, no operation of the authority is routed, the administration interface's OpenAPI document names none, no bundle endpoint is served, and the console does not list the authority's permissions among what a person may do. A tenant's discovery document never mentions the authority, on or off.
+- **The keys context is needed.** With `on` or `development` and no `HODOR_SECRET_KEYS`, the server refuses to start.
+- **A tenant turns it on by creating it**, and off by removing it. A tenant without an authority sees no change.
+
+### What an authority is
+
+| Field | Meaning |
+|---|---|
+| Identifier | An `AuthorityId` |
+| Kind | `root`: its certificate is signed by its own key. `intermediate`: its certificate is signed by a root the tenant keeps outside Hodor |
+| State | `awaiting_certificate`: an intermediate whose certificate has not been installed. `active`: it has its certificate |
+| Trust domains | The trust domains it may sign for: 1 to 10 names, each a DNS name (below), no two the same |
+| Common name | The common name of its certificate's subject: 1 to 64 characters, `Hodor certificate authority` unless given. Under `development`, ` (development)` is added to it |
+| Lifetime | For a root: how long its certificate is valid, 1 to 3650 days, 1826 (five years) unless given |
+| Intermediate lifetime | The longest an intermediate it signs may live (Issue-117): 1 to 365 days, 30 unless given, and shorter than the root's own lifetime |
+| For development | Whether it was made under `development`. Every answer about the authority says so |
+| Key | The identifier its key was made for, the provider that made it, the material that provider handed back, and its public key: ECDSA P-256 |
+| Certificate signing request | For an intermediate: the request Hodor made, in DER |
+| Certificate | Once active: its certificate in DER, its serial number, its validity, and its SHA-256 |
+| Chain | For an intermediate: the certificates above it up to the tenant's root, as the administrator gave them, kept and answered as given |
+| Created at, activated at, updated at | |
+| Version | Incremented on every change |
+
+Rules:
+
+- **One authority per tenant** (`keys.authority_exists`).
+- **A trust domain of an authority is a DNS name**: 1 to 253 characters, labels of 1 to 63 lowercase letters, digits and `-`, not beginning or ending with `-`, separated by single dots (`keys.authority_trust_domain_invalid`). The SPIFFE rule also allows `_`, which a DNS name constraint cannot hold.
+- **No trust domain of the authority may be one the tenant already trusts** from another source (`keys.authority_trust_domain_taken`): it is checked when the authority is created and again when it becomes active.
+- **The key signs inside its provider.** The key is made by OpenBao whenever OpenBao is configured ([choosing the provider](#choosing-the-provider)). When the provider that would make it does not sign inside itself, creating the authority is refused with `keys.authority_provider_unsuitable`, unless the installation is set to `development`.
+- **The authority's key is not a version of a key set.** It is never published in the tenant's key set, never signs a token and is never rotated. In OpenBao it is named as a version is, `tenant-<tenant>-version-<key identifier>`, and the provider refuses its material for any other tenant or identifier, as it does for every version.
+
+### Its certificate
+
+Hodor writes the authority's certificate, or the request for it, and asks the key provider to sign the part to be signed, in the DER encoding. The key never leaves the provider.
+
+| Part | Value |
+|---|---|
+| Subject | `O=Hodor, CN=<common name>`. A root's issuer is the same |
+| Serial number | 16 random bytes, positive |
+| Validity | From one minute before it is made, for its lifetime |
+| Public key | The authority's ECDSA P-256 key |
+| Signature | ECDSA with SHA-256 |
+| Basic constraints | Critical: an authority, with a path length of one: it signs the intermediates of meshes, which sign workloads, and nothing deeper |
+| Key usage | Critical: `keyCertSign` and `cRLSign` |
+| Subject key identifier | Derived from the public key |
+| Name constraints | Critical: below |
+
+**Name constraints.** For each trust domain `T` of the authority, the permitted subtrees hold the URI host `T` and the DNS name `T`; the excluded subtrees hold every IPv4 and every IPv6 address, `0.0.0.0/0` and `::/0`. A certificate below the authority is then valid, for a verifier that honors name constraints, only when every URI it names has the host `T` of one of its trust domains, as `spiffe://T/…` does, every DNS name it names is `T` or ends in `.T`, as Linkerd's identities `….identity.linkerd.T` do, and it names no address.
+
+**A root** is made and signed at once, and is active from then on.
+
+**An intermediate** starts awaiting its certificate. Its certificate signing request (PKCS#10) names the same subject, public key, basic constraints, key usage and name constraints, and is signed by the authority's key. The tenant's root signs it outside Hodor; an administrator then installs the certificate, with the chain above it if they wish. Hodor takes it only if it reads as a certificate, holds the authority's public key, is an authority whose key usage allows signing certificates, is valid now, and carries name constraints whose permitted URI subtrees are all trust domains of the authority, whose permitted DNS subtrees are all trust domains of the authority or names under them, and that permit nothing of another kind (`keys.authority_certificate_unsuitable`, with the reason as its detail). The chain is read as certificates and kept as given; Hodor's trust starts at the authority's own certificate.
+
+### Checking a path under the authority
+
+Verifiers that honor URI constraints, such as Go's, which Istio, Linkerd and SPIRE use, and OpenSSL's, refuse a certificate below the authority for a name outside its trust domains. Go reads a URI constraint without a leading `.` as the host and its subdomains; OpenSSL and Hodor read it as the host alone.
+
+`rustls-webpki`, which Hodor checks certificate paths with, refuses every certificate naming a URI below an authority that constrains URIs, since it does not read such constraints. Hodor's own chain checking, `check_path` in `hodor-adapters-crypto`, therefore checks a path in two parts:
+
+1. **`rustls-webpki`** builds and checks the path up to one of the anchors given: every signature, every certificate's validity, that each certificate above the first is an authority within its path length, the client authentication usage of the first when it names usages, and the DNS and address constraints. An anchor's URI subtrees are left out of what it is given, and kept aside.
+2. **`UriConstraints`** checks every URI of every certificate of the path below the anchor against the anchor's URI subtrees: each URI must have a host, a permitted subtree must allow it when there are any, and no excluded subtree may name it. A subtree that begins with `.` allows the subdomains of what follows; any other allows that host alone.
+
+The check of a certificate a trusted proxy forwards, at the token, introspection and revocation endpoints, is `check_path` ([an identity forwarded by a proxy](oauth.md#an-identity-forwarded-by-a-proxy)): with the authorities of the identity's trust domain as anchors, a workload certificate under the tenant's authority is accepted for `spiffe_x509` and `tls_client_auth`, and one for a name outside its trust domains is refused.
+
+A certificate below the anchor that constrains URIs itself is refused by the first part. Intermediates the authority signs (Issue-117) therefore carry its DNS and address constraints, narrowed if asked, and no URI constraint: the authority's own bind every certificate below it.
+
+### Its bundle
+
+The authority's bundle is published at `GET /t/{tenant}/certificate-authority/bundle`, without authentication, as a SPIFFE bundle endpoint of the `https_web` profile:
+
+```json
+{
+  "keys": [
+    { "use": "x509-svid", "kty": "EC", "crv": "P-256", "x": "…", "y": "…", "x5c": ["MIIB…"] }
+  ],
+  "spiffe_sequence": 1795622400,
+  "spiffe_refresh_hint": 300
+}
+```
+
+- The one element is the authority's certificate, in base64 of its DER encoding, with its public key.
+- `spiffe_sequence` is the moment the authority became active, in seconds since 1970, so that the bundle of an authority made after another one is removed never goes back.
+- The answer carries `content-type: application/json` and `Cache-Control: public, max-age=300`. It is `404` when the installation is not set to `on` or `development`, and when the tenant has no active authority.
+- The bundle is the same for each of the authority's trust domains: a mesh or a SPIRE server names this address for each of them.
+
+**Hodor trusts it.** When the authority becomes active, a [trust domain](#trust-domains) of source `authority` is added for each of its trust domains, holding this bundle. Every check that reads a trust domain's bundle then trusts what the authority signed. Removing the authority removes those of its trust domains that still have the source `authority`.
+
+### Use cases of the authority
+
+`AuthorityService`, given only when the installation turns the authority on:
+
+| Use case | What it does |
+|---|---|
+| Create | Checks the request and the trust domains, has the key made, and for a root signs its certificate and adds its trust domains; for an intermediate signs its request |
+| Read | The tenant's authority |
+| Install the certificate | For an intermediate awaiting it: checks the certificate and the chain, makes the authority active and adds its trust domains |
+| Remove | Removes the authority and the trust domains of source `authority` it added. Its key stays in the provider: Hodor's policy in OpenBao cannot delete a key |
+| Bundle | The bundle of the tenant's active authority |
+
+The administration interface offers creating, reading, installing the certificate and removing; see [the certificate authority](../../api/admin-api.md#the-certificate-authority). They need `certificate-authority:read` and `certificate-authority:write`, which only the authority's operations use: the tenant auditor holds the first and the administrator both.
+
+### Events of the authority
+
+| Event type | When | Fields |
+|---|---|---|
+| `keys.authority_created` | An authority was created | `authority_id`, `kind`, `trust_domains`, `key_id`, `provider`, `for_development` |
+| `keys.authority_signed` | The authority's key signed something: its own certificate or its certificate signing request | `authority_id`, `signed` (`certificate` or `certificate_signing_request`), `signed_sha256`, the SHA-256 of the part signed, in hexadecimal; `serial_number` for a certificate; `trust_domains` |
+| `keys.authority_activated` | An authority got its certificate: a root when it was made, an intermediate when its certificate was installed | `authority_id`, `serial_number`, `certificate_sha256`, `not_after` |
+| `keys.authority_removed` | An authority was removed | `authority_id`, `key_id` |
+
+Every signature is recorded in the transaction that keeps what was signed. The trust domains the authority adds and removes record their own events. No event carries a key, a certificate or a request.
+
+### Ports of the authority
+
+| Port | Purpose |
+|---|---|
+| `AuthorityStore` | Store the tenant's authority: insert it, read it and lock it while it changes, update it if it still has the version it was read at, remove it |
+| `CertificateWriter` | Write the part to be signed of the authority's certificate and of its certificate signing request, put a signature on it, and read a certificate an administrator installs. Implemented by `X509Certificates` in `hodor-adapters-crypto`, which writes with `rcgen` and reads with `x509-parser` |
+| `KeyProvider` | Make the authority's key, sign with it in the DER encoding, and say whether it signs inside itself |
+| `TrustDomainStore` | Add and remove the trust domains of source `authority` |
+| `Digest` (kernel) | SHA-256 of what is signed, for events |
+| `Clock` | The times of the authority |
 
 ## Storage
 
@@ -449,7 +585,7 @@ A tenant table under row-level security, with at most one row per tenant: no row
 |---|---|---|
 | `tenant_id`, `id` | `uuid` | Primary key |
 | `name` | `text` | 1 to 255 of `a`–`z`, `0`–`9`, `.`, `-` and `_`; unique per tenant, and only per tenant |
-| `source` | `text` | `uploaded`, `bundle_endpoint` or `mesh` |
+| `source` | `text` | `uploaded`, `bundle_endpoint`, `mesh` or `authority` |
 | `bundle_endpoint_url` | `text` | 1 to 1000 characters; set exactly for `bundle_endpoint` |
 | `bundle` | `text` | The bundle as it is kept, at most 65536 bytes; null exactly for `mesh` |
 | `bundle_sequence`, `bundle_refresh_hint_seconds` | `bigint` | The bundle's `spiffe_sequence` and `spiffe_refresh_hint`, if it has them; never negative |
@@ -461,6 +597,27 @@ A tenant table under row-level security, with at most one row per tenant: no row
 | `version` | `integer` | |
 
 A tenant table under row-level security. A partial index on `next_refresh_at` of the `bundle_endpoint` rows serves the worker's search across tenants, through its platform connection; each trust domain is then leased and recorded inside its tenant.
+
+### `keys.certificate_authority`
+
+| Column | Type | Notes |
+|---|---|---|
+| `tenant_id` | `uuid` | Primary key: one authority per tenant |
+| `id` | `uuid` | |
+| `kind`, `state` | `text` | `root` or `intermediate`; `awaiting_certificate` or `active`. Only an intermediate awaits its certificate |
+| `trust_domains` | `text[]` | 1 to 10 DNS names |
+| `common_name` | `text` | 1 to 64 characters |
+| `lifetime_days`, `intermediate_lifetime_days` | `integer` | 1 to 3650, set exactly for a root; 1 to 365 |
+| `for_development` | `boolean` | |
+| `key_id`, `provider`, `key_material` | `uuid`, `text`, `bytea` | The key, as for a key version |
+| `public_p256_x`, `public_p256_y` | `bytea` | 32 bytes each |
+| `certificate_signing_request` | `bytea` | Set exactly for an intermediate |
+| `certificate`, `serial_number`, `not_before`, `not_after`, `certificate_sha256` | `bytea`, `text`, `timestamptz`, `timestamptz`, `text` | Set exactly when active |
+| `chain` | `bytea[]` | The certificates above an intermediate, as given; empty for a root |
+| `created_at`, `activated_at`, `updated_at` | `timestamptz` | `activated_at` set exactly when active |
+| `version` | `integer` | |
+
+A tenant table under row-level security. The application role may insert, read, update and delete its rows: removing the authority removes its row, and the audit log keeps what it signed.
 
 ## Not built yet
 
@@ -477,4 +634,5 @@ A tenant table under row-level security. A partial index on `next_refresh_at` of
 | The cloud's key management services: Amazon Web Services, Google Cloud, Azure Key Vault (Requirement-Key-03) | Phase 9, on the same port and the same contract |
 | Data keys, and the root keys of secrets at rest, in OpenBao or a key management service | Not scheduled ([Decision 0030](../../decisions/0030-optional-certificate-authority.md#what-protects-the-key)) |
 | Showing which provider holds a version, in the administration interface and `hodor-cli keys` | When someone asks |
-| Signing in the DER encoding through `KeyService` | Issue-116, the certificate authority of a tenant |
+| Signing intermediates with the certificate authority, withdrawing them, and `hodor-cli authority sign` | Issue-117 |
+| Managing the certificate authority from the command-line tool and the console | Not scheduled |

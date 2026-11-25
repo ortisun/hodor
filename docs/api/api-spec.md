@@ -144,6 +144,7 @@ The paths are relative to the tenant, `https://{host}/t/{slug}`, whose issuer is
 | `GET /.well-known/openid-configuration` | Provider metadata (built: [discovery](../architecture/contexts/oauth.md#discovery)) | OpenID Connect Discovery |
 | `GET /.well-known/oauth-authorization-server` | Authorization server metadata, the same document (built) | RFC 8414 |
 | `GET /oauth2/jwks` | Public signing keys (built: [the published key set](../architecture/contexts/keys.md#the-published-key-set)) | RFC 7517 |
+| `GET /certificate-authority/bundle` | The bundle of the tenant's certificate authority, served only when the installation turns the authority on (built: [its bundle](../architecture/contexts/keys.md#its-bundle)) | SPIFFE Federation, `https_web` profile |
 | `GET, POST /oauth2/authorize` | Authorization endpoint, with [request objects](../architecture/contexts/oauth.md#request-objects) by value | RFC 6749, OpenID Connect Core, RFC 9101 |
 | `GET /oauth2/authorize/resume` | Where the hosted pages send the browser after a sign-in, to go on with the pending authorization request ([the OAuth context](../architecture/contexts/oauth.md#signing-in-and-coming-back)) | — |
 | `POST /oauth2/par` | Pushed authorization request | RFC 9126 |
