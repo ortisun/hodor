@@ -38,7 +38,7 @@ Rules of the fan-out:
 
 - **A tenant only ever receives its own events.** The handler runs in the event's tenant, and reads only that tenant's endpoints, under row-level security. A delivery belongs to the tenant of its endpoint, which is the tenant of its event.
 - **Only the types of [the catalog](#which-events-are-published) are published.** An event of any other type, the context's own events among them, leads to no delivery.
-- **An endpoint registered after an event happened does not receive it.** Deliveries are made when the event is dispatched, from the subscriptions of that moment.
+- **An endpoint receives an event only if it was subscribed to the event's type when the event happened.** An event is dispatched a little after it happened, sometimes after an endpoint was registered or given the type, so each subscription keeps the moment it began, `since`, and the handler skips an endpoint whose subscription began after the event. Replacing an endpoint's event types keeps the moment of the types it already had; a type added is subscribed from the moment of the change.
 - **The same event never makes two deliveries to one endpoint.** A delivery is unique per endpoint and event.
 
 ## Which events are published
@@ -244,7 +244,7 @@ No event carries an address or a secret: an address can hold a token of the rece
 
 | Port | Purpose |
 |---|---|
-| `EndpointStore` | Store a tenant's endpoints with their subscriptions and sealed secrets; find the endpoints subscribed to a type; lock an endpoint while its leases are counted |
+| `EndpointStore` | Store a tenant's endpoints with their subscriptions and sealed secrets; find the endpoints subscribed to a type at the moment an event happened; lock an endpoint while its leases are counted |
 | `DeliveryStore` | Store a tenant's deliveries, unique per endpoint and event; take one for a lease, skipping one another worker holds; count an endpoint's leased deliveries; record what an attempt did if the delivery is still as it was leased |
 | `DueDeliveries` | Find the deliveries that are due, across tenants. The one port not bound to a tenant; only the worker is given it |
 | `HmacSha256` | The HMAC-SHA256 of a message under a key, implemented by `hodor-adapters-crypto` |
@@ -271,6 +271,7 @@ Four tables of the schema `webhooks`, each under row-level security with `tenant
 | Column | Type | Notes |
 |---|---|---|
 | `tenant_id`, `endpoint_id`, `event_type` | `uuid`, `uuid`, `text` | Primary key; removed with the endpoint. Indexed by tenant and type, for the fan-out |
+| `since` | `timestamptz` | When the endpoint began to receive this type: when it was registered with it, or when it was given it. Kept when the endpoint's types are replaced and this one stays (migration 0077) |
 
 ### `webhooks.signing_secret`
 
