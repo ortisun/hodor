@@ -277,6 +277,30 @@ The application is played by the script, as in [the demonstration of Milestone 4
 
 It ends with `The demonstration of Milestone 7 passed.` It can be run again and again, and runs in continuous integration after the demonstration of Milestone 5 and before that of Milestone 6, whose second worker removes the delivered messages this one reads. The variables of [the first demonstration](#the-demonstration) tell it where the stack is.
 
+## The demonstration of Milestone 8
+
+[Milestone 8](../product/epics.md#milestone-8-workloads-agents-and-webhooks) gives the services and agents of a tenant identities of their own, with clients, API keys and roles, lets an agent act on a person's behalf through token exchange, and tells other systems what happens in a tenant through signed webhooks. Its demonstration plays an administrator, an operator, a service, an agent, a person and a receiver of webhooks:
+
+```bash
+python3 deploy/demo/workloads.py
+```
+
+| Step | What it shows |
+|---|---|
+| Two tenants, and their administrators | Two tenants, each with a signing key and a first administrator made with the command-line tool |
+| A service account, its client, its key and its role | Through the administration interface: a Payroll resource server whose `approver` role may approve invoices, a service account owned by a person of the tenant, a client of Payroll that acts as it, and the role given to it. With `hodor-cli service-account key create`, an API key for Payroll with the scope `authz:evaluate`, printed once and never listed again |
+| Evaluated with its token and with its key | The client gets a token by client credentials, which names the service account in `sub` with `principal_kind`. The Authorization API allows the service account to approve an invoice, asked with that token and again with the key; the same key with one character changed is refused |
+| An agent acts for a person | An agent, with a client allowed the token exchange grant and one exchange rule: a token for the agent's own interface, the assistant, may be exchanged for one for Payroll. A person signs in to the assistant, which gets a token with `payroll:read`. The agent's client exchanges the person's token, with the agent's own token as the actor, for a token for Payroll: checked against the tenant's key set, it names the person in `sub` and the agent in `act`, and comes without a refresh token |
+| A wider exchange refused | Asking for a scope the person's token does not hold is refused with `invalid_scope`, and asking for an audience no rule allows with `invalid_target` |
+| A webhook endpoint | With `hodor-cli webhook add`, an endpoint at the stack's receiver, `webhook-receiver`, subscribed to `session.started`; its secret is printed once, and `hodor-cli webhook list` never shows it. The person signs in again and the receiver gets the event. The script checks its `webhook-signature` with the secret, as Standard Webhooks say, and reads the tenant and the session in its body |
+| Retries, set aside, delivered again | The receiver is stopped. The next sign-in's delivery is tried three times and set aside, as the administration interface and `hodor-cli webhook deliveries --status set_aside` show. The receiver is started again, the administration interface delivers the delivery again, and the event arrives with the same `webhook-id`, signed |
+| Tenants apart | The second tenant's Authorization API and administration interface refuse the first tenant's key, and the second tenant's administrator finds neither the endpoint nor its deliveries |
+| The audit log | The log of the first tenant holds the key made, the exchange done by the agent for the person, the endpoint registered, the delivery set aside and the request to deliver it again |
+
+The development stack has what this needs: `webhook-receiver`, a receiver of webhooks that keeps what it gets and shows it on its own port, named in `HODOR_OUTBOUND_DEVELOPMENT_HOSTS` of the server and the worker so that it may be called over plain HTTP; and a worker that waits one second after a first failed attempt and sets a delivery aside after three, so that the retries take seconds rather than hours. Nowhere real has either.
+
+It ends with `The demonstration of Milestone 8 passed.` It can be run again and again, and runs in continuous integration after the demonstration of Milestone 7 and before that of Milestone 6, whose second worker removes the delivered messages this one reads. The variables of [the first demonstration](#the-demonstration) tell it where the stack is, and `HODOR_WEBHOOK_RECEIVER_URL` where the receiver is, `http://localhost:9600` unless given.
+
 ## Stop
 
 Stop the stack and delete its data:

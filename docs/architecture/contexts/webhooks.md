@@ -4,7 +4,7 @@ The `webhooks` context tells other systems what happened in a tenant. A tenant r
 
 The context is a base context: it depends on the kernel and on nothing else. Like the audit log, it hears the events of every other context from the outbox, and no context knows it exists ([Decision 0032](../../decisions/0032-webhooks.md)).
 
-This page specifies Issue-96. Managing endpoints from the console and the command-line tool comes with Issue-97.
+This page specifies Issue-96, and Issue-97 for [the command-line tool](#command-line-tool). The admin console manages endpoints from [its webhooks screens](../admin-console.md#screens).
 
 ## How an event reaches an endpoint
 
@@ -206,7 +206,24 @@ A worker sends many deliveries at once, 32 by default, each on its own. An endpo
 | Fan out an event | The outbox handler: one delivery per subscribed endpoint, inside the dispatcher's transaction |
 | Deliver what is due | The worker's loop: lease, sign, send, record |
 
-The administration interface offers the first seven; see [webhooks](../../api/admin-api.md#webhooks). They need the permissions `webhooks:read` and `webhooks:write`, and the auditor holds `webhooks:read`.
+The administration interface offers the first seven; see [webhooks](../../api/admin-api.md#webhooks). They need the permissions `webhooks:read` and `webhooks:write`, and the auditor holds `webhooks:read`. The admin console and the command-line tool offer them too.
+
+### Command-line tool
+
+What an administrator does through the administration interface, an operator can do with `hodor-cli webhook`, against the database, naming the tenant by its slug. Each command prints one line per thing it made or found, and acts as the system in the audit log.
+
+| Command | Does |
+|---|---|
+| `hodor-cli webhook event-types` | Prints the catalog, one event type a line |
+| `hodor-cli webhook add --tenant <slug> --url <address> --event <type> [--event <type> ...] [--description <text>]` | Registers an endpoint, and prints `created <id> <address>` and then `secret <whsec_…>`, once |
+| `hodor-cli webhook list --tenant <slug>` | Prints `<id> <address> <event type>,<event type>…` for every endpoint, oldest first |
+| `hodor-cli webhook subscribe --tenant <slug> --id <id> --event <type> [--event <type> ...]` | Replaces the event types an endpoint receives, and prints `subscribed <id> <event type>,<event type>…` |
+| `hodor-cli webhook rotate-secret --tenant <slug> --id <id> [--overlap-hours <hours>]` | Rotates an endpoint's secret, the previous one signing for 24 hours unless given, and prints `secret <whsec_…>`, once, and `previous-until <time>` |
+| `hodor-cli webhook remove --tenant <slug> --id <id>` | Removes an endpoint with its secrets and deliveries, and prints `removed <id>` |
+| `hodor-cli webhook deliveries --tenant <slug> [--endpoint <id>] [--status pending\|delivered\|set_aside]` | Prints `<delivery id> <status> <attempts> <event type> <event id>` for the latest 100 deliveries, newest first |
+| `hodor-cli webhook redeliver --tenant <slug> --delivery <id>` | Delivers a set-aside delivery again, and prints `pending <delivery id>` |
+
+`add` and `rotate-secret` need `HODOR_SECRET_KEYS`, as the server has them, to seal the secret; the other commands do not. `add` checks the address as the server does, with the development exception of `HODOR_OUTBOUND_DEVELOPMENT_HOSTS` when it is set. A refusal is the same as through the administration interface, with the same code, and the command exits with a status that is not zero.
 
 ### Events
 
@@ -308,7 +325,6 @@ Settings of `hodor-worker`; see [local setup](../../development/local-setup.md#h
 
 | Item | Planned in |
 |---|---|
-| Managing endpoints from the command-line tool and the console, and the demonstration | Issue-97 |
 | Turning an endpoint off without removing it, and turning it off by itself after it keeps failing | Not scheduled |
 | A test request sent on demand (`POST /webhooks/{id}:test` in [the outline](../../api/api-spec.md)) | Not scheduled |
 | Every event type in the catalog; subscribing to every type at once | When a receiver needs them |
