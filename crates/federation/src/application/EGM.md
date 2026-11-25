@@ -80,7 +80,8 @@ The value types that go with them:
   - `saml_service_provider(...)` returns a `hodor_saml::ServiceProvider` built from those two addresses.
   - `MAX_SAML_POSTED_BYTES` equals `hodor_saml::MAX_POSTED_BYTES`.
 - `AuthorizationRequest` (`openid.rs`) has the fields `url`, `state`, `nonce` and `code_verifier: Secret<String>`.
-- `VerifiedIdentity` (`openid.rs`) has the fields `subject`, `email`, `email_verified`, `name` and `locale`.
+- `VerifiedIdentity` (`openid.rs`) has the fields `subject`, `email`, `email_verified`, `name`, `locale` and `claims: StandardClaims`, the person's standard claims as the provider gave them, not yet checked.
+- Crate-private: `standard_claims_of(token)` (`openid.rs`) reads the standard claims of an ID token by their own names.
 
 ## Invariants
 
@@ -147,12 +148,14 @@ Adapters must keep these rules:
   - An empty password is refused before the directory is asked.
   - The identifier is escaped for the filter (RFC 4515 escaping in `escaped_for_filter`) and placed at `{identifier}`.
   - A subject value that is not text is written in hexadecimal.
+  - The directory is asked for the subject, email and name attributes and every claim attribute, each once. The standard claims are read through `claims_from` from each attribute's first value of at most `LONGEST_CLAIM_VALUE` characters; a telephone number from a directory is never verified.
   - `AttemptGuard::succeeded` is called only when the sign-in succeeds.
 - `resolve` finds the user by provider and subject only. An external identity is never let into an existing account because of an email address (module doc comment):
   - If the identity is linked, the user must be able to sign in (`may_sign_in`), and the link is marked as used.
   - If it is not linked, a user is created only when `creates_users` is set, and only with an email address the provider vouched for (`email_verified`) or one the administrator trusts (`trusts_email`).
   - If the email address belongs to an existing user, the sign-in is refused with `email_belongs_to_a_user`, and the existing account is left unchanged.
   - The new user and the link are committed in one unit of work.
+  - The new user is given the provider's standard claims in that same unit of work, through `IdentityService::create_with_claims_in`, after `StandardClaims::lenient(now)` has left out each claim that breaks its rule and kept the rest, since the person cannot correct them before they are in. A later sign-in changes no claim.
 - Refusals are recorded as `SignInRefused` and never shown to the person. The authenticator returns only `Rejected`. The reason names are:
   - `no_pending_authorization`, `authorization_expired`, `answer_incomplete`, `state_mismatch`, `another_provider`, `provider_not_offered` and `another_kind`;
   - `answer_refused`, with the provider client's error detail;
@@ -183,16 +186,19 @@ Adapters must keep these rules:
   - `nonce` is non-empty and equals the stored one.
   - `sub` passes `Subject::parse`.
   - `email_verified` counts only when it is the JSON value `true`.
+- `OpenIdClient`, the standard claims (`standard_claims_of`): each is read from the ID token by its own name, the parts of the address from the object `address`. A claim that is not text, or longer than `LONGEST_CLAIM_VALUE` characters, is left out. `phone_number_verified` is true only when it is the JSON value `true`.
 - `GitHubClient`:
   - The subject is GitHub's numeric user `id`, never the login (`finish`).
   - The email is the first address that is both primary and verified. If there is none, the email is `None`.
   - `email_verified` is `email.is_some()`.
   - The interface is `https://api.github.com` for an issuer equal to `https://github.com`. For any other issuer it is `{issuer}/api/v3` (`interface_of`).
   - The access token is used once and never stored.
+  - `avatar_url` becomes the claim `picture` and `blog` the claim `website`, each when it is text of at most `LONGEST_CLAIM_VALUE` characters. GitHub gives no other claim, and no telephone number.
 - `SamlClient::finish`:
   - It reads the certificate again; if it can no longer be used, the reason is `certificate_unusable`.
   - It calls `hodor_saml::check_response`, with the stored nonce as the request id.
   - The email and name come from the configured attributes. `email_verified` is always `false`.
+  - The standard claims come from the provider's claim attributes through `claims_from`, each from the attribute's first value of at most `LONGEST_CLAIM_VALUE` characters. They are kept in `SamlAnswer::Verified` by the claim's name, and read back by `ClaimField::parse` when the sign-in finishes.
 
 ### Errors
 
@@ -201,7 +207,7 @@ Adapters must keep these rules:
 ## Side Effects
 
 - Network: `OpenIdClient` and `GitHubClient` send HTTP requests only through the `hodor_kernel::HttpClient` port. `DirectoryClient::verify` reaches LDAP through its adapter. `SamlClient` makes no network calls.
-- Storage: writes go through `ProviderStore`, `LinkStore` and `PendingAuthorizationStore`, inside `hodor_kernel::UnitOfWork`s begun from `UnitOfWorkFactory`. The new user created on first sign-in is written through `hodor_identity::api::IdentityService::create_in`, in the same unit of work as the link.
+- Storage: writes go through `ProviderStore`, `LinkStore` and `PendingAuthorizationStore`, inside `hodor_kernel::UnitOfWork`s begun from `UnitOfWorkFactory`. The new user created on first sign-in, with their standard claims, is written through `hodor_identity::api::IdentityService::create_with_claims_in`, in the same unit of work as the link.
 - Events: `FederationEvent`s are recorded on the unit of work with `record_event`. They become durable when the unit of work commits.
 - Secrets: the `hodor_kernel::SecretBox` port seals and opens client secrets (purpose `federation.client_secret`) and code verifiers (purpose `federation.code_verifier`).
 - In-memory cache: `OpenIdClient` keeps each issuer's description and keys in an `Arc<Mutex<HashMap<String, Kept>>>`. Each server instance has its own cache.

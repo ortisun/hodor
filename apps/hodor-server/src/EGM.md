@@ -160,8 +160,9 @@ Adapters implemented here:
 - `ServerClaimSources` (`standing.rs`, `ServerClaimSources::over(database,
   clock)`) implements `hodor_oauth::api::PersonClaimSources` over
   `IdentityService::get` (the display name, the primary username and
-  email address, whether it is verified, the locale; nothing for an
-  unknown user) and `OrganizationService::get` (the name, or none).
+  email address, whether it is verified, the locale and the person's
+  standard claims, which UserInfo and the claim mappers read; nothing for
+  an unknown user) and `OrganizationService::get` (the name, or none).
   `claim_mapping` wires both with `PgClaimMapperStore` into the
   `ClaimMapping` of the token endpoint and of UserInfo; `administration`
   gives `AdminState.claim_mappers` its `ClaimMapperService`.

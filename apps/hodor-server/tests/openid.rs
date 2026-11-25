@@ -17,8 +17,8 @@ use hodor_adapters_postgres::{
 };
 use hodor_credential::api::{CredentialService, NewPassword, PasswordRules};
 use hodor_identity::api::{
-    CreateUser, GroupMember, GroupService, IdentifierKind, IdentityService, OrganizationService,
-    Profile, UserKind,
+    ClaimField, CreateUser, GroupMember, GroupService, IdentifierKind, IdentityService,
+    OrganizationService, Profile, StandardClaims, UserKind,
 };
 use hodor_kernel::{Caller, Digest as _, Secret, SystemClock, TenantContext};
 use hodor_keys::api::{KeyAlgorithm, KeyService, RotationPolicy};
@@ -211,9 +211,17 @@ async fn tenant_with(
         vec![REDIRECT.to_owned()],
     );
     settings.authentication_method = AuthenticationMethod::None;
-    settings.allowed_scopes = ["openid", "profile", "email", "groups", "payroll:read"]
-        .map(str::to_owned)
-        .to_vec();
+    settings.allowed_scopes = [
+        "openid",
+        "profile",
+        "email",
+        "address",
+        "phone",
+        "groups",
+        "payroll:read",
+    ]
+    .map(str::to_owned)
+    .to_vec();
     configure(&mut settings);
     let (client, _) = applications
         .create_client(
@@ -358,12 +366,15 @@ async fn the_discovery_document_names_what_answers() {
         document["response_modes_supported"],
         serde_json::json!(["query", "form_post"])
     );
-    assert!(
-        document["scopes_supported"]
-            .as_array()
-            .is_some_and(|scopes| scopes.contains(&Value::from("groups")))
-    );
-    for claim in ["org_id", "groups"] {
+    for scope in ["groups", "address", "phone"] {
+        assert!(
+            document["scopes_supported"]
+                .as_array()
+                .is_some_and(|scopes| scopes.contains(&Value::from(scope))),
+            "{scope}"
+        );
+    }
+    for claim in ["org_id", "groups", "address", "phone_number", "given_name"] {
         assert!(
             document["claims_supported"]
                 .as_array()
@@ -986,6 +997,121 @@ async fn a_claim_mapper_puts_a_group_into_the_id_token_until_the_person_leaves_i
     let identity = claims_of(answer["id_token"].as_str().expect("an ID token"));
     assert_eq!(identity["in_finance"], false);
     assert_eq!(identity["teams"], serde_json::json!([]));
+}
+
+#[tokio::test]
+async fn the_address_and_phone_scopes_give_the_persons_claims_and_a_mapper_carries_them() {
+    let database = TestDatabase::start().await;
+    let client_id = tenant(&database, "acme").await;
+    let (tenant, ana) = ana_of(&database, "acme").await;
+    let units = || Arc::new(database.app().clone());
+    let clock = Arc::new(SystemClock);
+    let mut claims = StandardClaims {
+        given_name: Some("Ana".to_owned()),
+        family_name: Some("Lima".to_owned()),
+        zoneinfo: Some("America/Sao_Paulo".to_owned()),
+        phone_number: Some("+55 11 91234-5678".to_owned()),
+        phone_number_verified: true,
+        ..StandardClaims::default()
+    };
+    claims.set(ClaimField::AddressLocality, Some("São Paulo".to_owned()));
+    claims.set(ClaimField::AddressCountry, Some("BR".to_owned()));
+    IdentityService::new(units(), Arc::new(PgUserRepository), clock.clone())
+        .change_claims(&tenant, ana, claims, Caller::system())
+        .await
+        .expect("Ana's claims");
+    let mappers = ClaimMapperService::new(ClaimMapperPorts {
+        units_of_work: units(),
+        clients: Arc::new(PgClientStore),
+        mappers: Arc::new(PgClaimMapperStore),
+        clock,
+    });
+    for (claim, attribute) in [
+        ("office_phone", PersonAttribute::PhoneNumber),
+        ("office", PersonAttribute::Address),
+    ] {
+        mappers
+            .create(
+                &tenant,
+                client_id,
+                ClaimMapperSettings {
+                    claim: claim.to_owned(),
+                    targets: vec![ClaimTarget::IdToken],
+                    scope: Some("phone".to_owned()),
+                    source: ClaimSource::Attribute(attribute),
+                },
+                Caller::system(),
+            )
+            .await
+            .expect("a mapper");
+    }
+
+    let server = server(&database).await;
+    let mut browser = Browser::not_following(&server);
+    browser.sign_in("acme", "ana@example.com", PASSWORD).await;
+    let signed_in = code(
+        &mut browser,
+        "acme",
+        &authorize_query(
+            client_id,
+            "openid profile email address phone",
+            &[("nonce", NONCE)],
+        ),
+    )
+    .await;
+    let answer = redeem(&server, "acme", client_id, &signed_in).await;
+    let info = userinfo(
+        &server,
+        "acme",
+        Method::GET,
+        answer["access_token"].as_str(),
+    )
+    .await;
+    assert_eq!(info.status, StatusCode::OK);
+    assert_eq!(info.body["given_name"], "Ana");
+    assert_eq!(info.body["family_name"], "Lima");
+    assert_eq!(info.body["zoneinfo"], "America/Sao_Paulo");
+    assert_eq!(
+        info.body["address"],
+        serde_json::json!({ "locality": "São Paulo", "country": "BR" })
+    );
+    assert_eq!(info.body["phone_number"], "+5511912345678");
+    assert_eq!(info.body["phone_number_verified"], true);
+
+    // The ID token keeps the person's claims out, but what a mapper of the
+    // tenant's puts there under a name of its own.
+    let identity = claims_of(answer["id_token"].as_str().expect("an ID token"));
+    assert!(identity.get("phone_number").is_none());
+    assert!(identity.get("address").is_none());
+    assert_eq!(identity["office_phone"], "+5511912345678");
+    assert_eq!(
+        identity["office"],
+        serde_json::json!({ "locality": "São Paulo", "country": "BR" })
+    );
+
+    // Without the scopes, neither is answered.
+    let next = code(
+        &mut browser,
+        "acme",
+        &authorize_query(client_id, "openid profile", &[]),
+    )
+    .await;
+    let answer = redeem(&server, "acme", client_id, &next).await;
+    let info = userinfo(
+        &server,
+        "acme",
+        Method::GET,
+        answer["access_token"].as_str(),
+    )
+    .await;
+    assert_eq!(info.body["given_name"], "Ana");
+    assert!(info.body.get("address").is_none());
+    assert!(info.body.get("phone_number").is_none());
+    let identity = claims_of(answer["id_token"].as_str().expect("an ID token"));
+    assert!(
+        identity.get("office_phone").is_none(),
+        "the mapper's scope was not asked for"
+    );
 }
 
 /// Gives Ana an authenticator application, with the server's own way of

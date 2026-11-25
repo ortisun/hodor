@@ -151,7 +151,10 @@ console interface.
   `client.listFactors(id)`; with `credentials:write` (`removeFactor`, level 2,
   the typed primary identifier) it removes the application, a key or the
   recovery codes, and the dialog says when it is the last second factor and
-  that no session ends.
+  that no session ends. A card `standardClaims` lists the person's standard
+  claims that have a value, each labelled `text.claimLabel(claim)`, the
+  telephone number with a badge `verified` or `notVerified`; with none it
+  says `noStandardClaims`. The console shows them and does not change them.
 - `ProvidersScreen.tsx:ProvidersScreen` - the identity provider table, loaded
   with `client.listProviders()`; "Add provider" (`addProvider`) opens
   `ProviderForm`, which calls `client.addProvider(added)`.

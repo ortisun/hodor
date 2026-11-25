@@ -33,7 +33,8 @@ bound to. Implemented outside this crate by `PgUserRepository` in
 - `CreateUser` (struct): `kind: UserKind`, `identifiers: Vec<(IdentifierKind, String)>` (as typed), `profile: Profile`, `confirmed: bool` (starts active).
 - `IdentityService::new(units_of_work: Arc<dyn UnitOfWorkFactory>, users: Arc<dyn UserRepository>, clock: Arc<dyn Clock>)`. The service is `Clone`; its `Debug` output shows no fields.
 - `create(tenant, command: CreateUser, caller) -> User`: runs `create_in` in its own unit of work and commits.
-- `create_in(uow, command, verified: bool, caller) -> User`: parses each identifier with `NormalizedIdentifier::parse`, calls `User::create`, and, when `verified` is set, verifies every identifier whose kind `needs_verification()`. Inserts the user and records the events in the caller's unit of work; it does not commit. After an error the caller must abandon the unit of work (doc comment).
+- `create_in(uow, command, verified: bool, caller) -> User`: `create_with_claims_in` with no claims.
+- `create_with_claims_in(uow, command, claims: StandardClaims, verified, caller) -> User`: parses each identifier with `NormalizedIdentifier::parse`, calls `User::create`, and, when `verified` is set, verifies every identifier whose kind `needs_verification()`. Gives the user `claims` through `User::change_claims` when there are any, which adds one `identity.profile_changed` and can fail with `identity.claim_invalid`. Inserts the user and records the events in the caller's unit of work; it does not commit. The federation context (a first sign-in) and the provisioning context (SCIM) use it. After an error the caller must abandon the unit of work (doc comment).
 - `get(tenant, id) -> User`: `NotFound` with code `identity.user_not_found` if the tenant has no such user. `get_in(uow, id)` does the same in the caller's unit of work.
 - `change_in(uow, id, caller, apply)`: loads the user, lets `apply: FnOnce(&mut User) -> Result<Vec<UserEvent>>` make any changes `User` allows, and stores it with every event in the caller's unit of work, without committing; nothing is stored when `apply` answers no event. `now()` is the service's clock, for `apply`. The provisioning context uses these.
 - `GroupService` (`groups.rs`) has the same pairs for groups: `create_in`, `get_in`, `change_in` (answers whether anything changed), `delete_in`, `add_member_in` and `remove_member_in` (answer whether the membership changed), `all_members_in` (every direct member, a thousand at a time) and `direct_groups_in`. Each public use case runs its `_in` variant in a unit of work of its own and commits.
@@ -42,6 +43,8 @@ bound to. Implemented outside this crate by `PgUserRepository` in
 - Lifecycle: `activate`, `suspend(…, reason, …)`, `reactivate`, `deactivate`, `restore`, `mark_deleted`. Each takes `(tenant, id, caller)` and returns the changed `User`. `mark_deleted_in(uow, id, caller)` does what `mark_deleted` does in the caller's unit of work.
 - Login identifiers: `add_identifier(tenant, id, kind, value, caller)`, `verify_identifier(tenant, id, identifier: IdentifierId, caller)`, `choose_primary(…)`, `remove_identifier(…)`.
 - `change_profile(tenant, id, profile, caller)`.
+- `change_claims(tenant, id, claims: StandardClaims, caller)`: replaces a person's standard claims, as an administrator or an operator does. Claims that are what the person already has change nothing and record nothing.
+- `change_own_profile(tenant, id, display_name: Option<String>, claims, caller)`: what the person does on the account page. Replaces the display name and the standard claims in one unit of work, keeps the locale, and records one `identity.profile_changed` at most. The claims go through `User::change_own_claims`, so the person cannot vouch for a telephone number.
 
 ### Service accounts and agents (`workloads.rs`)
 
@@ -62,11 +65,12 @@ bound to. Implemented outside this crate by `PgUserRepository` in
 - One change per unit of work: the private `IdentityService::change` runs `change_in` and commits. A change that produces no event (for example verifying an identifier that is already verified, or choosing the identifier that is already primary) is not stored, and the user is returned unchanged.
 - Business rules (status transitions, identifier limits, verification before an email address becomes primary, the last identifier) are enforced by `User` in the domain layer, not here. Uniqueness of an identifier across the users of a tenant is left to `UserRepository::insert` and `update`, which return `identity.identifier_taken`.
 - Identifier values are parsed (`NormalizedIdentifier::parse`) before the clock is read or storage is touched, in `create_in` and `add_identifier`.
+- The rules of the standard claims, and the refusal of claims for a service account or an agent (`identity.workload_claims_refused`), are enforced by `StandardClaims` and `User`; the service only passes the claims on.
 - An owner of a workload is a person of the tenant who is not Deleted: `WorkloadService` loads each one in the unit of work of the change (`identity.user_not_found`, `identity.workload_owner_invalid`).
 
 ## Side Effects
 
-- Storage through `UserRepository`: `insert` (`create_in`), `get` (`get`, `change`), `find_by_identifier` (`find_by_login`), `list` (`list`), `update` (`change`).
+- Storage through `UserRepository`: `insert` (`create_in`, `create_with_claims_in`), `get` (`get`, `change`), `find_by_identifier` (`find_by_login`), `list` (`list`), `update` (`change`).
 - Events: each `UserEvent` is wrapped in `EventEnvelope::new(EventMetadata::new(tenant_id, caller.actor, caller.correlation_id, clock), event)` and passed to `uow.record_event` in the same unit of work as the storage write (`IdentityService::record`). Nothing is recorded for reads.
 - Commits: `create` and `change` call `uow.commit()`; `create_in`, `get`, `list` and `find_by_login` do not.
 - Clock: `clock.now()` gives the timestamp passed to each domain operation, and the clock is passed to `EventMetadata::new`.

@@ -145,7 +145,16 @@ person sees from who they are (`Client.me`).
   sources, with what it needs). `ApplicationClient` has `principal`, the
   workload it acts as, `spiffeId`, `linkerdIdentity` and
   `certificateBoundAccessTokens`; `ClientSettings` has the same four, the
-  first three `null` when not sent.
+  first three `null` when not sent. `User` has `claims`, the
+  person's standard claims that have a value as `[name, value]` pairs in the
+  order of `CLAIMS` (none for a workload), and `phoneNumberVerified`.
+- `client.ts:CLAIMS` - the standard claims in the order the console shows
+  them: `given_name`, `middle_name`, `family_name`, `nickname`, `gender`,
+  `birthdate`, `zoneinfo`, `profile`, `picture`, `website`, `phone_number`,
+  and the parts of the address as `address.formatted`,
+  `address.street_address`, `address.locality`, `address.region`,
+  `address.postal_code` and `address.country`, read from the `address`
+  object of the answer's `claims`.
 - `hodor-theme.d.ts` - declares the modules `@hodor-theme/hodor.js`
   (`hodorTheme: DefinedTheme`) and `@hodor-theme/hodor.css`; the alias is
   resolved by `../vite.config.ts`.

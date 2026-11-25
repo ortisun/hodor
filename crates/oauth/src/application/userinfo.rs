@@ -194,6 +194,7 @@ impl UserInfoService {
                         identifier.is_verified(),
                     )
                 }),
+            claims: snapshot.claims.clone(),
             groups,
         };
         let mut claims = userinfo_claims(&checked.subject, &checked.scopes, &person);

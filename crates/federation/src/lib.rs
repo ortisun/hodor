@@ -36,7 +36,8 @@ pub mod api {
     pub use crate::domain::link::{ExternalIdentity, Subject};
     pub use crate::domain::pending_authorization::{PendingAuthorization, SamlAnswer};
     pub use crate::domain::provider::{
-        Alias, DirectorySettings, IdentityProvider, ProviderId, ProviderKind, ProviderSettings,
-        ProviderSnapshot, ProviderStatus, SamlSettings, directory_host,
+        Alias, ClaimAttributes, DirectorySettings, IdentityProvider, LONGEST_CLAIM_VALUE,
+        ProviderId, ProviderKind, ProviderSettings, ProviderSnapshot, ProviderStatus, SamlSettings,
+        claims_from, directory_host,
     };
 }

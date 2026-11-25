@@ -19,16 +19,18 @@ modules are private; other crates use the `api` module.
   - Events: `UserEvent`.
   - Identifiers: `IdentifierId`, `IdentifierKind`, `LoginIdentifier`, `NormalizedIdentifier`.
   - Users: `Profile`, `User`, `UserKind`, `UserSnapshot`, `UserStatus`.
+  - Standard claims: `StandardClaims`, `PostalAddress`, `ClaimField` and the bounds `LONGEST_NAME`, `LONGEST_PAGE_ADDRESS`, `LONGEST_GENDER`, `LONGEST_BIRTHDATE`, `LONGEST_ZONEINFO`, `LONGEST_PHONE_NUMBER`, `LONGEST_FORMATTED_ADDRESS`, `LONGEST_STREET_ADDRESS`, `LONGEST_ADDRESS_PART` and `LONGEST_POSTAL_CODE`.
 - `lib.rs: pub mod testing` (`testing.rs`): public test support, compiled only under `#[cfg(any(test, feature = "testing"))]`. The `testing` feature turns on `hodor-kernel/testing` (`Cargo.toml`).
   - `InMemoryUsers`: an in-memory `UserRepository`.
   - `Ports<'a> { units_of_work, users }`: the ports under test.
   - `run_contract(ports)`: the contract suite every `UserRepository` must pass. The module documentation says the in-memory fake and the PostgreSQL adapter both run it.
+  - `every_standard_claim()`: a `StandardClaims` with every claim given a value, the longest of a kind where it matters, so that a store that cuts or loses one is caught; other crates' tests use it too.
   - `InMemoryGroups`, `FixedGroupPolicy(depth)`, `GroupPorts<'a> { units_of_work, users, groups }` and `run_group_contract(ports)`: the same for groups.
   - `InMemoryOrganizations`, `OrganizationPorts<'a> { units_of_work, users, organizations }` and `run_organization_contract(ports)`: the same for organizations.
   - `InMemoryWorkloads::over(users)`, `WorkloadPorts<'a> { units_of_work, users, workloads }` and `run_workload_contract(ports)`: the same for the owners of service accounts and agents; the in-memory store lists from the `InMemoryUsers` it is given. `RecordingWorkloadAccess` remembers each `(tenant, workload, reason)` it was asked to end, for use case tests.
 - Subdirectories:
   - [application](./application/EGM.md): `IdentityService`, `GroupService`, `OrganizationService` and `WorkloadService` use cases and their ports.
-  - [domain](./domain/EGM.md): the `User` aggregate, login identifiers, groups, organizations, workloads and their events.
+  - [domain](./domain/EGM.md): the `User` aggregate, login identifiers, a person's standard claims, groups, organizations, workloads and their events.
 
 ## Invariants
 
@@ -46,6 +48,7 @@ modules are private; other crates use the `api` module.
   - rejects an update from another tenant with `identity.user_not_found`;
   - frees the identifiers of an erased user while keeping its row;
   - lists users in creation order with `after` and `limit` paging.
+  - stores every standard claim, stores a replacement that keeps fewer, and keeps none once the user is marked Deleted.
 - Each case of the contract uses tenants of its own, so runs can share one database (`run_contract` doc comment).
 
 ## Side Effects

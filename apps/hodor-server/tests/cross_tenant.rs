@@ -486,7 +486,7 @@ async fn an_administrators_token_is_refused_by_every_operation_of_another_tenant
             tried += 1;
         }
     }
-    assert_eq!(tried, 154, "every documented operation was tried");
+    assert_eq!(tried, 155, "every documented operation was tried");
 
     // The token is good where it belongs, and nothing happened in Globex:
     // it has its two users, both active.
@@ -570,6 +570,75 @@ async fn an_administrator_cannot_reach_another_tenants_users_or_sessions_by_nami
         .with_session_cookie(acme, Method::GET, "/session", cookie, None)
         .await;
     assert_eq!(status, StatusCode::OK);
+}
+
+#[tokio::test]
+async fn one_tenants_standard_claims_are_out_of_reach_of_another() {
+    let world = world().await;
+    let (acme, globex) = (&world.acme, &world.globex);
+    // The same address in both tenants, each with claims of its own.
+    for (tenant, name) in [(acme, "Ana of Acme"), (globex, "Ana of Globex")] {
+        let (status, answer) = world
+            .admin(
+                tenant,
+                &tenant.administrator_token,
+                Method::PUT,
+                &format!("/users/{}/claims", tenant.ana),
+                Some(serde_json::json!({ "nickname": name, "phone_number": "+15555550100" })),
+            )
+            .await;
+        assert_eq!(status, StatusCode::OK, "{answer}");
+    }
+
+    // Globex's administrator names Acme's person, to read or to replace.
+    for method in [Method::GET, Method::PUT] {
+        let path = if method == Method::GET {
+            format!("/users/{}", acme.ana)
+        } else {
+            format!("/users/{}/claims", acme.ana)
+        };
+        let (status, answer) = world
+            .admin(
+                globex,
+                &globex.administrator_token,
+                method.clone(),
+                &path,
+                Some(serde_json::json!({ "nickname": "taken over" })),
+            )
+            .await;
+        assert_eq!(status, StatusCode::NOT_FOUND, "{method} {path}");
+        assert_eq!(answer["code"], "identity.user_not_found");
+    }
+
+    // Acme's session reads and changes no profile at Globex.
+    let (browser, _, csrf) = signed_in(&world, acme).await;
+    let cookie = browser.cookies[SESSION_COOKIE].clone();
+    for method in [Method::GET, Method::PUT] {
+        let (status, body) = world
+            .with_session_cookie(globex, method.clone(), "/profile", &cookie, Some(&csrf))
+            .await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED, "{method}");
+        assert_eq!(body["code"], "session.not_authenticated");
+    }
+    let (status, own) = world
+        .with_session_cookie(acme, Method::GET, "/profile", &cookie, None)
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(own["claims"]["nickname"], "Ana of Acme");
+
+    // Each person keeps their own.
+    for (tenant, name) in [(acme, "Ana of Acme"), (globex, "Ana of Globex")] {
+        let (_, user) = world
+            .admin(
+                tenant,
+                &tenant.administrator_token,
+                Method::GET,
+                &format!("/users/{}", tenant.ana),
+                None,
+            )
+            .await;
+        assert_eq!(user["claims"]["nickname"], name);
+    }
 }
 
 #[tokio::test]

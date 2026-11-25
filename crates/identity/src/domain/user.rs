@@ -1,5 +1,6 @@
 //! The user aggregate: lifecycle and login identifiers.
 
+use crate::domain::claims::StandardClaims;
 use crate::domain::event::UserEvent;
 use crate::domain::identifier::{
     IdentifierId, IdentifierKind, LoginIdentifier, NormalizedIdentifier,
@@ -174,6 +175,8 @@ pub struct UserSnapshot {
     pub status_reason: Option<String>,
     /// Display name and locale.
     pub profile: Profile,
+    /// A person's standard claims; none for a workload.
+    pub claims: StandardClaims,
     /// The names the user can be found by, oldest first.
     pub identifiers: Vec<LoginIdentifier>,
     /// When the user was created.
@@ -233,6 +236,7 @@ impl User {
                 status,
                 status_reason: None,
                 profile: profile.validated()?,
+                claims: StandardClaims::default(),
                 identifiers: Vec::new(),
                 created_at: now,
                 updated_at: now,
@@ -403,6 +407,7 @@ impl User {
         self.transition(UserStatus::Deleted, now);
         self.state.identifiers.clear();
         self.state.profile = Profile::default();
+        self.state.claims = StandardClaims::default();
         Ok(UserEvent::Deleted {
             user_id: self.state.id,
         })
@@ -611,6 +616,64 @@ impl User {
         Ok(UserEvent::ProfileChanged {
             user_id: self.state.id,
         })
+    }
+
+    /// Replaces a person's standard claims, checked by their rules.
+    ///
+    /// Returns `None` when they are what the person already has: nothing
+    /// changes and there is nothing to announce.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Invalid` with `identity.claim_invalid` if a claim breaks
+    /// its rule, `Invalid` with `identity.workload_claims_refused` for a
+    /// service account or an agent, and `Conflict` if the user is deleted.
+    pub fn change_claims(
+        &mut self,
+        claims: StandardClaims,
+        now: Timestamp,
+    ) -> Result<Option<UserEvent>, DomainError> {
+        self.require_not_deleted()?;
+        if self.state.kind.is_workload() {
+            return Err(DomainError::invalid(
+                "identity.workload_claims_refused",
+                "a service account or an agent has no standard claims",
+            ));
+        }
+        let claims = claims.checked(now)?;
+        if claims == self.state.claims {
+            return Ok(None);
+        }
+        self.state.claims = claims;
+        self.state.updated_at = now;
+        Ok(Some(UserEvent::ProfileChanged {
+            user_id: self.state.id,
+        }))
+    }
+
+    /// Replaces a person's standard claims as the person gives them: the
+    /// person cannot vouch for a telephone number, so it stays verified only
+    /// when it is the number the person already had, and verified.
+    ///
+    /// # Errors
+    ///
+    /// As [`User::change_claims`].
+    pub fn change_own_claims(
+        &mut self,
+        mut claims: StandardClaims,
+        now: Timestamp,
+    ) -> Result<Option<UserEvent>, DomainError> {
+        let current = &self.state.claims;
+        let typed = StandardClaims {
+            phone_number: claims.phone_number.clone(),
+            ..StandardClaims::default()
+        }
+        .checked(now)
+        .ok()
+        .and_then(|typed| typed.phone_number);
+        claims.phone_number_verified =
+            current.phone_number_verified && typed.is_some() && typed == current.phone_number;
+        self.change_claims(claims, now)
     }
 
     /// The login identifier that matches `value`, if the user has it.
@@ -856,20 +919,110 @@ mod tests {
         )
         .expect("create")
         .0;
+        user.change_claims(claims(), NOW).expect("claims");
         user.deactivate(NOW).expect("deactivate");
         user.mark_deleted(NOW).expect("delete");
 
         assert!(user.identifiers().is_empty());
         assert_eq!(user.snapshot().profile, Profile::default());
+        assert!(user.snapshot().claims.is_empty());
         for error in [
             user.add_identifier(username("again"), NOW)
                 .expect_err("frozen"),
             user.change_profile(Profile::default(), NOW)
                 .expect_err("frozen"),
+            user.change_claims(claims(), NOW).expect_err("frozen"),
             user.restore(NOW).expect_err("frozen"),
         ] {
             assert_eq!(error.code(), "identity.invalid_transition");
         }
+    }
+
+    fn claims() -> StandardClaims {
+        let mut claims = StandardClaims {
+            given_name: Some("Ana".to_owned()),
+            phone_number: Some("+55 11 91234-5678".to_owned()),
+            phone_number_verified: true,
+            ..StandardClaims::default()
+        };
+        claims.set(
+            crate::domain::claims::ClaimField::AddressLocality,
+            Some("São Paulo".to_owned()),
+        );
+        claims
+    }
+
+    #[test]
+    fn a_person_s_claims_are_replaced_whole_and_announced_without_values() {
+        let mut user = person(true);
+        let event = user
+            .change_claims(claims(), NOW)
+            .expect("claims")
+            .expect("changed");
+        assert_eq!(event.event_type(), "identity.profile_changed");
+        let printed = format!("{event:?}");
+        assert!(
+            !printed.contains("Ana") && !printed.contains("5511"),
+            "{printed}"
+        );
+        let kept = &user.snapshot().claims;
+        assert_eq!(kept.phone_number.as_deref(), Some("+5511912345678"));
+        assert!(kept.phone_number_verified);
+
+        // The same claims again change nothing.
+        assert_eq!(user.change_claims(claims(), NOW).expect("same"), None);
+
+        // Replaced whole: what is left out is removed.
+        let only = StandardClaims {
+            nickname: Some("Aninha".to_owned()),
+            ..StandardClaims::default()
+        };
+        user.change_claims(only.clone(), NOW).expect("replace");
+        assert_eq!(user.snapshot().claims, only);
+
+        let broken = StandardClaims {
+            birthdate: Some("tomorrow".to_owned()),
+            ..StandardClaims::default()
+        };
+        let error = user.change_claims(broken, NOW).expect_err("refused");
+        assert_eq!(error.code(), "identity.claim_invalid");
+        assert_eq!(
+            user.snapshot().claims,
+            only,
+            "a refused change changes nothing"
+        );
+    }
+
+    #[test]
+    fn a_person_cannot_vouch_for_their_own_telephone_number() {
+        let mut user = person(true);
+        user.change_claims(claims(), NOW)
+            .expect("verified by someone");
+        // The same number, typed another way, stays verified.
+        let mut same = claims();
+        same.phone_number = Some("+55 (11) 91234 5678".to_owned());
+        same.phone_number_verified = false;
+        same.nickname = Some("Aninha".to_owned());
+        user.change_own_claims(same, NOW).expect("own");
+        assert!(user.snapshot().claims.phone_number_verified);
+        // A new number is not verified, whatever the person says.
+        let mut other = claims();
+        other.phone_number = Some("+5511900000000".to_owned());
+        other.phone_number_verified = true;
+        user.change_own_claims(other, NOW).expect("own");
+        assert!(!user.snapshot().claims.phone_number_verified);
+        // Nor is the old one given back.
+        user.change_own_claims(claims(), NOW).expect("own");
+        assert!(!user.snapshot().claims.phone_number_verified);
+    }
+
+    #[test]
+    fn a_workload_has_no_standard_claims() {
+        let (mut workload, _) =
+            User::create(UserKind::Agent, Vec::new(), Profile::default(), true, NOW)
+                .expect("an agent");
+        let error = workload.change_claims(claims(), NOW).expect_err("refused");
+        assert_eq!(error.code(), "identity.workload_claims_refused");
     }
 
     #[test]

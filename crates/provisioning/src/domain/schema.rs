@@ -168,11 +168,58 @@ fn user_schema(base: &str) -> Value {
                 Described::text("formatted", "The whole name").value(),
                 Described::text("givenName", "The given name").value(),
                 Described::text("familyName", "The family name").value(),
+                Described::text("middleName", "The middle name").value(),
             ],
             ..Described::text("name", "The person's name")
         }
         .value(),
         Described::text("displayName", "The name shown for the person").value(),
+        Described::text("nickName", "A casual name").value(),
+        Described {
+            kind: "reference",
+            ..Described::text("profileUrl", "The address of the person's page elsewhere")
+        }
+        .value(),
+        Described::text("timezone", "A name of the time zone database").value(),
+        Described {
+            kind: "complex",
+            multi_valued: true,
+            sub_attributes: vec![
+                Described::text("value", "A telephone number in E.164, taken as verified").value(),
+                Described {
+                    kind: "boolean",
+                    ..Described::text("primary", "Whether it is the number kept")
+                }
+                .value(),
+            ],
+            ..Described::text(
+                "phoneNumbers",
+                "The person's telephone number: the primary one, or the first, is kept",
+            )
+        }
+        .value(),
+        Described {
+            kind: "complex",
+            multi_valued: true,
+            sub_attributes: vec![
+                Described::text("formatted", "The whole address").value(),
+                Described::text("streetAddress", "The street").value(),
+                Described::text("locality", "The city or locality").value(),
+                Described::text("region", "The state or region").value(),
+                Described::text("postalCode", "The postal code").value(),
+                Described::text("country", "The country").value(),
+                Described {
+                    kind: "boolean",
+                    ..Described::text("primary", "Whether it is the address kept")
+                }
+                .value(),
+            ],
+            ..Described::text(
+                "addresses",
+                "The person's postal address: the primary one, or the first, is kept",
+            )
+        }
+        .value(),
         Described {
             kind: "complex",
             multi_valued: true,

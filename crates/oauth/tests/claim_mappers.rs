@@ -707,6 +707,7 @@ async fn a_mapper_puts_a_group_into_the_id_token_and_each_source_is_read_at_issu
             username: Some("ana".to_owned()),
             email: None,
             locale: None,
+            claims: Default::default(),
         },
     );
     let organization = acme.to_string();

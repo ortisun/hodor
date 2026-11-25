@@ -71,12 +71,19 @@ watched page and the steps a person repeats.
     (`person-{uuid}@example.com`), `PASSWORD`, `PROVIDER_NAME`
     (`"Development provider"`), and re-exports `en`, `PROVIDER`, `TENANT`.
 - Spec files (scenarios by `test(...)` title):
+  - `profile.spec.ts` - in a tenant of its own (`newTenant()`), so that its
+    sign-in is not counted against the shared tenant's requests from one
+    address: a person gives their details on the profile page and they are
+    kept (the telephone number kept in E.164 form and not vouched for, a
+    birth date the server cannot keep marked on its field, what was kept
+    there after a reload).
   - `pages.spec.ts` - a person registers, reads the message, signs in and
     signs out; the link in a message works once; a wrong password and an
     unknown address are refused in the same words; a person who forgot the
     password chooses a new one; asking to recover says the same for an
-    address nobody has; a person signs in and out with the keyboard alone; a
-    page is sent with the policy that keeps everything else out (checks
+    address nobody has; a person signs in and out with the keyboard alone (on
+    the account page, the profile link, then the security link, then signing
+    out); a page is sent with the policy that keeps everything else out (checks
     `default-src 'none'`, `script-src 'self'`, `require-trusted-types-for
     'script'` and that an injected script does not run); and, under
     `test.describe("in Portuguese")` with locale `pt-BR`, the pages and the

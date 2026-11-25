@@ -14,7 +14,7 @@ The `hodor-federation` crate, described in `Cargo.toml` as "The federation conte
 - Feature `testing` turns on `hodor-kernel/testing` and `hodor-saml/testing`. It compiles `hodor_federation::testing`, which holds the in-memory stores and the store contract suite `run_contract` (`Cargo.toml` comment).
 - Workspace dependencies:
   - `hodor-authentication` (`crates/authentication`): `TransactionId`, `LockoutRules`, `AttemptGuard`, and the `Authenticator` trait and its step types.
-  - `hodor-identity` (`crates/identity`): `IdentityService` and `CreateUser`, used to create a user on first sign-in.
+  - `hodor-identity` (`crates/identity`): `IdentityService` and `CreateUser`, used to create a user on first sign-in, and `StandardClaims` and `ClaimField`, the standard claims a provider gives that user.
   - `hodor-kernel` (`crates/kernel`): units of work, the `DomainError` error type, secrets, and the clock, random source, digest, HTTP client and signature verifier ports.
   - `hodor-saml` ([saml](../saml/EGM.md)): response checking, requests and metadata.
 - External dependencies: `async-trait`, `base64`, `form_urlencoded`, `serde`, `serde_json` and `time`.
@@ -28,6 +28,7 @@ The `hodor-federation` crate, described in `Cargo.toml` as "The federation conte
 - The crate has no XML dependency. It works with SAML only through `hodor-saml`.
 - Every store call is scoped to the tenant of its unit of work. Each event is recorded in the same unit of work as the write it describes.
 - Sign-in never joins an external identity to an existing account because of an email address. See [src/application](./src/application/EGM.md#invariants).
+- A provider gives a person's standard claims only when it creates that person, and a claim that breaks its rule is left out rather than refusing the sign-in. See [src/application](./src/application/EGM.md#signing-in-sign_inrs).
 
 ## Side Effects
 

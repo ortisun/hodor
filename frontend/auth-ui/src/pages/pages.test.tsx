@@ -12,6 +12,7 @@ import { AskPage } from "./AskPage";
 import { ComingBackPage } from "./ComingBackPage";
 import { ConsentPage } from "./ConsentPage";
 import { FinishPage } from "./FinishPage";
+import { ProfilePage } from "./ProfilePage";
 import { SecurityPage } from "./SecurityPage";
 import { SignInLinkPage } from "./SignInLinkPage";
 import { SignInPage } from "./SignInPage";
@@ -856,6 +857,103 @@ describe("the account page", () => {
     const { props } = page({ "GET /session": [session], "GET /consents": [json(200, { consents: [] })] });
     render(<AccountPage {...props} />);
     expect(await screen.findByText(en.givenConsentsNone)).toBeTruthy();
+  });
+});
+
+describe("the profile page", () => {
+  const session = () =>
+    json(200, {
+      user_id: "u",
+      session_id: "s",
+      signed_in_at: "2026-11-20T14:03:11Z",
+      expires_at: "2026-11-20T15:03:11Z",
+      csrf_token: "of-the-session",
+    });
+  const ana = (claims: Record<string, unknown> = {}) =>
+    json(200, {
+      display_name: "Ana Lima",
+      claims: { given_name: "Ana", phone_number_verified: false, ...claims },
+    });
+
+  it("sends a person who is not signed in to sign in", async () => {
+    const { props, go } = page({ "GET /session": [nobody] });
+    render(<ProfilePage {...props} />);
+    await waitFor(() => expect(go).toHaveBeenCalledWith("sign-in"));
+  });
+
+  it("shows the person's details and saves what they change, removing what they empty", async () => {
+    const { props, sent, user } = page({
+      "GET /session": [session],
+      "GET /profile": [
+        ana({
+          phone_number: "+5511912345678",
+          phone_number_verified: true,
+          address: { locality: "São Paulo", country: "BR" },
+        }),
+      ],
+      "PUT /profile": [
+        ana({ family_name: "Lima", address: { locality: "São Paulo" }, phone_number: "+5511912345678" }),
+      ],
+    });
+    render(<ProfilePage {...props} />);
+    const given = await screen.findByLabelText(en.claimLabel("given_name"));
+    expect((given as HTMLInputElement).value).toBe("Ana");
+    expect(screen.getByText(en.phoneVerified)).toBeTruthy();
+    expect((screen.getByLabelText(en.claimLabel("address.locality")) as HTMLInputElement).value).toBe(
+      "São Paulo",
+    );
+
+    await user.type(screen.getByLabelText(en.claimLabel("family_name")), "Lima");
+    await user.clear(screen.getByLabelText(en.claimLabel("address.country")));
+    await user.click(screen.getByRole("button", { name: en.profileSave }));
+
+    expect(await screen.findByText(en.profileSaved)).toBeTruthy();
+    expect(sent.at(-1)).toMatchObject({
+      method: "PUT",
+      path: "/profile",
+      csrfToken: "of-the-session",
+      body: {
+        display_name: "Ana Lima",
+        claims: {
+          given_name: "Ana",
+          family_name: "Lima",
+          phone_number: "+5511912345678",
+          address: { locality: "São Paulo" },
+        },
+      },
+    });
+    const body = sent.at(-1)?.body as { claims: Record<string, unknown> };
+    expect(body.claims).not.toHaveProperty("phone_number_verified");
+    expect(screen.getByText(en.phoneNotVerified)).toBeTruthy();
+  });
+
+  it("says which detail was refused, next to its field", async () => {
+    const { props, user } = page({
+      "GET /session": [session],
+      "GET /profile": [ana()],
+      "PUT /profile": [
+        json(422, {
+          code: "identity.claim_invalid",
+          status: 422,
+          detail: "birthdate is YYYY-MM-DD, 0000-MM-DD or YYYY, a day of the calendar not after today",
+        }),
+      ],
+    });
+    render(<ProfilePage {...props} />);
+    await user.type(await screen.findByLabelText(en.claimLabel("birthdate")), "12/04/1990");
+    await user.click(screen.getByRole("button", { name: en.profileSave }));
+
+    const field = screen.getByLabelText(en.claimLabel("birthdate"));
+    await waitFor(() => expect(field.getAttribute("aria-invalid")).toBe("true"));
+    expect(screen.getByText(en.claimInvalid(en.claimLabel("birthdate")))).toBeTruthy();
+    expect(screen.queryByText(en.profileSaved)).toBeNull();
+  });
+
+  it("speaks Brazilian Portuguese", async () => {
+    const { props } = page({ "GET /session": [session], "GET /profile": [ana()] });
+    render(<ProfilePage {...props} text={ptBR} />);
+    expect(await screen.findByLabelText(ptBR.claimLabel("family_name"))).toBeTruthy();
+    expect(screen.getByRole("button", { name: ptBR.profileSave })).toBeTruthy();
   });
 });
 

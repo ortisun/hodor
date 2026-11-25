@@ -556,6 +556,13 @@ impl World {
             "nonce": leaving.nonce,
             "name": "Bia Example",
             "locale": "pt-BR",
+            "given_name": "Bia",
+            "family_name": "Example",
+            "phone_number": "+1 (604) 555-1234",
+            "phone_number_verified": true,
+            "address": { "locality": "Recife", "country": "BR", "region": 26 },
+            "birthdate": "the twelfth of April",
+            "website": 7,
         });
         if let Some((address, verified)) = email {
             claims["email"] = json!(address);
@@ -701,6 +708,18 @@ async fn a_person_nobody_knows_is_created_and_signed_in_on_their_first_visit() {
         Some("Bia Example")
     );
     assert_eq!(user.snapshot().profile.locale.as_deref(), Some("pt-BR"));
+    // The standard claims the provider gave, by their own names; what
+    // breaks a rule or is not text is left out, and the rest kept.
+    let claims = &user.snapshot().claims;
+    assert_eq!(claims.given_name.as_deref(), Some("Bia"));
+    assert_eq!(claims.family_name.as_deref(), Some("Example"));
+    assert_eq!(claims.phone_number.as_deref(), Some("+16045551234"));
+    assert!(claims.phone_number_verified, "the token said exactly true");
+    let address = claims.address.as_ref().expect("an address");
+    assert_eq!(address.locality.as_deref(), Some("Recife"));
+    assert_eq!(address.region, None);
+    assert_eq!(claims.birthdate, None);
+    assert_eq!(claims.website, None);
 
     // And is linked to the external identity.
     let links = world
@@ -1365,7 +1384,11 @@ async fn a_person_signs_in_through_github_by_their_number_and_their_verified_add
     let world = world().await;
     world.with_github().await;
     world.github.is(
-        json!({ "id": 583_231, "login": "octocat", "name": "The Octocat", "email": "shown@example.com" }),
+        json!({
+            "id": 583_231, "login": "octocat", "name": "The Octocat", "email": "shown@example.com",
+            "avatar_url": "https://avatars.githubusercontent.com/u/583231?v=4",
+            "blog": "https://github.blog",
+        }),
         json!([
             { "email": "old@example.com", "primary": false, "verified": true },
             { "email": "unchecked@example.com", "primary": true, "verified": false },
@@ -1388,6 +1411,12 @@ async fn a_person_signs_in_through_github_by_their_number_and_their_verified_add
         user.snapshot().profile.display_name.as_deref(),
         Some("The Octocat")
     );
+    let claims = &user.snapshot().claims;
+    assert_eq!(
+        claims.picture.as_deref(),
+        Some("https://avatars.githubusercontent.com/u/583231?v=4")
+    );
+    assert_eq!(claims.website.as_deref(), Some("https://github.blog"));
     for other in [
         "shown@example.com",
         "unchecked@example.com",
@@ -1641,7 +1670,17 @@ async fn directory_world(trusts_email: bool) -> DirectoryWorld {
                     scopes: Vec::new(),
                     creates_users: true,
                     trusts_email,
-                    directory: Some(DirectorySettings::new(BASE, "(uid={identifier})")),
+                    directory: Some(DirectorySettings {
+                        claim_attributes: [
+                            ("family_name", "sn"),
+                            ("nickname", "uid"),
+                            ("phone_number", "telephoneNumber"),
+                        ]
+                        .into_iter()
+                        .map(|(claim, attribute)| (claim.to_owned(), attribute.to_owned()))
+                        .collect(),
+                        ..DirectorySettings::new(BASE, "(uid={identifier})")
+                    }),
                 },
                 client_secret: Secret::from(BIND_PASSWORD.to_owned()),
             },
@@ -1722,6 +1761,12 @@ async fn a_person_signs_in_through_the_directory_and_is_the_same_user_every_time
         ana.snapshot().profile.display_name.as_deref(),
         Some("Ana Example")
     );
+    // The claims its claim attributes name; an attribute the entry does
+    // not have gives nothing.
+    let claims = &ana.snapshot().claims;
+    assert_eq!(claims.family_name.as_deref(), Some("Ana Example"));
+    assert_eq!(claims.nickname.as_deref(), Some("ana"));
+    assert_eq!(claims.phone_number, None);
     // Linked by the directory's unchanging identifier of the entry.
     let links = world
         .federation
@@ -1934,10 +1979,17 @@ async fn saml_world() -> (World, TestIdentityProvider) {
                     creates_users: true,
                     trusts_email: true,
                     directory: None,
-                    saml: Some(SamlSettings::new(
-                        SAML_SIGN_ON,
-                        identity_provider.certificate_pem(),
-                    )),
+                    saml: Some(SamlSettings {
+                        claim_attributes: [
+                            ("given_name", "firstName"),
+                            ("phone_number", "phone"),
+                            ("address.country", "country"),
+                        ]
+                        .into_iter()
+                        .map(|(claim, attribute)| (claim.to_owned(), attribute.to_owned()))
+                        .collect(),
+                        ..SamlSettings::new(SAML_SIGN_ON, identity_provider.certificate_pem())
+                    }),
                 },
                 client_secret: Secret::from(String::new()),
             },
@@ -2086,6 +2138,9 @@ impl World {
             attributes: vec![
                 ("email".to_owned(), vec![email.to_owned()]),
                 ("name".to_owned(), vec!["Bia Corp".to_owned()]),
+                ("firstName".to_owned(), vec!["Bia".to_owned()]),
+                ("phone".to_owned(), vec!["+55 81 3333-4444".to_owned()]),
+                ("country".to_owned(), vec!["BR".to_owned()]),
             ],
             ..ResponseDraft::good(&service_provider, identity_provider, request_id, now)
         };
@@ -2128,6 +2183,22 @@ async fn a_person_signs_in_through_a_saml_identity_provider_and_is_the_same_user
         assert_eq!(*first_user.get_or_insert(user), user);
     }
     assert_eq!(world.count("identity.user_created"), 1);
+    // The claims of its claim attributes, kept with the answer until the
+    // sign-in finished; a telephone number from SAML is never verified.
+    let user = world
+        .identity
+        .find_by_login(&world.acme, "bia@corp.example")
+        .await
+        .expect("find")
+        .expect("created");
+    let claims = &user.snapshot().claims;
+    assert_eq!(claims.given_name.as_deref(), Some("Bia"));
+    assert_eq!(claims.phone_number.as_deref(), Some("+558133334444"));
+    assert!(!claims.phone_number_verified);
+    assert_eq!(
+        claims.address.as_ref().and_then(|a| a.country.as_deref()),
+        Some("BR")
+    );
     assert!(world.refusals().is_empty(), "{:?}", world.refusals());
 }
 

@@ -10,7 +10,7 @@ port, which adapter crates implement.
 
 ## Subdirectories & Boundaries
 
-- src: [./src/EGM.md](./src/EGM.md) - the `api` module (`IdentityService`, `UserRepository`, `User`, `UserEvent` and the identifier types) and the feature-gated `testing` module.
+- src: [./src/EGM.md](./src/EGM.md) - the `api` module (`IdentityService`, `UserRepository`, `User`, `UserEvent`, the identifier types and a person's `StandardClaims`) and the feature-gated `testing` module.
 - tests: integration tests of the crate (not documented here).
 
 ## Workspace Dependencies

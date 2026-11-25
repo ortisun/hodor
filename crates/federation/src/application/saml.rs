@@ -6,7 +6,7 @@
 
 use crate::application::openid::{AuthorizationRequest, VerifiedIdentity};
 use crate::domain::link::Subject;
-use crate::domain::provider::{IdentityProvider, SamlSettings};
+use crate::domain::provider::{IdentityProvider, LONGEST_CLAIM_VALUE, SamlSettings, claims_from};
 use hodor_kernel::{RandomSource, Secret, Timestamp};
 use hodor_saml::{AuthenticationRequest, Expected, ServiceProvider};
 use std::sync::Arc;
@@ -160,6 +160,9 @@ impl SamlClient {
             email_verified: false,
             name: text(&settings.name_attribute, 200),
             locale: None,
+            claims: claims_from(&settings.claim_attributes, |attribute| {
+                text(attribute, LONGEST_CLAIM_VALUE)
+            }),
         })
     }
 }

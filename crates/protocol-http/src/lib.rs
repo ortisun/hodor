@@ -14,6 +14,7 @@ mod authority_bundle;
 mod authorization_api;
 mod authorize;
 mod bearer;
+mod claims;
 mod client_address;
 mod consent;
 mod form_post;

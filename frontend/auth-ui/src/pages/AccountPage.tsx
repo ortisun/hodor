@@ -107,6 +107,9 @@ export function AccountPage({ tenant, client, text, go, path }: PageProps) {
           />
           <Ways>
             <li>
+              <PageLink href={path("profile")}>{text.profileLink}</PageLink>
+            </li>
+            <li>
               <PageLink href={path("security")}>{text.securityLink}</PageLink>
             </li>
           </Ways>

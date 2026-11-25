@@ -155,7 +155,8 @@ function seedHodor() {
       "--type", "confidential", "--method", method, "--without-pkce",
       "--grant", "authorization_code", "--grant", "refresh_token",
       "--redirect-uri", CALLBACK, "--post-logout-redirect-uri", POST_LOGOUT,
-      "--scope", "openid", "--scope", "profile", "--scope", "email", "--scope", "offline_access",
+      "--scope", "openid", "--scope", "profile", "--scope", "email", "--scope", "address",
+      "--scope", "phone", "--scope", "offline_access",
       // The suite's request object tests send unsigned objects, which Hodor
       // reads only from a client that chose `none`.
       "--request-object-signing-alg", "none",
@@ -224,18 +225,30 @@ async function makePerson(browser) {
     console.log("made by an earlier run on this stack");
     return;
   }
-  // Made by an administrator with a name, so that UserInfo has a profile
-  // claim to give; the person then chooses a password through the link
-  // that recovering it sends, as any person made this way would.
+  // Made by an administrator with a username and a name, and given every
+  // standard claim, so that UserInfo has each claim the tests of the scopes
+  // want; the person then chooses a password through the link that
+  // recovering it sends, as any person made this way would.
   const token = printed(cli("admin", "bootstrap", "--tenant", TENANT, "--email", OPERATOR), "token");
   const made = await fetch(`${ISSUER}/api/v1/admin/users`, {
     method: "POST",
     headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
-    body: JSON.stringify({ email: PERSON, display_name: "Ada Conformance", locale: "en" }),
+    body: JSON.stringify({ email: PERSON, username: "ada", display_name: "Ada Conformance", locale: "en" }),
   });
   if (made.status !== 201) {
     throw new Error(`the administration interface did not make ${PERSON}: ${made.status} ${await made.text()}`);
   }
+  cli(
+    "user", "claims", "--tenant", TENANT, "--user", PERSON,
+    "--given-name", "Ada", "--middle-name", "Augusta", "--family-name", "Conformance",
+    "--nickname", "Ada", "--gender", "female", "--birthdate", "1815-12-10",
+    "--zoneinfo", "Europe/London", "--profile", "https://ada.example.com/profile",
+    "--picture", "https://ada.example.com/picture.png", "--website", "https://ada.example.com",
+    "--phone-number", "+44 20 7946 0000", "--phone-number-verified", "true",
+    "--street-address", "12 St James's Square", "--locality", "London", "--region", "England",
+    "--postal-code", "SW1Y 4JH", "--country", "GB",
+    "--formatted-address", "12 St James's Square, London SW1Y 4JH, United Kingdom",
+  );
   const context = await browser.newContext({ ignoreHTTPSErrors: true, locale: "en-US" });
   const page = await context.newPage();
   await page.goto(`${ISSUER}/account/recover`);

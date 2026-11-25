@@ -12,7 +12,8 @@ The operations tool of a Hodor installation: `main.rs`, and
 its audience; `bind` knows the engine names `native` and `open_policy_agent`
 through a registry of names only, since the tool never evaluates), and
 `webhooks.rs` for `hodor-cli webhook`, `trust_domains.rs` for
-`hodor-cli trust-domain`, and `mesh.rs` for `hodor-cli mesh linkerd-policy`. It parses
+`hodor-cli trust-domain`, `mesh.rs` for `hodor-cli mesh linkerd-policy`, and
+`users.rs` for `hodor-cli user claims`. It parses
 the command line with clap (`Cli`, `Command`), connects to PostgreSQL and calls
 the services of the domain crates directly. It applies migrations, manages
 tenants, makes the first administrator of a tenant, verifies the audit chain,
@@ -42,9 +43,10 @@ Commands, as typed, from the clap enums in `main.rs`:
 | `hodor-cli tenant assurance-levels` | `--slug`, `--level <acr>=<requirement>` repeated; none to only print | `AssuranceLevels::new` then `TenantService::change_settings` with `authentication.assurance_levels`; prints `<slug> <acr> <requirement>` per level, weakest first (`TenantCommand::AssuranceLevels`) |
 | `hodor-cli admin bootstrap` | `--tenant`, `--email`, `--token-minutes` (default 60) | `bootstrap_administrator` (`AdminCommand::Bootstrap`) |
 | `hodor-cli audit verify` | `--tenant` | `verify_audit`, which calls `hodor_audit::api::AuditService::verify` (`AuditCommand::Verify`) |
-| `hodor-cli provider add` | `--tenant`, `--alias`, `--name`, `--kind` (`openid-connect`, `github`, `ldap`, `saml`; default `openid-connect`), `--issuer`, `--client-id`, `--scope` (repeatable), `--no-create-users`, `--base`, `--filter`, `--subject-attribute` (default `entryUUID`), `--email-attribute`, `--name-attribute`, `--sign-on-address`, `--certificate`, `--trust-email`; client secret from `HODOR_PROVIDER_CLIENT_SECRET` | `FederationService::create_provider` (`ProviderCommand::Add`, `run_provider`) |
+| `hodor-cli provider add` | `--tenant`, `--alias`, `--name`, `--kind` (`openid-connect`, `github`, `ldap`, `saml`; default `openid-connect`), `--issuer`, `--client-id`, `--scope` (repeatable), `--no-create-users`, `--base`, `--filter`, `--subject-attribute` (default `entryUUID`), `--email-attribute`, `--name-attribute`, `--sign-on-address`, `--certificate`, `--trust-email`, `--claim-attribute <claim>=<attribute>` (repeatable, such as `given_name=givenName` or `address.locality=l`; the `claim_attributes` of the directory or SAML settings); client secret from `HODOR_PROVIDER_CLIENT_SECRET` | `FederationService::create_provider` (`ProviderCommand::Add`, `run_provider`) |
 | `hodor-cli provider list` | `--tenant` | `FederationService::providers` (`ProviderCommand::List`) |
 | `hodor-cli provider disable` / `enable` | `--tenant`, `--alias` | `FederationService::provider_by_alias`, then `FederationService::set_provider_status` with `ProviderStatus::Disabled` or `ProviderStatus::Enabled` |
+| `hodor-cli user claims` | `--tenant`, `--user` (its identifier, or a username or email address it has; `identity.user_not_found` otherwise), and each optional: `--given-name`, `--family-name`, `--middle-name`, `--nickname`, `--profile`, `--picture`, `--website`, `--gender`, `--birthdate`, `--zoneinfo`, `--phone-number`, `--phone-number-verified true\|false`, `--formatted-address`, `--street-address`, `--locality`, `--region`, `--postal-code`, `--country` | Without any of them, only prints. Otherwise the person's claims with each given one set through `StandardClaims::set` (an empty value removes it, the others kept), `phone_number_verified` false for a new number unless given, then `IdentityService::change_claims`. Prints `<claim> <value>` per claim the person has, in the order of `ClaimField::ALL`, the parts of the address as `address.<part>` and a line break as `\n`, then `phone_number_verified <true\|false>` when there is a number (`users.rs:run`, `UserCommand::Claims`) |
 | `hodor-cli application add` | `--tenant`, `--name`, `--first-party` (third party unless given) | `ApplicationService::create_application`; prints `application <id> <name>` (`applications.rs:run_application`) |
 | `hodor-cli application list` | `--tenant` | `ApplicationService::applications`; one line `<id> <status> first-party|third-party <name>` each |
 | `hodor-cli application disable` / `enable` | `--tenant`, `--id` | `ApplicationService::set_application_status`; prints `application <id> <status>` |
@@ -106,7 +108,7 @@ Commands, as typed, from the clap enums in `main.rs`:
 
 Global flags of the command groups (`Command` in `main.rs`):
 
-- `tenant`, `admin`, `audit`, `provider`, `application`, `client`,
+- `tenant`, `admin`, `audit`, `provider`, `user`, `application`, `client`,
   `resource-server` and `mesh` take `--database-url` /
   `HODOR_DATABASE_URL`, the application role, connected with
   `Database::connect(&Secret, 2)`.
@@ -161,6 +163,14 @@ the application commands), `run_tenant`, `run_provider`,
   SAML it refuses with `federation.client_secret_invalid` when
   `HODOR_PROVIDER_CLIENT_SECRET` is unset; a SAML provider gets an empty
   secret ("A SAML identity provider is not proved anything with a secret.").
+- A `--claim-attribute` without `=` is refused with
+  `federation.claim_attribute_invalid`, and so are claim attributes given
+  for a provider that is neither a directory nor a SAML identity provider
+  (`run_provider`).
+- `user claims` checks nothing itself: the identity context does, so a
+  value the administration interface refuses is refused with the same code,
+  `identity.claim_invalid` or, for a service account or an agent,
+  `identity.workload_claims_refused` (`users.rs` module documentation).
 - The client secret is read from the environment, never from an argument, so
   that it shows neither in the list of processes nor in a shell's history
   (doc comment on `ProviderCommand::Add`).
@@ -189,6 +199,8 @@ the application commands), `run_tenant`, `run_provider`,
 - `provider add`, `disable` and `enable` write identity provider rows; the
   client secret is sealed with the keys from `HODOR_SECRET_KEYS`
   (`run_provider`).
+- `user claims` replaces a person's standard claims when one is given,
+  recording `identity.profile_changed` when they changed (`users.rs:run`).
 - `totp enroll` stores a sealed secret and prints it once in Base32 with its
   `otpauth://` address; `totp confirm` and `totp remove` change
   `credential.totp` and record `credential.totp_enrolled` or

@@ -9,8 +9,14 @@
 
 use crate::domain::client::ClientId;
 use crate::domain::event::OauthEvent;
+use crate::domain::openid::address_claim;
 use crate::domain::text;
 use crate::domain::token::MOST_GROUPS_IN_A_TOKEN;
+use hodor_identity::api::{
+    LONGEST_ADDRESS_PART, LONGEST_BIRTHDATE, LONGEST_FORMATTED_ADDRESS, LONGEST_GENDER,
+    LONGEST_NAME, LONGEST_PAGE_ADDRESS, LONGEST_PHONE_NUMBER, LONGEST_POSTAL_CODE,
+    LONGEST_STREET_ADDRESS, LONGEST_ZONEINFO, StandardClaims,
+};
 use hodor_kernel::{DomainError, GroupId, OrganizationId, Timestamp};
 use serde_json::{Map, Value, json};
 use std::collections::BTreeSet;
@@ -46,7 +52,7 @@ const IDENTIFIER_LENGTH: usize = 36;
 /// token, an access token or an answer of UserInfo, and those the
 /// specifications Hodor follows give a meaning to there. Compared without
 /// regard to case.
-pub const RESERVED_CLAIMS: [&str; 33] = [
+pub const RESERVED_CLAIMS: [&str; 46] = [
     // JSON Web Token (RFC 7519).
     "iss",
     "sub",
@@ -86,6 +92,19 @@ pub const RESERVED_CLAIMS: [&str; 33] = [
     "updated_at",
     "email",
     "email_verified",
+    "given_name",
+    "family_name",
+    "middle_name",
+    "nickname",
+    "profile",
+    "picture",
+    "website",
+    "gender",
+    "birthdate",
+    "zoneinfo",
+    "phone_number",
+    "phone_number_verified",
+    "address",
 ];
 
 /// Whether `claim` is a name Hodor sets, without regard to case.
@@ -147,15 +166,54 @@ pub enum PersonAttribute {
     EmailVerified,
     /// The language tag.
     Locale,
+    /// `given_name`.
+    GivenName,
+    /// `family_name`.
+    FamilyName,
+    /// `middle_name`.
+    MiddleName,
+    /// `nickname`.
+    Nickname,
+    /// `profile`: the address of the person's page elsewhere.
+    Profile,
+    /// `picture`.
+    Picture,
+    /// `website`.
+    Website,
+    /// `gender`.
+    Gender,
+    /// `birthdate`.
+    Birthdate,
+    /// `zoneinfo`.
+    Zoneinfo,
+    /// `phone_number`.
+    PhoneNumber,
+    /// Whether the telephone number is verified.
+    PhoneNumberVerified,
+    /// The postal address, an object of its parts.
+    Address,
 }
 
 impl PersonAttribute {
-    const ALL: [Self; 5] = [
+    const ALL: [Self; 18] = [
         Self::DisplayName,
         Self::Username,
         Self::Email,
         Self::EmailVerified,
         Self::Locale,
+        Self::GivenName,
+        Self::FamilyName,
+        Self::MiddleName,
+        Self::Nickname,
+        Self::Profile,
+        Self::Picture,
+        Self::Website,
+        Self::Gender,
+        Self::Birthdate,
+        Self::Zoneinfo,
+        Self::PhoneNumber,
+        Self::PhoneNumberVerified,
+        Self::Address,
     ];
 
     /// How the interface writes it.
@@ -167,6 +225,19 @@ impl PersonAttribute {
             Self::Email => "email",
             Self::EmailVerified => "email_verified",
             Self::Locale => "locale",
+            Self::GivenName => "given_name",
+            Self::FamilyName => "family_name",
+            Self::MiddleName => "middle_name",
+            Self::Nickname => "nickname",
+            Self::Profile => "profile",
+            Self::Picture => "picture",
+            Self::Website => "website",
+            Self::Gender => "gender",
+            Self::Birthdate => "birthdate",
+            Self::Zoneinfo => "zoneinfo",
+            Self::PhoneNumber => "phone_number",
+            Self::PhoneNumberVerified => "phone_number_verified",
+            Self::Address => "address",
         }
     }
 
@@ -181,7 +252,8 @@ impl PersonAttribute {
             .find(|attribute| attribute.as_str() == value)
             .ok_or_else(|| {
                 source_invalid(
-                    "an attribute is display_name, username, email, email_verified or locale",
+                    "an attribute is display_name, username, email, email_verified, locale, or \
+                     a standard claim of the person by its name",
                 )
             })
     }
@@ -192,10 +264,42 @@ impl PersonAttribute {
             Self::DisplayName => text_bound(LONGEST_DISPLAY_NAME),
             Self::Username => text_bound(LONGEST_USERNAME),
             Self::Email => text_bound(LONGEST_EMAIL),
-            Self::EmailVerified => "false".len(),
+            Self::EmailVerified | Self::PhoneNumberVerified => "false".len(),
             Self::Locale => text_bound(LONGEST_LOCALE),
+            Self::GivenName | Self::FamilyName | Self::MiddleName | Self::Nickname => {
+                text_bound(LONGEST_NAME)
+            }
+            Self::Profile | Self::Picture | Self::Website => ascii_bound(LONGEST_PAGE_ADDRESS),
+            Self::Gender => text_bound(LONGEST_GENDER),
+            Self::Birthdate => ascii_bound(LONGEST_BIRTHDATE),
+            Self::Zoneinfo => ascii_bound(LONGEST_ZONEINFO),
+            Self::PhoneNumber => ascii_bound(LONGEST_PHONE_NUMBER),
+            Self::Address => LARGEST_ADDRESS,
         }
     }
+}
+
+/// The largest address as JSON writes it: each part's largest text with
+/// its name in quotes and a colon, five commas and two braces.
+const LARGEST_ADDRESS: usize = text_bound(LONGEST_FORMATTED_ADDRESS)
+    + "\"formatted\":".len()
+    + text_bound(LONGEST_STREET_ADDRESS)
+    + "\"street_address\":".len()
+    + text_bound(LONGEST_ADDRESS_PART)
+    + "\"locality\":".len()
+    + text_bound(LONGEST_ADDRESS_PART)
+    + "\"region\":".len()
+    + text_bound(LONGEST_POSTAL_CODE)
+    + "\"postal_code\":".len()
+    + text_bound(LONGEST_ADDRESS_PART)
+    + "\"country\":".len()
+    + 5
+    + 2;
+
+/// The largest text of at most `characters` printable ASCII characters
+/// that JSON writes as they are: one byte each and two quotes.
+const fn ascii_bound(characters: usize) -> usize {
+    characters + 2
 }
 
 /// What a mapper may read of the organization of the sign-in.
@@ -643,6 +747,8 @@ pub struct PersonAttributes {
     pub email: Option<(String, bool)>,
     /// The language tag.
     pub locale: Option<String>,
+    /// The person's standard claims.
+    pub claims: StandardClaims,
 }
 
 /// What must be read for the mappers that apply to a token.
@@ -696,6 +802,38 @@ fn bounded_text(value: Option<&String>, characters: usize) -> Option<Value> {
     (value.to_string().len() <= text_bound(characters)).then_some(value)
 }
 
+/// The value of a standard claim, or none to leave the claim out. A value
+/// is never written larger than the attribute's largest value.
+fn standard_value(attribute: PersonAttribute, claims: &StandardClaims) -> Option<Value> {
+    let text = |value: &Option<String>| {
+        let value = json!(value.as_ref()?);
+        (value.to_string().len() <= attribute.largest()).then_some(value)
+    };
+    match attribute {
+        PersonAttribute::GivenName => text(&claims.given_name),
+        PersonAttribute::FamilyName => text(&claims.family_name),
+        PersonAttribute::MiddleName => text(&claims.middle_name),
+        PersonAttribute::Nickname => text(&claims.nickname),
+        PersonAttribute::Profile => text(&claims.profile),
+        PersonAttribute::Picture => text(&claims.picture),
+        PersonAttribute::Website => text(&claims.website),
+        PersonAttribute::Gender => text(&claims.gender),
+        PersonAttribute::Birthdate => text(&claims.birthdate),
+        PersonAttribute::Zoneinfo => text(&claims.zoneinfo),
+        PersonAttribute::PhoneNumber => text(&claims.phone_number),
+        PersonAttribute::PhoneNumberVerified => claims
+            .phone_number
+            .as_ref()
+            .map(|_| json!(claims.phone_number_verified)),
+        PersonAttribute::Address => claims
+            .address
+            .as_ref()
+            .map(address_claim)
+            .filter(|value| value.to_string().len() <= LARGEST_ADDRESS),
+        _ => None,
+    }
+}
+
 /// The value of `source` for `facts`, or none to leave the claim out.
 fn value_of(source: &ClaimSource, facts: &PersonFacts) -> Option<Value> {
     let attributes = &facts.attributes;
@@ -717,6 +855,7 @@ fn value_of(source: &ClaimSource, facts: &PersonFacts) -> Option<Value> {
         ClaimSource::Attribute(PersonAttribute::Locale) => {
             bounded_text(attributes.locale.as_ref(), LONGEST_LOCALE)
         }
+        ClaimSource::Attribute(attribute) => standard_value(*attribute, &attributes.claims),
         ClaimSource::Groups => (facts.groups.len() <= MOST_GROUPS_IN_A_TOKEN).then(|| {
             let names: Vec<String> = facts.groups.iter().map(ToString::to_string).collect();
             json!(names)

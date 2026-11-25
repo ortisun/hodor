@@ -37,6 +37,7 @@ the set of re-exports in `lib.rs`.
 | `discovery_routes(DiscoveryState { public_url, tenants, identity_header })` | `openid.rs` | `GET /.well-known/openid-configuration` and `GET /.well-known/oauth-authorization-server`, mounted under a tenant: the same `discovery_document`, naming the tenant's assurance levels in `acr_values_supported`, through `with_registration` `create` in `prompt_values_supported` when the tenant's registration policy is open, and, when a header of the caller's identity is named, the methods it makes usable (`advertise_forwarded_methods`) and, for a header that forwards certificates, `tls_client_certificate_bound_access_tokens` (`advertise_certificate_bound_tokens`), with `Cache-Control: public, max-age=300` and `Access-Control-Allow-Origin: *`. |
 | `authorization_api_routes(state)`, `AuthorizationApiState`, `AUTHORIZATION_API_AUDIENCE`, `EVALUATE_SCOPE`, `SIMULATE_SCOPE`, `EXPLAIN_SCOPE`, `AUTHORIZATION_OPENAPI`, `AUTHORIZATION_OPERATIONS` | `authorization_api.rs` | The Authorization API, mounted under a tenant at `/api/v1/authorization`: `POST /evaluate`, `/batch` (at most 100; a request that cannot be read is a problem object in its place) and `/simulate` (`against`: exactly one of `published: true`, `revision`, `draft`), and `GET /openapi.json` (`include_str!("../openapi/authorization-v1.json")`; a unit test holds it and `AUTHORIZATION_OPERATIONS` together). The caller comes from `ResourceAccessService::caller` with the audience `urn:hodor:authorization` and the request's `ForwardedIdentity`, or, for a value that `looks_like_api_key`, from `ApiKeyAccess` (the key good in the tenant, its holder a workload that may act, its application an enabled one of the tenant, whose resource server is asked about), then the route's scope; the namespace is the audience of the token client's application's resource server (`authorization.no_resource_server` when it has none) and the context's application is that application. A subject `{"type": "workload_identity", "id": …}` is resolved first by `resolve_workload`, through `ApplicationService::service_account_of`, to `{"type": "user"}` naming the service account the tenant's enabled clients bound to it act as, or the identity itself when none is bound; one that `WorkloadIdentity::parse` refuses is `authorization.workload_identity_invalid` (Decision 0058). Bodies are `deny_unknown_fields` (`request.body_invalid`). Answers name `decision` (`ALLOW`, `DENY`, `INDETERMINATE`), `decision_id`, `evaluated_at`, `engine`, `policy_version`, `reason`, and with `authz:explain` `matched_policies` and a simulation's `trace`; every answer carries `no-store`. `AuthorizationApiState { access, keys: ApiKeyAccess { keys, identity, applications }, evaluation, public_url }`. |
 | `scim_routes(state)`, `ScimState { access, provisioning, public_url }`, `SCIM_AUDIENCE`, `SCIM_SCOPE`, `SCIM_MEDIA_TYPE` | `scim.rs` | The SCIM 2.0 server, mounted under a tenant at `/scim/v2`: `GET /ServiceProviderConfig`, `/ResourceTypes[/{name}]`, `/Schemas[/{uri}]`; `GET`, `POST /Users` and `/Groups`; `GET`, `PUT`, `PATCH`, `DELETE` of one user or group; `POST /Bulk`; `.search` answers `501`; any other path a SCIM `404`. Every route first takes the caller from `ResourceAccessService::caller` with the audience `urn:hodor:scim` and the request's `ForwardedIdentity` (in the handlers' `Context`), then needs the scope `scim`; refusals carry the challenge of `bearer::challenge` and a SCIM error. The caller is `Actor::Client`. Every change goes through `perform`, alone or as an operation of a bulk request, so both answer alike: `If-Match` (a bulk operation's `version`) is a `Precondition`; answers carry `ETag` from `meta.version` and `Location` on `201`; `GET` of one resource answers `304` when `If-None-Match` names its version. `bulk` refuses a body past `MAX_BULK_BYTES` or more than 100 operations with `413` `tooMany`, then does each operation in order in its own transaction, resolving `bulkId:` references against what earlier `POST`s created, and stops after `failOnErrors` failures. Bodies must be `application/scim+json` or `application/json` (`415` otherwise); answers are `application/scim+json` with `no-store`, errors in the schema of RFC 7644 (`status` as text, `scimType` from the provisioning codes, `uniqueness` for `identity.identifier_taken` and `identity.group_name_taken`, `412` without one for `provisioning.version_mismatch`). Path parameters are read with `RawPathParams`, since the tenant's is among them. |
+| `ClaimsBody`, `AddressBody` (crate-visible) | `claims.rs` | A person's standard claims as the administration and interaction interfaces write them, every member optional and unknown members refused (`deny_unknown_fields`). `ClaimsBody::of(claims, person)` writes those with a value and `phone_number_verified`, and nothing for a workload; `into_claims` gives the identity context the claims unchecked, `phone_number_verified` false unless given. `Debug` prints no value. |
 | `bearer`, `refused`, `challenge`, `not_cached` (crate-visible) | `bearer.rs` | The token of `Authorization: Bearer`; a refusal as `401` with `WWW-Authenticate: Bearer` (`error="invalid_token"` when a token was sent) or `403` with `error="insufficient_scope", scope="…"`, logged with the surface it came from; `Cache-Control: no-store`. Shared by UserInfo and the Authorization API. |
 | `admin_routes(state)`, `AdminState`, `CERTIFICATE_AUTHORITY_AUDIENCE` | `admin.rs` | The administration interface, authenticated by bearer access token or by the API key of a workload (`by_token`: a value that `looks_like_api_key` goes to `AdminState.api_keys`, its holder must be `is_workload_that_may_act`, and the route's permission must be among the key's scopes as well as in the holder's roles); the signing of intermediates alone also by an access token of the token endpoint for `urn:hodor:certificate-authority` (`admin/certificate_authority.rs`). |
 | `console_routes(state)`, `ConsoleState` | `admin.rs` | The same handlers for the admin console, authenticated by session cookie, plus `/me`. |
@@ -154,6 +155,7 @@ routes and the whole router.
 | GET | `/sign-in/steps/enrollment/kinds` | `enrollment_kinds` (`FactorService::enrollable`, `{ "kinds": [...] }`; no sign-in needed) |
 | POST | `/sign-in/steps/enrollment/options` | `begin_enrollment` (body `{ "kind" }`, `422` `request.invalid_body` for anything but `authenticator_application`, `security_key` or `passkey`; the challenge of the enrollment step, `200` with its options) |
 | POST | `/sign-in/steps/enrollment` | `finish_enrollment` (body `{ "code" }`, or `{ "client_data", "attestation_object", "transports"?, "discoverable"?, "name"? }`; the answer of a sign-in, with `recovery_codes` once when a set was made) |
+| GET, PUT | `/profile` | `profile::read_profile`, `profile::replace_profile` (`interaction/profile.rs`; body and answer `{ "display_name", "claims" }`, the PUT with the session's CSRF token; `AccountService::own_profile` and `change_own_profile`) |
 | GET | `/sign-in/providers` | `offered_providers` |
 | POST | `/sign-in/providers/{alias}` | `choose_provider` |
 | POST | `/sign-in/providers/{alias}/callback` | `finish_with_provider` |
@@ -240,6 +242,7 @@ Administration and console handlers, shared by both routers
 | --- | --- | --- |
 | GET, POST | `/users` | `list_users`, `create_user` |
 | GET, POST | `/users/{user}` | `get_user`, `user_action` (`POST /users/{user_id}:suspend` arrives here) |
+| PUT | `/users/{user}/claims` | `replace_user_claims` (a `ClaimsBody`; `IdentityService::change_claims`, answering the user) |
 | GET | `/users/{user}/sessions` | `list_user_sessions` |
 | DELETE | `/sessions/{session}` | `revoke_session` |
 | GET | `/audit-records` | `list_audit_records` |
@@ -273,6 +276,13 @@ Deleted, otherwise `422` `oauth.client_principal_invalid`; `PATCH` tells a
 `spiffe_id` is read with `SpiffeId::parse` (`422`
 `oauth.client_spiffe_id_invalid`), answered as text or `null`, and on
 `PATCH` left out, `null` (removed) or replaced alike.
+
+`create_user` takes `email` and, optionally, `username`, `display_name`
+and `locale`; a username becomes a second login identifier. A user's answer
+(`UserBody`) carries `claims`, a `ClaimsBody`, empty for a workload. The
+settings of a directory and of a SAML identity provider (`DirectoryBody`,
+`SamlBody`) carry `claim_attributes`, a map from a standard claim to an
+attribute name; left out of a change, the provider's map is kept.
 
 `GET` and `PUT /email-sign-in` (`read_email_sign_in`, `set_email_sign_in`
 in `admin.rs`, `users:read` and `users:write`) read and replace the
@@ -385,6 +395,12 @@ root, outside any tenant.
   submissions, provider choice, cancellation, sign-out and ending sessions,
   and is compared in constant time (`same`). A wrong or missing token gets
   `403 request.csrf_token_invalid`.
+- `/profile` answers only a signed-in person (`401 session.not_authenticated`
+  otherwise); its `PUT` needs the CSRF token and reads the body only once
+  the person is known, `422 request.invalid_body` for one that cannot be
+  read. The rules of the claims are the identity context's
+  (`identity.claim_invalid`), and the person cannot vouch for a telephone
+  number.
 - `refuse_other_origins` refuses any request other than GET, HEAD or OPTIONS
   whose `Origin` host differs from `Host`, with `403 request.cross_origin`.
   It is layered over every interaction route except the two SAML routes,
@@ -457,8 +473,8 @@ root, outside any tenant.
   `interaction.rs`. The console only reads the session cookie.
 - State changes happen only through the domain services the handlers call:
   sign-in steps, sessions revoked (`sign_out`, `ended_by_user`,
-  `revoked_by_administrator`), registration, recovery, user creation and
-  suspension, and identity provider creation, change, secret change and
+  `revoked_by_administrator`), registration, recovery, a person's own
+  profile, user creation, suspension and standard claims, and identity provider creation, change, secret change and
   status change. Each authenticated or anonymous `Caller` carries a freshly
   generated `CorrelationId`.
 

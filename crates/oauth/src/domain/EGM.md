@@ -183,17 +183,25 @@ randomness and hashing are passed in. Every module is `pub(crate)` in
   audience, a person as `sub` and the
   `openid` scope, for UserInfo; `BearerRefusal`, `CheckedAccessToken`
   with the `jti` and `client_id` the register is asked with), `PersonClaims`
-  and `userinfo_claims` (the claims of `profile` and `email`),
+  (with the person's `StandardClaims` in `claims`) and `userinfo_claims`
+  (the claims of `profile`, among them the standard names, page addresses,
+  gender, birth date and time zone the person has; of `email`; of `address`,
+  the postal address as `address_claim` writes it, an object of the parts
+  the person has; and of `phone`, `phone_number` with
+  `phone_number_verified`, both only when there is a number),
   `signed_userinfo_claims` and `userinfo_header` (crate-visible: a signed
   UserInfo answer adds `iss` and `aud`, and its header has `alg` and `kid`
   and no `typ`), and
-  `discovery_document(issuer, acr_values)`, which names the revocation and introspection
-  endpoints and their methods, the response types and modes of
-  `ResponseType::ALL` and `ResponseMode::ALL`, `display_values_supported`, and
-  the four `IdTokenAlgorithm`s as `id_token_signing_alg_values_supported` and
+  `discovery_document(issuer, acr_values)`, which names the scopes
+  `address` and `phone` and every standard claim among those supported,
+  the revocation and introspection endpoints and their methods, the
+  response types and modes of `ResponseType::ALL` and `ResponseMode::ALL`,
+  `display_values_supported`, and the four `IdTokenAlgorithm`s as
+  `id_token_signing_alg_values_supported` and
   `userinfo_signing_alg_values_supported`; `with_registration(document, open)`
   and `prompt_values_supported(open)` add `create` for a tenant open to
-  registration. Its cases are in `openid/tests.rs`.
+  registration. Its cases, with `every_claim`, a person with every standard
+  claim that the claim mapper cases share, are in `openid/tests.rs`.
 - `introspection.rs`: revocation and introspection. `TokenQuery::parse`
   (`token` required, a parameter twice or more than one way of proving who
   the client is `invalid_request`, no client named `invalid_client`),
@@ -296,7 +304,8 @@ randomness and hashing are passed in. Every module is `pub(crate)` in
 - `event.rs`: `OauthEvent`, twenty-nine variants, each named `oauth.*`.
 - `claim_mapper.rs`: claim mappers (Decision 0041). `ClaimMapperSettings`
   (`checked`: the claim written as a scope and not `is_reserved`, compared
-  without regard to case against `RESERVED_CLAIMS`; one to three distinct
+  without regard to case against the 46 `RESERVED_CLAIMS`, the thirteen
+  standard claims of a person among them; one to three distinct
   `ClaimTarget`s, put in their order; a scope the client may ask for; a
   constant but `null` of at most `MAX_CONSTANT_BYTES`) and its
   `worst_case`; `check_together` (at most `MAX_CLAIM_MAPPERS`, one per
@@ -305,8 +314,15 @@ randomness and hashing are passed in. Every module is `pub(crate)` in
   `oauth.claim_mapper_name_taken`, `oauth.claim_mapper_token_too_large`);
   `ClaimMapper` (`create`, `replace`, `deleted`, with their events);
   `ClaimSource` (`to_json`, `from_json`, each kind's largest value);
-  `needs`, `mapped_claims` (by claim name, a value larger than its bound
-  or more than 100 groups leaving the claim out) and `add_mapped_claims`,
+  `PersonAttribute`, eighteen attributes of a person by their claim names:
+  `display_name`, `username`, `email`, `email_verified`, `locale`, and the
+  thirteen standard claims, each with its largest value as JSON writes it
+  from the bounds `hodor-identity` exports (`LARGEST_ADDRESS` for the
+  address, the object of its six parts at their longest);
+  `PersonAttributes`, what a mapper reads of a person, the standard claims
+  in `claims`; `needs`, `mapped_claims` (by claim name, a value larger than
+  its bound or more than 100 groups leaving the claim out, and
+  `phone_number_verified` written only with a number) and `add_mapped_claims`,
   the one hook the token endpoint and UserInfo call after Hodor's own
   claims, which never replaces one. Its cases, including one that every
   claim Hodor writes is reserved, are in `claim_mapper/tests.rs`.

@@ -51,7 +51,19 @@ fn refusal(settings: ClaimMapperSettings) -> String {
 #[test]
 fn a_mapper_that_names_sub_iss_or_acr_is_refused() {
     for name in [
-        "sub", "iss", "acr", "SUB", "Acr", "groups", "org_id", "email", "act", "cnf",
+        "sub",
+        "iss",
+        "acr",
+        "SUB",
+        "Acr",
+        "groups",
+        "org_id",
+        "email",
+        "act",
+        "cnf",
+        "given_name",
+        "Phone_Number",
+        "address",
     ] {
         assert_eq!(
             refusal(settings(name, &[ClaimTarget::IdToken], ClaimSource::Groups)),
@@ -62,7 +74,7 @@ fn a_mapper_that_names_sub_iss_or_acr_is_refused() {
     for name in [
         "department",
         "roles",
-        "given_name",
+        "first_name",
         "https://example.com/claims/team",
     ] {
         assert!(
@@ -132,11 +144,12 @@ fn every_claim_hodor_writes_is_reserved() {
         locale: Some("pt-BR".to_owned()),
         updated_at: Some(now()),
         email: Some(("ana@example.com".to_owned(), true)),
+        claims: crate::domain::openid::tests::every_claim(),
         groups: vec![GroupId::generate()],
     };
     let userinfo = userinfo_claims(
         "a-pairwise-subject",
-        &scopes(&["openid", "profile", "email", "groups"]),
+        &scopes(&["openid", "profile", "email", "address", "phone", "groups"]),
         &person,
     );
     let logout_token = logout_token_claims(
@@ -291,6 +304,32 @@ fn each_source_has_a_largest_value() {
         worst(ClaimSource::Attribute(PersonAttribute::Locale)),
         142 + around
     );
+    for (attribute, largest) in [
+        (PersonAttribute::GivenName, 802),
+        (PersonAttribute::FamilyName, 802),
+        (PersonAttribute::MiddleName, 802),
+        (PersonAttribute::Nickname, 802),
+        (PersonAttribute::Profile, 1026),
+        (PersonAttribute::Picture, 1026),
+        (PersonAttribute::Website, 1026),
+        (PersonAttribute::Gender, 202),
+        (PersonAttribute::Birthdate, 12),
+        (PersonAttribute::Zoneinfo, 66),
+        (PersonAttribute::PhoneNumber, 33),
+        (PersonAttribute::PhoneNumberVerified, 5),
+        (PersonAttribute::Address, 3372),
+    ] {
+        assert_eq!(
+            worst(ClaimSource::Attribute(attribute)),
+            largest + around,
+            "{}",
+            attribute.as_str()
+        );
+        assert_eq!(
+            PersonAttribute::parse(attribute.as_str()).expect("read back"),
+            attribute
+        );
+    }
     assert_eq!(worst(ClaimSource::Groups), 3901 + around);
     assert_eq!(
         worst(ClaimSource::GroupMember(GroupId::generate())),
@@ -470,6 +509,7 @@ fn each_source_writes_what_the_person_has_and_leaves_out_what_they_do_not() {
             username: Some("ana".to_owned()),
             email: Some(("ana@example.com".to_owned(), false)),
             locale: Some("pt-BR".to_owned()),
+            claims: Default::default(),
         },
         groups: vec![finance, other],
         organization: Some(organization),
@@ -512,6 +552,61 @@ fn each_source_writes_what_the_person_has_and_leaves_out_what_they_do_not() {
     assert!(
         mapped_claims(&mappers, ClaimTarget::UserInfo, &[], &facts).is_empty(),
         "only the targets a mapper names"
+    );
+}
+
+#[test]
+fn a_mapper_reads_each_standard_claim_of_the_person() {
+    let target = [ClaimTarget::IdToken];
+    let mappers = [
+        mapper(
+            "first_name",
+            &target,
+            ClaimSource::Attribute(PersonAttribute::GivenName),
+        ),
+        mapper(
+            "office_phone",
+            &target,
+            ClaimSource::Attribute(PersonAttribute::PhoneNumber),
+        ),
+        mapper(
+            "office_phone_checked",
+            &target,
+            ClaimSource::Attribute(PersonAttribute::PhoneNumberVerified),
+        ),
+        mapper(
+            "office",
+            &target,
+            ClaimSource::Attribute(PersonAttribute::Address),
+        ),
+        mapper(
+            "born",
+            &target,
+            ClaimSource::Attribute(PersonAttribute::Birthdate),
+        ),
+    ];
+    let facts = PersonFacts {
+        attributes: PersonAttributes {
+            claims: crate::domain::openid::tests::every_claim(),
+            ..PersonAttributes::default()
+        },
+        ..PersonFacts::default()
+    };
+    let claims = mapped_claims(&mappers, ClaimTarget::IdToken, &[], &facts);
+    assert_eq!(claims["first_name"], "Ana");
+    assert_eq!(claims["office_phone"], "+5511912345678");
+    assert_eq!(claims["office_phone_checked"], true);
+    assert_eq!(
+        claims["office"],
+        json!({"street_address": "Rua Augusta, 100", "locality": "São Paulo", "country": "BR"})
+    );
+    assert_eq!(claims["born"], "1990-04-12");
+
+    let nothing = mapped_claims(&mappers, ClaimTarget::IdToken, &[], &PersonFacts::default());
+    assert!(
+        nothing.is_empty(),
+        "a claim the person does not have is left out, and whether a number is verified \
+         with it"
     );
 }
 

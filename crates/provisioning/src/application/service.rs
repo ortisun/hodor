@@ -159,7 +159,7 @@ impl ProvisioningService {
         let user = self
             .ports
             .identity
-            .create_in(uow.as_mut(), command, true, caller)
+            .create_with_claims_in(uow.as_mut(), command, request.claims.clone(), true, caller)
             .await?;
         let id = user.id();
         if !request.active {

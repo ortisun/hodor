@@ -128,6 +128,33 @@ export function UserScreen({ id, client, me, text, go, path, say }: ScreenProps 
 
         <Card>
           <VStack gap={3}>
+            <Heading level={2}>{text.standardClaims}</Heading>
+            {shown.claims.length === 0 ? (
+              <Text color="secondary">{text.noStandardClaims}</Text>
+            ) : (
+              <MetadataList>
+                {shown.claims.map(([claim, value]) => (
+                  <MetadataListItem key={claim} label={text.claimLabel(claim)}>
+                    {claim === "phone_number" ? (
+                      <HStack gap={2} vAlign="center" wrap="wrap">
+                        <Text>{value}</Text>
+                        <Badge
+                          variant={shown.phoneNumberVerified ? "success" : "warning"}
+                          label={shown.phoneNumberVerified ? text.verified : text.notVerified}
+                        />
+                      </HStack>
+                    ) : (
+                      value
+                    )}
+                  </MetadataListItem>
+                ))}
+              </MetadataList>
+            )}
+          </VStack>
+        </Card>
+
+        <Card>
+          <VStack gap={3}>
             <Heading level={2}>{text.identifiers}</Heading>
             {shown.identifiers.map((identifier) => (
               <HStack key={identifier.id} gap={2} vAlign="center" wrap="wrap">

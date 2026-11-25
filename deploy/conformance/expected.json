@@ -1,16 +1,4 @@
 {
-  "oidcc-scope-profile": {
-    "WARNING": "The suite wants every standard claim of `profile`. Hodor keeps a person's name and language and gives those with `updated_at`; it has no given or family name, nickname, picture, website, gender, birth date or time zone, and OpenID Connect Core returns only the claims a provider has (section 5.4)."
-  },
-  "oidcc-scope-address": {
-    "SKIPPED": "Hodor keeps no postal address: the scope `address` is not offered, and discovery does not name it."
-  },
-  "oidcc-scope-phone": {
-    "SKIPPED": "Hodor keeps no telephone number: the scope `phone` is not offered, and discovery does not name it."
-  },
-  "oidcc-scope-all": {
-    "SKIPPED": "It asks for every standard scope at once, `address` and `phone` among them, which Hodor does not offer."
-  },
   "oidcc-prompt-login": {
     "REVIEW": "The suite keeps a screenshot of the second sign-in page, which `prompt=login` must show, for a person to look at. The test passes otherwise."
   },

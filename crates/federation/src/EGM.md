@@ -10,15 +10,15 @@ The source of the federation context (`lib.rs` crate doc comment). It lets a per
   - Use cases: `FederationService` manages providers and links, `ExternalSignIn` and `ExternalIdentityAuthenticator` sign people in, and `OpenIdClient`, `GitHubClient` and `SamlClient` talk to providers.
   - Port traits implemented by adapters: `ProviderStore`, `LinkStore`, `PendingAuthorizationStore`, `DirectoryClient` and `LockoutPolicy`.
 - [domain](./domain/EGM.md) holds the model and the events.
-  - Model: `IdentityProvider`, `ProviderSettings`, `Alias`, `ProviderKind`, `ProviderStatus`, `SamlSettings`, `DirectorySettings`, `Subject`, `ExternalIdentity` and `PendingAuthorization`.
+  - Model: `IdentityProvider`, `ProviderSettings`, `Alias`, `ProviderKind`, `ProviderStatus`, `SamlSettings`, `DirectorySettings`, `ClaimAttributes`, `Subject`, `ExternalIdentity`, `PendingAuthorization` and `SamlAnswer`.
   - Events: `FederationEvent`.
 - `api` (`lib.rs`) re-exports, as the public surface:
   - from `application`: `GitHubClient`, `AuthorizationRequest`, `OpenIdClient`, `VerifiedIdentity`, `DirectoryAnswer`, `DirectoryClient`, `DirectoryEntry`, `DirectoryQuery`, `LinkStore`, `LockoutPolicy`, `PendingAuthorizationStore`, `ProviderStore`, `MAX_SAML_POSTED_BYTES`, `SamlClient`, `saml_assertion_consumer_address`, `saml_metadata_address`, `saml_service_provider`, `ChangeProvider`, `CreateProvider`, `FederationService`, `EXTERNAL_STEP`, `ExternalIdentityAuthenticator`, `ExternalSignIn`, `OfferedProvider` and `callback_address`;
-  - from `domain`: `FederationEvent`, `ExternalIdentity`, `Subject`, `PendingAuthorization`, `Alias`, `DirectorySettings`, `IdentityProvider`, `ProviderId`, `ProviderKind`, `ProviderSettings`, `ProviderSnapshot`, `ProviderStatus`, `SamlSettings` and `directory_host`.
+  - from `domain`: `FederationEvent`, `ExternalIdentity`, `Subject`, `PendingAuthorization`, `SamlAnswer`, `Alias`, `ClaimAttributes`, `DirectorySettings`, `IdentityProvider`, `LONGEST_CLAIM_VALUE`, `ProviderId`, `ProviderKind`, `ProviderSettings`, `ProviderSnapshot`, `ProviderStatus`, `SamlSettings`, `claims_from` and `directory_host`.
 - `testing` (`testing.rs`) is public test support. It is compiled under `#[cfg(any(test, feature = "testing"))]` and provides:
   - `InMemoryFederation`, one in-memory value that implements `ProviderStore`, `LinkStore` and `PendingAuthorizationStore`;
   - `Ports<'a>`, which bundles `units_of_work`, `providers`, `links` and `pending`;
-  - `run_contract(ports)`, which runs every rule the stores must obey and panics when a rule is broken. Each run uses tenants of its own, so runs can share one database.
+  - `run_contract(ports)`, which runs every rule the stores must obey and panics when a rule is broken, among them that a kept SAML answer comes back with its standard claims. Each run uses tenants of its own, so runs can share one database.
   - `crates/adapters-postgres/tests/federation.rs` imports `hodor_federation::testing`.
 
 ## Invariants
