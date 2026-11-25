@@ -25,7 +25,7 @@ flowchart LR
 
 ## Who may call
 
-A SCIM client presents an **access token of the tenant**, issued by [Hodor's token endpoint](oauth.md#token-endpoint-and-client-authentication) and checked exactly as the Authorization API checks one: signed by a published key of the tenant, from the tenant's issuer, not expired, still in force in [the register of access tokens](oauth.md#the-register-of-access-tokens) so that a revoked token is refused at once, issued to an enabled client of an enabled application.
+A SCIM client presents an **access token of the tenant**, issued by [Hodor's token endpoint](oauth.md#token-endpoint-and-client-authentication) and checked exactly as the Authorization API checks one: signed by a published key of the tenant, from the tenant's issuer, not expired, presented with its certificate when it is [bound to one](oauth.md#certificate-bound-access-tokens), still in force in [the register of access tokens](oauth.md#the-register-of-access-tokens) so that a revoked token is refused at once, issued to an enabled client of an enabled application.
 
 - **Its audience must include `urn:hodor:scim`.**
 - **It must hold the scope `scim`.** One scope opens every route: a SCIM client manages the tenant's users and groups or it does not.
@@ -40,7 +40,7 @@ It then gives the SCIM client a client allowed the scope `scim`. Most SCIM clien
 
 | Answer | When |
 |---|---|
-| `401` with `WWW-Authenticate: Bearer` | No token, or a token that is not good here: another tenant's, expired, revoked, of a disabled client, or without the audience `urn:hodor:scim` |
+| `401` with `WWW-Authenticate: Bearer` | No token, or a token that is not good here: another tenant's, expired, revoked, of a disabled client, bound to a certificate the request did not come with, or without the audience `urn:hodor:scim` |
 | `403` with `WWW-Authenticate: Bearer error="insufficient_scope", scope="scim"` | The token is good but lacks the scope `scim` |
 
 Both answers carry a [SCIM error](#errors) as their body. A token of another tenant fails the signature and issuer checks, whatever its body says.

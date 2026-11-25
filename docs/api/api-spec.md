@@ -107,7 +107,7 @@ The operator names the one header Hodor reads in `HODOR_CLIENT_IDENTITY_HEADER`:
 | Value | Written by | What it holds |
 |---|---|---|
 | `client-cert` | A proxy that follows [RFC 9440](https://www.rfc-editor.org/rfc/rfc9440) | `Client-Cert`: the caller's certificate, its DER encoding in base64 between colons. `Client-Cert-Chain`, when present: the certificates between it and its authority, each the same way, separated by commas |
-| `x-forwarded-client-cert` | Envoy, and the meshes built on it: Istio and Consul | `X-Forwarded-Client-Cert`: elements separated by commas, each of pairs `key=value` separated by semicolons. Hodor reads `Cert`, the certificate in PEM, percent-encoded; `Chain`, the chain the same way; `URI` and `DNS`, the names of the certificate, each given once per name; values may be in double quotes. Other keys, `By`, `Hash` and `Subject` among them, are not used |
+| `x-forwarded-client-cert` | Envoy, and the meshes built on it: Istio and Consul | `X-Forwarded-Client-Cert`: elements separated by commas, each of pairs `key=value` separated by semicolons. Hodor reads `Cert`, the certificate in PEM, percent-encoded; `Chain`, the chain the same way; `URI` and `DNS`, the names of the certificate, each given once per name; and, without `Cert`, `Hash`, the SHA-256 of the certificate in hexadecimal, for [certificate-bound access tokens](../architecture/contexts/oauth.md#certificate-bound-access-tokens); values may be in double quotes. Other keys, `By` and `Subject` among them, are not used |
 | `l5d-client-id` | Linkerd's proxy | The caller's Linkerd identity, such as `web.shop.serviceaccount.identity.linkerd.cluster.local` |
 
 The rules:
@@ -117,7 +117,7 @@ The rules:
 - **Only from a trusted proxy.** The header is read only when the connection comes from an address in `HODOR_TRUSTED_PROXIES`, the same proxies as for the client address. From any other connection it is ignored, whatever it says.
 - **Only its nearest element.** When the header holds several elements, or arrives in several lines, only the last is read: the one the proxy Hodor is connected to added. Envoy and Istio add their element after whatever the caller sent, so an element a caller wrote is always before it and never read. For `client-cert` the nearest element of `Client-Cert` is the certificate; every element of `Client-Cert-Chain` may be used to build a path, since a path must still end at an authority of the trust domain, whoever wrote the certificates in between.
 - **What cannot be read is no identity.** A nearest element that does not read, a certificate larger than 16 kibibytes, or a chain of more than 10 certificates, leaves the request with no forwarded identity, and the client is then refused if its method needs one. A certificate that is not one is refused when it is checked. The counter `hodor.http.forwarded_identity.unreadable` counts such headers by `header`.
-- **The identity is found once**, as the request arrives, with the client address, and only the token, revocation and introspection endpoints use it.
+- **The identity is found once**, as the request arrives, with the client address. The token, revocation and introspection endpoints use it to authenticate a client; the token endpoint, UserInfo, the Authorization API and the SCIM server use the certificate's thumbprint to issue and to check [certificate-bound access tokens](../architecture/contexts/oauth.md#certificate-bound-access-tokens).
 
 ```mermaid
 flowchart LR
@@ -271,7 +271,7 @@ Differences from the example in the specification: there is no `tenant_id` in th
 
 | Answer | When |
 |---|---|
-| `401` with `WWW-Authenticate: Bearer` | No token, or a token or key that is not good here: another tenant's, expired, revoked, without the API's audience, or a key whose holder may not act |
+| `401` with `WWW-Authenticate: Bearer` | No token, or a token or key that is not good here: another tenant's, expired, revoked, without the API's audience, bound to a certificate the request did not come with, or a key whose holder may not act |
 | `403` with `error="insufficient_scope"` | The token lacks the route's scope |
 | `403` `authorization.no_resource_server` | The token client's application has no resource server |
 | `422` | The body cannot be read; the problem's `code` says why |
