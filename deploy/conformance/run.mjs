@@ -370,12 +370,20 @@ async function runModule(plan, entry, browser) {
   return { name: entry.testModule, module, status: info.status, result: info.result };
 }
 
-async function runPlan(name, config, variant, browser, label = name) {
+/**
+ * Runs the tests of a plan. A plan that sets the response type of each of
+ * its tests itself, as the Implicit and Hybrid plans do, runs only those of
+ * `responseType` when it is given.
+ */
+async function runPlan(name, config, variant, browser, label = name, responseType = undefined) {
   step(`Plan ${label}`);
   const plan = await suite("POST", "api/plan", { query: { planName: name, variant }, body: config });
   const results = [];
   for (const entry of plan.modules) {
     if (ONLY.length > 0 && !ONLY.includes(entry.testModule)) {
+      continue;
+    }
+    if (responseType !== undefined && entry.variant?.response_type !== responseType) {
       continue;
     }
     const result = await runModule(plan.id, entry, browser);
@@ -448,16 +456,16 @@ async function main() {
       "formpost-basic": () => runPlan("oidcc-formpost-basic-certification-test-plan", config,
         { server_metadata: "discovery", client_registration: "static_client" }, browser),
       // The ID token through the browser, Issue-127: the answer in the
-      // fragment, alone and with a code. The types that return an access
-      // token are Issue-128's.
+      // fragment, alone and with a code. Each plan holds the tests of every
+      // response type of its profile and sets the type of each test itself;
+      // only those of `id_token` and `code id_token` run here, as the types
+      // that return an access token are Issue-128's.
       "implicit-id-token": () => runPlan("oidcc-implicit-certification-test-plan", config,
-        { server_metadata: "discovery", client_registration: "static_client",
-          response_type: "id_token" }, browser,
-        "oidcc-implicit-certification-test-plan (id_token)"),
+        { server_metadata: "discovery", client_registration: "static_client" }, browser,
+        "oidcc-implicit-certification-test-plan (id_token)", "id_token"),
       "hybrid-code-id-token": () => runPlan("oidcc-hybrid-certification-test-plan", config,
-        { server_metadata: "discovery", client_registration: "static_client",
-          response_type: "code id_token" }, browser,
-        "oidcc-hybrid-certification-test-plan (code id_token)"),
+        { server_metadata: "discovery", client_registration: "static_client" }, browser,
+        "oidcc-hybrid-certification-test-plan (code id_token)", "code id_token"),
     };
     const results = [];
     for (const name of PLANS.filter((plan) => CHOSEN.includes(plan))) {
