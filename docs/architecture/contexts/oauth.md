@@ -4,7 +4,7 @@ The `oauth` context makes Hodor an OAuth 2.x authorization server and an OpenID 
 
 It does not sign anyone in. When a request needs a person, it hands the request to the `authentication` context and takes the session that comes back. The two contexts do not depend on each other: the HTTP layer joins them ([crates.md](../crates.md)).
 
-This page specifies what Issue-53 builds: applications, clients and resource servers, and the rules they keep; what Issue-55 builds: the authorization endpoint, grants and authorization codes; what Issue-56 builds: the token endpoint, client authentication and access tokens; what Issue-59 builds: the OpenID Provider; what Issue-60 builds: logout initiated by the relying party; what Issue-62 builds: [consent](#consent); what Issue-93 builds: [clients that act as a workload](#clients-that-act-as-a-workload); what Issue-106 builds: [a JWT-SVID as a client's proof](#checking-a-jwt-svid); what Issue-107 builds: [an identity forwarded by a proxy](#an-identity-forwarded-by-a-proxy) as a client's proof; what Issue-95 builds: [token exchange](#token-exchange); what Issue-100 builds: [back-channel logout](#back-channel-logout); what Issue-98 builds: [pairwise subject identifiers](#pairwise-subject-identifiers); and what Issue-99 builds: [claim mappers](#claim-mappers); and what Issue-120 builds: [request objects](#request-objects). The other endpoints and tokens are added by Issue-57 and Issue-58, under the headings at the end of this page.
+This page specifies what Issue-53 builds: applications, clients and resource servers, and the rules they keep; what Issue-55 builds: the authorization endpoint, grants and authorization codes; what Issue-56 builds: the token endpoint, client authentication and access tokens; what Issue-59 builds: the OpenID Provider; what Issue-60 builds: logout initiated by the relying party; what Issue-62 builds: [consent](#consent); what Issue-93 builds: [clients that act as a workload](#clients-that-act-as-a-workload); what Issue-106 builds: [a JWT-SVID as a client's proof](#checking-a-jwt-svid); what Issue-107 builds: [an identity forwarded by a proxy](#an-identity-forwarded-by-a-proxy) as a client's proof; what Issue-95 builds: [token exchange](#token-exchange); what Issue-100 builds: [back-channel logout](#back-channel-logout); what Issue-98 builds: [pairwise subject identifiers](#pairwise-subject-identifiers); and what Issue-99 builds: [claim mappers](#claim-mappers); what Issue-120 builds: [request objects](#request-objects); and what Issue-125 builds: the parameters of a request that were still ignored, `id_token_hint`, `display` and `prompt=create`, a client's [defaults for a sign-in](#defaults-for-a-sign-in), and the access token in a form body at [UserInfo](#userinfo). The other endpoints and tokens are added by Issue-57 and Issue-58, under the headings at the end of this page.
 
 ## Applications
 
@@ -42,6 +42,9 @@ A client is what talks to Hodor's endpoints. Its identifier is the `client_id` o
 | Request object algorithm | How it signs its [request objects](#request-objects), its `request_object_signing_alg` of OpenID Connect Registration: none chosen unless changed, which accepts `ES256`, `RS256` and `PS256`; one of the three, which accepts only it; or `none`, which accepts only unsigned request objects |
 | Subject type | How it knows a person, its `subject_type` of OpenID Connect Registration: `public`, the person's user identifier, unless changed, or `pairwise`, an identifier of its sector alone. See [pairwise subject identifiers](#pairwise-subject-identifiers) |
 | Sector identifier address | Optional, for a pairwise client: an address that lists its redirect addresses and whose host is its sector, its `sector_identifier_uri`. See [the sector identifier address](#the-sector-identifier-address) |
+| Default max age | Optional: the `max_age`, in seconds, of a request of the client that names none, its `default_max_age` of OpenID Connect Registration. See [defaults for a sign-in](#defaults-for-a-sign-in) |
+| Default assurance levels | The `acr_values` of a request of the client that names none, its `default_acr_values`. Empty unless chosen |
+| Requires the time of the sign-in | Whether the client needs `auth_time` in its ID tokens, its `require_auth_time`. `false` unless chosen. Every ID token carries `auth_time`, so this only records what the client relies on |
 | Token policy | How long its tokens live |
 | Principal | Optional: the [service account or agent](identity.md#service-accounts-and-agents) the client acts as. See [clients that act as a workload](#clients-that-act-as-a-workload) |
 | SPIFFE identifier | For a client using `spiffe_jwt` or `spiffe_x509`, and for one using `tls_client_auth` without a Linkerd identity: the one SPIFFE identifier of the workload whose JWT-SVIDs or forwarded certificates prove who the client is, its `spiffe_id` of the draft. See [the SPIFFE identifier of a client](#the-spiffe-identifier-of-a-client) |
@@ -65,6 +68,7 @@ Every change to a client is checked against all of these at once; a change that 
 - **Only a client with `authorization_code` has post-logout redirect addresses**, since only it gets ID tokens and signs people in. It may have none.
 - **Only a client with `authorization_code` has a back-channel logout address**, for the same reason. It may have none. Back-channel logout session required is `true` only for a client with an address.
 - **Only a client with `authorization_code` may be pairwise**, since only it signs people in; a client of client credentials alone, and so one with a principal, is public. **A pairwise client has a sector**: a sector identifier address, or redirect addresses that all name one host. **Only a pairwise client has a sector identifier address.**
+- **Only a client with `authorization_code` has a default max age, default assurance levels, or requires the time of the sign-in**, since only it signs people in.
 - **A client has at least one grant.**
 - **A client with a principal has the `client_credentials` grant**, and may have the token exchange grant besides; no other. It is the workload's credential.
 - **The token exchange grant needs a principal, which must be an agent, and at least one exchange rule; exchange rules need the grant.** Only an agent acts on a person's behalf ([Decision 0031](../../decisions/0031-workloads-are-users.md)). Each rule is a pair of audiences, the one a subject token must hold and the one the new token is for, each at most 255 printable characters, each pair once.
@@ -134,6 +138,18 @@ How an assertion is checked against these keys is in [checking a client assertio
 | Refresh token lifetime | 1 hour to 365 days; the most a refresh token family can live | 30 days |
 | Refresh token idle time | 1 hour up to the refresh token lifetime; how long a refresh token lasts unused | 7 days |
 | Consent lifetime | 1 to 730 days; how long a person's [consent](#consent) to the client lasts before they are asked again | 365 days |
+
+### Defaults for a sign-in
+
+Issue-125. Three settings of OpenID Connect Registration ([section 2](https://openid.net/specs/openid-connect-registration-1_0.html#ClientMetadata)) say what a client wants of every sign-in, so that it need not repeat it in each request:
+
+| Setting | Rule | What it does |
+|---|---|---|
+| Default max age | A whole number of seconds from 0 to 31 536 000, as `max_age` at the authorization endpoint, or none. Otherwise `oauth.client_default_max_age_invalid` | A request of the client without `max_age` is checked as if it had this one: only the methods proven within it count, and an older session is [stepped up](#assurance-and-step-up). A request that names `max_age` keeps its own, larger or smaller |
+| Default assurance levels | At most 10 names, each 1 to 128 printable characters without spaces, kept in the order given without repeats, at most 255 characters once joined by spaces, as `acr_values`. Otherwise `oauth.client_default_acr_values_invalid` | A request of the client without `acr_values` is checked as if it had these, joined by spaces: the weakest of the tenant's levels among them is what the person must reach. Names that are not levels of the tenant are ignored, as in a request; they are not checked against the tenant's levels when they are set, since a tenant may rename its levels later |
+| Requires the time of the sign-in | `true` or `false` | Nothing more: every ID token already carries `auth_time` |
+
+Each is refused on a client without `authorization_code`, with its own code; `oauth.client_require_auth_time_invalid` for the last.
 
 ### Clients that act as a workload
 
@@ -280,6 +296,9 @@ Every table is a tenant table under row-level security, in the schema `oauth`. R
 | `backchannel_logout_uri` | `text` | The [back-channel logout address](#the-back-channel-logout-address), or null. At most 2000 characters, `https://` or `http://`, compared byte for byte (`COLLATE "C"`); a check constraint allows it only with the `authorization_code` grant |
 | `backchannel_logout_session_required` | `boolean` | `false` for a client made before it existed; a check constraint allows `true` only with an address |
 | `subject_type` | `text` | `public` or `pairwise`, by a check constraint; `public` for a client made before it existed. A check constraint allows `pairwise` only with the `authorization_code` grant |
+| `default_max_age` | `integer` | The default max age in seconds, or null. A check constraint keeps it from 0 to 31 536 000 |
+| `default_acr_values` | `text[]` | The default assurance levels, in order; empty for a client made before it existed |
+| `require_auth_time` | `boolean` | `false` for a client made before it existed. A check constraint (`client_sign_in_defaults_need_code`) allows a default max age, default assurance levels and `true` here only with the `authorization_code` grant |
 | `sector_identifier_uri` | `text` | The [sector identifier address](#the-sector-identifier-address), or null. At most 2000 characters, `https://` or `http://`, compared byte for byte (`COLLATE "C"`); a check constraint allows it only for a pairwise client |
 | `access_token_seconds`, `id_token_seconds`, `refresh_token_seconds`, `refresh_idle_seconds`, `consent_seconds` | `integer` | The token policy |
 | `created_at`, `updated_at` | `timestamptz` | |
@@ -355,16 +374,21 @@ A client of another tenant is unknown here: the client is looked up only in the 
 | `code_challenge_method` is missing or is not `S256`. `plain` is refused: a challenge without a method means `plain` ([RFC 7636](https://www.rfc-editor.org/rfc/rfc7636#section-4.3)) | `invalid_request` |
 | `code_challenge` is not 43 characters of base64url without padding, the length of a SHA-256 digest | `invalid_request` |
 | `state` or `nonce` is longer than 1024 characters or holds characters outside printable ASCII | `invalid_request` |
-| `prompt` holds a value other than `none`, `login`, `consent` and `select_account`, or `none` with another | `invalid_request` |
+| `prompt` holds a value other than `none`, `login`, `consent`, `select_account` and `create`, or `none` with another | `invalid_request` |
+| `display` is not `page`, `popup` or `touch` | `invalid_request` |
 | `max_age` is not a whole number of seconds from 0 to 31 536 000 | `invalid_request` |
 | `login_hint`, `ui_locales` or `acr_values` is longer than 255 characters | `invalid_request` |
 | `organization` is not the identifier of an organization, a UUID | `invalid_request` |
 | `scope` is missing or empty, holds a scope the client may not ask for, or a scope that neither OpenID Connect nor a resource server of the request defines | `invalid_scope` |
 | More than 10 `resource` values; a `resource` that is not an absolute address without a fragment; or one that is not the audience of a resource server of this tenant ([RFC 8707](https://www.rfc-editor.org/rfc/rfc8707)) | `invalid_target` |
+| `prompt` holds `create` and the tenant's [registration policy](tenant.md#registration-policy) is closed: the tenant does not support the value, and [Initiating User Registration via OpenID Connect](https://openid.net/specs/openid-connect-prompt-create-1_0.html#section-4.1) answers an unsupported value so | `invalid_request` |
+| `id_token_hint` is not an ID token this tenant issued to the client: it fails a check that [the end-session endpoint](#logout-initiated-by-the-relying-party) makes of its own hint, so a token signed by another tenant's key or naming another issuer is refused here, or its `aud` is another client | `invalid_request` |
 
 **The resource servers of a request.** When the request names resources, they are the resource servers whose audiences it names, and every scope that is not one of OpenID Connect's must be defined by one of them. When it names none, they are the resource servers of the tenant that define the scopes asked for. The resource servers become the audiences of the tokens issued from the code (Issue-56).
 
-`nonce`, `login_hint` and `ui_locales` are kept with the request for the [ID token and the pages](#what-a-request-may-ask-of-the-sign-in); `acr_values` and `max_age` decide [the assurance and the step-up](#assurance-and-step-up); `organization` names [the organization of the sign-in](#the-organization-of-a-sign-in). Parameters the endpoint does not know are ignored, as RFC 6749 requires; `claims` is one of them, so an `acr` asked for through it asks for nothing.
+`nonce`, `login_hint` and `ui_locales` are kept with the request for the [ID token and the pages](#what-a-request-may-ask-of-the-sign-in); `acr_values` and `max_age` decide [the assurance and the step-up](#assurance-and-step-up), and a request that leaves either out takes the client's [default](#defaults-for-a-sign-in) for it, if the client has one; `organization` names [the organization of the sign-in](#the-organization-of-a-sign-in); the `sub` of `id_token_hint` is kept to [compare with the person](#whether-the-person-must-sign-in). Parameters the endpoint does not know are ignored, as RFC 6749 requires; `claims` is one of them, so an `acr` asked for through it asks for nothing.
+
+**The last two checks read the tenant**, its registration policy and its published keys, so they are made once everything else has passed. The hint is checked as the end-session endpoint checks its own: an ID token of this tenant, signed by a key the tenant publishes, with the tenant's issuer, whose expiry is not checked, since OpenID Connect sends an ID token that may have expired long ago as a hint ([section 3.1.2.1](https://openid.net/specs/openid-connect-core-1_0.html#AuthRequest)). Its `aud` must be the client of the request: it says who that client believes is signed in, and only that client knows the person by that `sub`, which for a [pairwise client](#pairwise-subject-identifiers) is no user identifier. A hint is a hint, never a credential: it decides nothing but whether the browser's session answers the request.
 
 ### Request objects
 
@@ -411,11 +435,15 @@ A checked request needs a person signed in to the tenant. The session cookie of 
 | Situation | What happens |
 |---|---|
 | No valid session, or `prompt` holds `login` or `select_account` | The person signs in, then the request goes on. With `prompt=none`, error `login_required` instead |
+| `prompt` holds `create` | The person is sent to [register](#registering-for-an-application) instead of to sign in, then the request goes on |
+| A valid session of a person other than the one `id_token_hint` names | As without a session: the person signs in, then the request goes on; with `prompt=none`, error `login_required`, described as the person signed in not being the one the hint names |
 | A valid session that is [enough](#assurance-and-step-up) for the request | [Consent](#when-a-person-is-asked) is decided; when nobody needs to be asked, a code is issued at once |
 | A valid session that is not enough: too old for `max_age`, or below the level asked for | A [step-up](#assurance-and-step-up) asks the person for what the session lacks, then the request goes on. With `prompt=none`, error `login_required` instead |
 | A valid session that is not enough, and the person cannot reach the level asked for with the factors they have | Error `unmet_authentication_requirements` at the redirect address ([OpenID Connect Unmet Authentication Requirements](https://openid.net/specs/openid-connect-unmet-authentication-requirements-1_0.html)) |
 
 `select_account` is treated as `login`: a browser holds one session per tenant, so the only way to choose another account is to sign in as it. `consent` asks the person for [consent](#consent) again.
+
+**Whether the session is the hint's person.** The session's person is named as the hint's client knows them, by the user identifier or, for a pairwise client, by the pairwise identifier of its sector, and compared with the hint's `sub`. Only the person is compared, not the session: OpenID Connect asks whether "the End-User identified by the ID Token is logged in", and an application's ID token may come from a session that has since been replaced by a new sign-in of the same person.
 
 ### Assurance and step-up
 
@@ -449,7 +477,7 @@ When the person must sign in, the request is kept and the browser is sent to the
 2. The browser is redirected to `/t/{slug}/account/sign-in?continue=authorization`. That address tells the sign-in page to start a sign-in even when the browser is signed in already, since the request asked for a new one.
 3. The person signs in with any way the tenant offers, an identity provider included. When the sign-in completes, the interaction interface sees the cookie and adds `"continue": "/t/{slug}/oauth2/authorize/resume"` to its answer ([the interaction interface](../../api/interaction-api.md#what-a-sign-in-response-looks-like)). The page goes there instead of to the account page.
 4. `GET /t/{slug}/oauth2/authorize/resume` reads the cookie, takes the pending request, which can therefore be resumed once, and removes the cookie. Without the cookie, with a wrong secret or after ten minutes, it answers with Hodor's own error page, `oauth.authorization_request_not_found`.
-5. The session is checked again against the request. A request that asked for a new sign-in (`prompt=login` or `select_account`) needs a session that signed in after the request arrived; otherwise the answer is `access_denied` at the redirect address, because the person did not sign in again. Then the session must be [enough](#assurance-and-step-up): when it is, [consent](#when-a-person-is-asked) is decided and, when nobody needs to be asked, a code is issued. When it is not, after a new sign-in that did not reach the level asked for, a step-up is started as when the request arrived, and the request is kept again; when the person cannot reach the level, the answer is `unmet_authentication_requirements`. A step-up demands the level, so its completion is always enough, and the request does not go round twice.
+5. The session is checked again against the request. A request that asked for a new sign-in (`prompt=login`, `select_account` or `create`) needs a session that signed in after the request arrived; otherwise the answer is `access_denied` at the redirect address, because the person did not sign in again. A request with `id_token_hint` needs the session's person to be the one the hint names; otherwise the answer is `login_required`, as OpenID Connect suggests for a hint whose person is not signed in. Then the session must be [enough](#assurance-and-step-up): when it is, [consent](#when-a-person-is-asked) is decided and, when nobody needs to be asked, a code is issued. When it is not, after a new sign-in that did not reach the level asked for, a step-up is started as when the request arrived, and the request is kept again; when the person cannot reach the level, the answer is `unmet_authentication_requirements`. A step-up demands the level, so its completion is always enough, and the request does not go round twice.
 
 The cookie:
 
@@ -463,6 +491,15 @@ The cookie:
 | `Max-Age` | 600 seconds | |
 
 A browser has one pending authorization request per tenant at a time: a new one replaces the cookie of the one before, which then cannot be resumed.
+
+### Registering for an application
+
+Issue-125. A client sends `prompt=create` when the person it sends has no account yet and should see the page that makes one rather than the sign-in page ([Initiating User Registration via OpenID Connect](https://openid.net/specs/openid-connect-prompt-create-1_0.html)). Hodor offers the value in a tenant whose [registration policy](tenant.md#registration-policy) is open, and names it in that tenant's [discovery](#discovery) only.
+
+- **In a tenant open to registration**, the request is checked and kept as for a sign-in, and the browser is sent to `/t/{slug}/account/register?continue=authorization`, with `ui_locales` when the request had it, instead of to the sign-in page. The person registers as they would from the sign-in page ([registration](authentication.md#registration)): a link by email, a password chosen on the page it opens, and a sign-in with it. That sign-in, in the browser that holds the request's cookie and within its ten minutes, goes on to the request as every sign-in does. A person who has an account already may follow the page's link to sign in instead; the specification leaves that choice to the provider.
+- **`create` counts as asking for a new sign-in**: the request goes on only with a session that signed in after it arrived, so a browser signed in already is not taken for the account just made. With `none`, `create` is refused, as `none` with any other value is. With `consent`, the person is asked for consent after the sign-in.
+- **In a tenant closed to registration**, the value is not supported, and the answer is `invalid_request` at the redirect address, whose description names `prompt=create` ([section 4.1](https://openid.net/specs/openid-connect-prompt-create-1_0.html#section-4.1)). Hodor does not show the sign-in page instead, so a client learns at once that the tenant will not make the account.
+- **The client learns of a new account only from the code**: the specification forbids a client to assume an account was made without a successful answer, and Hodor tells it nothing else. Whether the person registered or signed in to an account they had is not said.
 
 ### The organization of a sign-in
 
@@ -554,7 +591,9 @@ When a person is deprovisioned, every active grant of theirs, for every client, 
 | `GrantStore` | Store a grant; load one; store its revocation; list a person's active grants, for one client or for all |
 | `AuthorizationCodeStore` | Store a code; find one by its hash; mark it redeemed only if it was not |
 | `PersonMemberships` | Whether the person is a member of an organization, and the person's effective groups. The server implements it over the identity context |
-| `SignatureVerifier` | Checks the signature of a [request object](#request-objects), from the kernel |
+| `SignatureVerifier` | Checks the signature of a [request object](#request-objects) and of an `id_token_hint`, from the kernel |
+| `KeyService` | The tenant's published keys, to check an `id_token_hint`; given with `with_id_token_hints`. Without it, a request with a hint is refused with `invalid_request`, never answered as if it had none |
+| `PairwiseSubjects` | Names the session's person as a pairwise client knows them, to compare with the hint's `sub`; given with `with_pairwise_subjects`. Without it, the hint of a pairwise client never matches, and the person signs in |
 
 ### Storage
 
@@ -1060,7 +1099,7 @@ When the scopes of a code hold `openid`, the token endpoint answers with an `id_
 | `sub` | The person's user identifier, the same for every public client of the tenant; for a [pairwise client](#pairwise-subject-identifiers), the pairwise identifier of its sector |
 | `aud` | The client's identifier, alone |
 | `iat`, `exp` | When it was issued, and that plus the client's ID token lifetime |
-| `auth_time` | When the person signed in |
+| `auth_time` | When the person signed in. Always present, so a client that [requires it](#defaults-for-a-sign-in) always has it |
 | `nonce` | The `nonce` of the authorization request, exactly as it was sent. Left out when the request had none |
 | `acr` | The level the sign-in reached, as the code says ([assurance and step-up](#assurance-and-step-up)). Left out when it reached no level of the tenant |
 | `amr` | The methods of the sign-in, as the next section says. Left out when none of them has a name in RFC 8176 |
@@ -1101,7 +1140,12 @@ A tenant may rename them, leave out the first, and add a level for `phishing_res
 
 ### UserInfo
 
-UserInfo is at `/t/{slug}/oauth2/userinfo` and answers `GET` and `POST` ([section 5.3](https://openid.net/specs/openid-connect-core-1_0.html#UserInfo)). The access token comes in the `Authorization` header as `Bearer` ([RFC 6750, section 2.1](https://www.rfc-editor.org/rfc/rfc6750#section-2.1)); a token in the query or in a form is not read.
+UserInfo is at `/t/{slug}/oauth2/userinfo` and answers `GET` and `POST` ([section 5.3](https://openid.net/specs/openid-connect-core-1_0.html#UserInfo)). The access token comes in one of two ways:
+
+- **In the `Authorization` header** as `Bearer` ([RFC 6750, section 2.1](https://www.rfc-editor.org/rfc/rfc6750#section-2.1)), with either method.
+- **In a form body** (Issue-125, [RFC 6750, section 2.2](https://www.rfc-editor.org/rfc/rfc6750#section-2.2)): a `POST` whose `Content-Type` is `application/x-www-form-urlencoded`, with the token as `access_token`. The body of a `GET`, and of a `POST` of another type, is not read. Other parameters of the form are ignored.
+
+A token in the query is not read ([section 2.3](https://www.rfc-editor.org/rfc/rfc6750#section-2.3) leaves it to the server, and an address with a token ends up in logs). A request that sends the token both ways, or `access_token` more than once, is answered `400` with `WWW-Authenticate: Bearer error="invalid_request"`: RFC 6750 forbids a client more than one way in a request ([section 2](https://www.rfc-editor.org/rfc/rfc6750#section-2)), and naming that error for it ([section 3.1](https://www.rfc-editor.org/rfc/rfc6750#section-3.1)). A token read from the form is checked exactly as one read from the header.
 
 The token is checked before anything is read:
 
@@ -1154,8 +1198,11 @@ The authorization endpoint already checks and keeps these parameters ([checking 
 | `prompt=none` | No page is shown. Without a session that is enough, the answer is `login_required` at the redirect address |
 | `prompt=login`, `prompt=select_account` | The person signs in again, even with a session |
 | `prompt=consent` | The person is asked for [consent](#consent), even for a first-party application and with a consent that stands |
-| `max_age` | Only the methods proven within this many seconds count. A session with none, or whose recent methods are not enough, is [stepped up](#assurance-and-step-up), and `auth_time` in the tokens says when the person last proved something |
-| `acr_values` | The weakest of the tenant's levels named here is what the person must reach; the session is [stepped up](#assurance-and-step-up) to it, or the answer is `unmet_authentication_requirements` |
+| `prompt=create` | The person is sent to [register](#registering-for-an-application), in a tenant open to registration; elsewhere the answer is `invalid_request` |
+| `max_age` | Only the methods proven within this many seconds count. A session with none, or whose recent methods are not enough, is [stepped up](#assurance-and-step-up), and `auth_time` in the tokens says when the person last proved something. Without it, the client's default max age, if it has one |
+| `acr_values` | The weakest of the tenant's levels named here is what the person must reach; the session is [stepped up](#assurance-and-step-up) to it, or the answer is `unmet_authentication_requirements`. Without it, the client's default assurance levels, if it has any |
+| `id_token_hint` | The browser's session answers the request only when its person is the one the hint names. Otherwise the person signs in again, or with `prompt=none` the answer is `login_required`; a person who then signs in as someone else gets `login_required` too |
+| `display` | `page`, `popup` or `touch`. The pages are one layout that fits a whole window, a small one opened for them and a touch screen alike, so each value shows the same pages. `wap`, pages for telephones without a modern browser, is not offered |
 | `login_hint` | The sign-in page starts with the identifier filled in. The person can change it; it is a hint, never a claim |
 | `ui_locales` | The pages use the first of these languages they have, before the browser's own |
 
@@ -1188,7 +1235,8 @@ It names only what is built:
 | `scopes_supported` | `openid`, `profile`, `email`, `groups`. A tenant's own scopes belong to its resource servers and are not listed |
 | `claims_supported` | The claims of the ID token and of UserInfo, `org_id` and `groups` among them. Claims of [claim mappers](#claim-mappers) are a client's, and are not listed |
 | `acr_values_supported` | The names of the tenant's [assurance levels](tenant.md#assurance-levels), weakest first |
-| `prompt_values_supported` | `none`, `login`, `consent`, `select_account` |
+| `prompt_values_supported` | `none`, `login`, `consent`, `select_account`, and `create` when the tenant's [registration policy](tenant.md#registration-policy) is open ([registering for an application](#registering-for-an-application)). A tenant closed to registration leaves `create` out, as the specification lets a provider that does not support it do |
+| `display_values_supported` | `page`, `popup`, `touch` |
 | `ui_locales_supported` | `en`, `pt-BR` |
 | `authorization_response_iss_parameter_supported` | `true` |
 | `request_parameter_supported` | `true`: [request objects](#request-objects) by value are read |
@@ -1199,7 +1247,7 @@ It names only what is built:
 
 **`spiffe_jwt` follows draft-ietf-oauth-spiffe-client-auth-03**, the version of the Internet-Draft Hodor implements ([checking a JWT-SVID](#checking-a-jwt-svid)). The draft is not yet a standard and may change; a change of the version Hodor follows is a change to Hodor, written in the changelog ([Decision 0029](../../decisions/0029-hodor-in-a-service-mesh.md#consequences)). `spiffe_x509` follows the same version, section 3.3 ([an identity forwarded by a proxy](#an-identity-forwarded-by-a-proxy)); the draft's `spiffe_wit` is not offered.
 
-The document may be kept by caches for five minutes and carries `Access-Control-Allow-Origin: *`, as the key set does: it is public.
+The document may be kept by caches for five minutes and carries `Access-Control-Allow-Origin: *`, as the key set does: it is public. It names the tenant's own assurance levels and, through `create`, its own registration policy, so a change of either may take five minutes to reach a client that keeps it.
 
 ### Ports
 
@@ -1779,6 +1827,12 @@ Administrators reach them through [the administration interface](../../api/admin
 | Sending the person back to the application when they choose to stay signed in at the logout question | When an application asks for it |
 | `logout_hint`, which names who to sign out | Not used: a browser holds one session per tenant |
 | An `id_token_hint` signed by a key that has left the tenant's key set: it is refused, and the application can send `client_id` instead, which asks the person | When it matters |
+| An `id_token_hint` at the authorization endpoint signed by a key that has left the tenant's key set: it is refused with `invalid_request`, and the application can send its request without the hint | When it matters |
+| Filling in the sign-in page from an `id_token_hint`, as from `login_hint`: the `sub` of a pairwise client names nobody the page could show | Not planned |
+| `display=wap` | Not planned: the pages need a modern browser |
+| The access token in the query at UserInfo ([RFC 6750, section 2.3](https://www.rfc-editor.org/rfc/rfc6750#section-2.3)) | Not planned: an address with a token ends up in logs and histories |
+| The default max age, default assurance levels and requiring the time of the sign-in from the command-line tool and the console: the administration interface sets them | With the console pages of clients |
+| Filling in the registration page's address from `login_hint` when an application sends `prompt=create` | When an application asks for it |
 | Limits on the number of requests to the token, revocation and introspection endpoints, per client and per address ([limits](#limits)) | With the other limits per address, before any deployment behind a load balancer |
 | The metadata at the address RFC 8414 prefers for an issuer with a path, `/.well-known/oauth-authorization-server/t/{slug}`: it is outside the tenant's addresses, so only the address after the issuer is served | When a client needs it |
 | Calling UserInfo from a browser on another origin | With origins in the client settings |
