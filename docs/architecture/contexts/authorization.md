@@ -271,6 +271,8 @@ Which scopes a key may hold is one rule of this context, so that every interface
 
 The body names the subject, the asserted attributes, the resource, the action and the context's attributes, as in [the request](#the-request). It never names a tenant. A person is named by their user identifier. The `sub` of an access token issued to a [pairwise client](oauth.md#pairwise-subject-identifiers) is not one, and names nobody here: Hodor does not turn a pairwise identifier back into a person ([Decision 0040](../../decisions/0040-pairwise-subjects.md)).
 
+**A workload may be named by its identity** (Issue-110, [Decision 0058](../../decisions/0058-hodor-ext-authz.md)): a subject of type `workload_identity` whose identifier is a SPIFFE identifier or a Linkerd identity, read by the OAuth context's rules for [a client's binding](oauth.md#the-spiffe-identifier-of-a-client). The API resolves it before anything is decided, through the OAuth context, to the service account the enabled clients of the tenant bound to that identity act as, since an identity binds the clients of one service account only. The request is then about that user, with the subject kind `user`, and the engine, [the record of decisions](#the-record-of-decisions) and the answer see that user, never the identity. An identity no enabled client of the tenant binds is a subject Hodor does not know: a user whose identifier is the identity itself, with no attributes, decided and recorded as any other. One that reads as neither kind of identity is refused with `authorization.workload_identity_invalid`. The authorization context and its engines do not know about identities.
+
 ### What Hodor knows about a subject
 
 The binaries resolve a subject's attributes through the identity and OAuth contexts:

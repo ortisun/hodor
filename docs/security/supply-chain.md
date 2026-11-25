@@ -45,11 +45,12 @@ An action is code that runs in continuous integration with access to the reposit
 
 ## What a release publishes
 
-From 0.3.0, pushing the tag of a release, such as `v0.3.0`, runs the workflow `.github/workflows/release.yml`. It publishes two things, both on the GitHub container registry, readable by anyone:
+From 0.3.0, pushing the tag of a release, such as `v0.3.0`, runs the workflow `.github/workflows/release.yml`. It publishes these, all on the GitHub container registry, readable by anyone:
 
 | What | Where |
 |---|---|
 | The image, for `linux/amd64` and `linux/arm64` | `ghcr.io/ortisun/hodor:<version>`, such as `ghcr.io/ortisun/hodor:0.3.0` |
+| From 0.4.0, the image of [`hodor-ext-authz`](../operations/hodor-ext-authz.md), for the same architectures | `ghcr.io/ortisun/hodor-ext-authz:<version>` |
 | The Helm chart, as an OCI artifact | `oci://ghcr.io/ortisun/charts/hodor`, version `<version>` |
 
 How the image is made and published:
@@ -67,7 +68,7 @@ cosign verify ghcr.io/ortisun/hodor:0.3.0 \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com
 ```
 
-The chart is checked the same way, at `ghcr.io/ortisun/charts/hodor:0.3.0`.
+The chart is checked the same way, at `ghcr.io/ortisun/charts/hodor:0.3.0`, and from 0.4.0 the image of `hodor-ext-authz`, at `ghcr.io/ortisun/hodor-ext-authz:<version>`. Both images are built, joined and signed by the same jobs, each from its own Dockerfile.
 
 A pull request that changes the workflow or the Dockerfile runs the same builds for both architectures, and publishes and signs nothing. A broken release is then found before the tag, not after.
 

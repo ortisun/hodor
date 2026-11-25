@@ -262,6 +262,7 @@ Content-Type: application/json
 ```
 
 - `subject.type` is `user` or `client`; `asserted`, `resource.id`, `resource.attributes` and `context` may be left out.
+- `subject.type` may also be `workload_identity`, with a SPIFFE identifier or a Linkerd identity as `id` ([Decision 0058](../decisions/0058-hodor-ext-authz.md)). Hodor resolves it, in the tenant, to the service account whose enabled clients are bound to that identity, and the request is about that user as if `{"type": "user"}` had named it. An identity that no enabled client binds is a subject Hodor does not know: a user whose identifier is the identity itself, with no attributes. An identity that reads as neither is `422` `authorization.workload_identity_invalid`. It is how [`hodor-ext-authz`](../operations/hodor-ext-authz.md) names a caller that sent no token, and how an application behind Linkerd names the caller in `l5d-client-id`.
 - `organization`, at the top of the body, names the [organization](../architecture/contexts/identity.md#organizations) the request is made in, by its identifier, as the `org_id` of the person's token says. Roles scoped to that organization then count, if the person is still a member of it. Left out, only roles that are not scoped to an organization count.
 - `decision` is `ALLOW`, `DENY` or `INDETERMINATE`; only `ALLOW` permits, and `INDETERMINATE` means the engine could not decide.
 - With `authz:explain` the answer also holds `matched_policies`, and a simulation holds `trace`.
