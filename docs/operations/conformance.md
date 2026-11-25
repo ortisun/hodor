@@ -133,7 +133,7 @@ Every test of the five plans, and of the Form Post plan when it runs, passes exc
 | `oidcc-prompt-login`, `oidcc-max-age-1` | Review | The test passes, and keeps a screenshot of the second sign-in page it made Hodor show, for a person to look at |
 | `oidcc-ensure-registered-redirect-uri` | Review | Hodor shows its own error page and never sends the browser to an address it cannot trust; the suite keeps a screenshot of that page for a person to look at |
 
-The tests of the scopes, `oidcc-scope-profile`, `oidcc-scope-email`, `oidcc-scope-address`, `oidcc-scope-phone` and `oidcc-scope-all`, want every claim of each scope asked for at UserInfo. They pass since Issue-123 with the person above, who has them all; a person without some of them would make them end in a warning, as OpenID Connect Core, section 5.4, lets a provider answer only the claims it has.
+The tests of the scopes, `oidcc-scope-profile`, `oidcc-scope-email`, `oidcc-scope-address`, `oidcc-scope-phone` and `oidcc-scope-all`, want every claim of each scope asked for at UserInfo. They pass since Issue-123 with the person above, who has them all; a person without some of them would make them end in a warning, as OpenID Connect Core, section 5.4, lets a provider answer only the claims it has. The suite also checks the format of each claim, and takes a birth date only of a year from 1850, beyond what OpenID Connect asks; the person's is in 1990.
 
 A result of **Review** is the suite saying that a person must look at the screenshots before the test can count toward a certification. Here nobody does: the screenshots are taken and given to the suite, and the run accepts the result. The pages they show are tested on their own by the browser tests of the hosted pages.
 
