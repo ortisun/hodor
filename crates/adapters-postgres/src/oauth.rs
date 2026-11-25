@@ -10,7 +10,7 @@ use hodor_oauth::api::{
     ClientSecretId, ClientSettings, ClientSnapshot, ClientStore, ClientType, ExchangeRule,
     GrantType, IdTokenAlgorithm, LinkerdIdentity, RequestObjectAlgorithm, ResourceServer,
     ResourceServerId, ResourceServerSettings, ResourceServerSnapshot, ResourceServerStore,
-    ScopeDefinition, SpiffeId, Status, SubjectType, TokenPolicy,
+    ScopeDefinition, SpiffeId, Status, SubjectType, TokenPolicy, WorkloadIdentity,
 };
 use sqlx::PgConnection;
 use sqlx::Row as _;
@@ -22,21 +22,64 @@ const CLIENT_APPLICATION_CONSTRAINT: &str = "client_application_fk";
 const SERVER_APPLICATION_CONSTRAINT: &str = "resource_server_application_fk";
 const AUDIENCE_CONSTRAINT: &str = "resource_server_audience_unique";
 const ONE_SERVER_CONSTRAINT: &str = "resource_server_application_unique";
-const SPIFFE_ID_CONSTRAINT: &str = "client_spiffe_id_unique";
-const LINKERD_IDENTITY_CONSTRAINT: &str = "client_linkerd_identity_unique";
-
 fn linkerd_identity_taken() -> DomainError {
     DomainError::conflict(
         "oauth.client_linkerd_identity_taken",
-        "another client of the tenant is bound to this Linkerd identity",
+        "a client of the tenant acting as another principal is bound to this Linkerd identity",
     )
 }
 
 fn spiffe_id_taken() -> DomainError {
     DomainError::conflict(
         "oauth.client_spiffe_id_taken",
-        "another client of the tenant is bound to this SPIFFE identifier",
+        "a client of the tenant acting as another principal is bound to this SPIFFE identifier",
     )
+}
+
+/// Refuses `client` if a client of the tenant acting as another principal
+/// is bound to its identity: an identity binds the clients of one service
+/// account (Decision 0058). The transaction-scoped advisory lock on the
+/// tenant and the identity makes two writes binding it at once wait for
+/// each other, so both cannot pass the check.
+async fn check_identity(
+    connection: &mut PgConnection,
+    tenant: Uuid,
+    client: &Client,
+) -> Result<(), DomainError> {
+    let settings = &client.snapshot().settings;
+    let Some(identity) = settings.workload_identity() else {
+        return Ok(());
+    };
+    let (column, taken): (&str, fn() -> DomainError) = match identity {
+        WorkloadIdentity::Spiffe(_) => ("spiffe_id", spiffe_id_taken),
+        WorkloadIdentity::Linkerd(_) => ("linkerd_identity", linkerd_identity_taken),
+    };
+    sqlx::query(
+        "SELECT pg_advisory_xact_lock(
+             hashtextextended('oauth.client_identity:' || $1::text || ':' || $2, 0))",
+    )
+    .bind(tenant)
+    .bind(identity.as_str())
+    .execute(&mut *connection)
+    .await
+    .map_err(get)?;
+    let other: Option<(i32,)> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
+        "SELECT 1 FROM oauth.client
+         WHERE tenant_id = $1 AND {column} = $2 AND id <> $3
+           AND principal_id IS DISTINCT FROM $4
+         LIMIT 1"
+    )))
+    .bind(tenant)
+    .bind(identity.as_str())
+    .bind(client.id().as_uuid())
+    .bind(settings.principal.map(|principal| principal.as_uuid()))
+    .fetch_optional(&mut *connection)
+    .await
+    .map_err(get)?;
+    match other {
+        Some(_) => Err(taken()),
+        None => Ok(()),
+    }
 }
 
 fn corrupted(what: &str) -> DomainError {
@@ -432,6 +475,7 @@ impl ClientStore for PgClientStore {
         let settings = &state.settings;
         let policy = settings.token_policy;
         let connection = connection(uow)?;
+        check_identity(connection, tenant, client).await?;
         let inserted = sqlx::query(
             "INSERT INTO oauth.client
                  (tenant_id, id, application_id, name, client_type, authentication_method,
@@ -494,16 +538,6 @@ impl ClientStore for PgClientStore {
             {
                 return Err(application_not_found());
             }
-            Err(sqlx::Error::Database(error))
-                if error.constraint() == Some(SPIFFE_ID_CONSTRAINT) =>
-            {
-                return Err(spiffe_id_taken());
-            }
-            Err(sqlx::Error::Database(error))
-                if error.constraint() == Some(LINKERD_IDENTITY_CONSTRAINT) =>
-            {
-                return Err(linkerd_identity_taken());
-            }
             Err(error) => return Err(database_error(&error)),
         }
         insert_parts(connection, tenant, client).await
@@ -515,6 +549,7 @@ impl ClientStore for PgClientStore {
         let settings = &state.settings;
         let policy = settings.token_policy;
         let connection = connection(uow)?;
+        check_identity(connection, tenant, client).await?;
         // The type and the application never change, so they are not
         // written.
         let updated = sqlx::query(
@@ -571,19 +606,7 @@ impl ClientStore for PgClientStore {
         .bind(settings.certificate_bound_access_tokens)
         .execute(&mut *connection)
         .await
-        .map_err(|error| match &error {
-            sqlx::Error::Database(failure)
-                if failure.constraint() == Some(SPIFFE_ID_CONSTRAINT) =>
-            {
-                spiffe_id_taken()
-            }
-            sqlx::Error::Database(failure)
-                if failure.constraint() == Some(LINKERD_IDENTITY_CONSTRAINT) =>
-            {
-                linkerd_identity_taken()
-            }
-            _ => get(error),
-        })?;
+        .map_err(get)?;
         if updated.rows_affected() != 1 {
             return Err(modified("oauth.client_modified_concurrently"));
         }
@@ -621,6 +644,33 @@ impl ClientStore for PgClientStore {
             Some(row) => Ok(Some(load_client(connection, tenant, &row).await?)),
             None => Ok(None),
         }
+    }
+
+    async fn bound_to(
+        &self,
+        uow: &mut dyn UnitOfWork,
+        identity: &WorkloadIdentity,
+    ) -> Result<Vec<Client>, DomainError> {
+        let tenant = uow.tenant().tenant_id().as_uuid();
+        let column = match identity {
+            WorkloadIdentity::Spiffe(_) => "spiffe_id",
+            WorkloadIdentity::Linkerd(_) => "linkerd_identity",
+        };
+        let connection = connection(uow)?;
+        let rows = sqlx::query(sqlx::AssertSqlSafe(format!(
+            "SELECT {CLIENT_COLUMNS} FROM oauth.client
+             WHERE tenant_id = $1 AND {column} = $2 ORDER BY created_at, id"
+        )))
+        .bind(tenant)
+        .bind(identity.as_str())
+        .fetch_all(&mut *connection)
+        .await
+        .map_err(get)?;
+        let mut clients = Vec::with_capacity(rows.len());
+        for row in &rows {
+            clients.push(load_client(connection, tenant, row).await?);
+        }
+        Ok(clients)
     }
 
     async fn list_for_application(

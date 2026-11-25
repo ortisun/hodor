@@ -1194,6 +1194,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "envoy-types"
+version = "0.7.7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e1fdd3fa7e8347872dd5d6e8626441589f0fd87d7fcf3003a4cca2103ecc39c0"
+dependencies = [
+ "futures-core",
+ "prost",
+ "tonic",
+ "tonic-prost",
+]
+
+[[package]]
 name = "equivalent"
 version = "1.0.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1850,6 +1862,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "hodor-ext-authz"
+version = "0.3.0"
+dependencies = [
+ "axum",
+ "base64 0.22.1",
+ "clap",
+ "envoy-types",
+ "form_urlencoded",
+ "hodor-observability",
+ "opentelemetry",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tonic",
+ "tracing",
+]
+
+[[package]]
 name = "hodor-federation"
 version = "0.3.0"
 dependencies = [
@@ -2039,6 +2070,7 @@ dependencies = [
  "axum",
  "base64 0.22.1",
  "clap",
+ "envoy-types",
  "form_urlencoded",
  "hodor-adapters-crypto",
  "hodor-adapters-http",
@@ -2051,6 +2083,7 @@ dependencies = [
  "hodor-authorization-native",
  "hodor-authorization-opa",
  "hodor-credential",
+ "hodor-ext-authz",
  "hodor-federation",
  "hodor-identity",
  "hodor-kernel",
@@ -2069,6 +2102,7 @@ dependencies = [
  "sqlx",
  "time",
  "tokio",
+ "tonic",
  "tracing",
 ]
 

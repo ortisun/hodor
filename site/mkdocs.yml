@@ -137,6 +137,7 @@ nav:
       - Test environments: development/test-environments.md
       - Install with Docker: operations/install-with-docker.md
       - Install on Kubernetes: operations/install-on-kubernetes.md
+      - Envoy's external authorization: operations/hodor-ext-authz.md
       - Deployment: operations/deployment.md
       - Keys in OpenBao: operations/keys-in-openbao.md
       - OpenID conformance: operations/conformance.md
@@ -255,6 +256,7 @@ nav:
       - decisions/0055-spiffe-jwt-client-authentication.md
       - decisions/0056-forwarded-client-identity.md
       - decisions/0057-certificate-bound-access-tokens.md
+      - decisions/0058-hodor-ext-authz.md
       - decisions/0062-the-certificate-authority-of-a-tenant.md
   - Contributing:
       - development/conventions.md

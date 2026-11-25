@@ -220,6 +220,71 @@ networkPolicy:
     # the collector of metrics and traces, the identity providers and directories.
     to: []
 
+# hodor-ext-authz: Envoy's external authorization for the proxies of a service mesh, each check answered by
+# Hodor's Authorization API. Off by default. docs/operations/hodor-ext-authz.md says what it does and how to
+# set its tenant up; docs/operations/install-on-kubernetes.md lists these values.
+extAuthz:
+  enabled: false
+  image:
+    # Its own image. Empty tag: the version this chart was made for.
+    repository: ghcr.io/ortisun/hodor-ext-authz
+    tag: ""
+  replicas: 2
+  # The tenant's slug. Required when enabled.
+  tenant: ""
+  # Where it reaches Hodor. Empty: this release's Service, http://<release>.<namespace>.svc.cluster.local:<port>.
+  hodorUrl: ""
+  # The tenant's issuer, which the checked token's iss must be. Empty: publicUrl followed by /t/<tenant>.
+  issuer: ""
+  # How long one call to Hodor may take before the request is denied, from 1 to 60000.
+  timeoutMilliseconds: 1000
+  # Where the claims of the token the proxy checked are. Empty: none is read, and the subject is always the
+  # caller's identity. Either
+  #   metadata:
+  #     namespace: envoy.filters.http.jwt_authn
+  #     key: hodor
+  # or
+  #   header: x-hodor-token-claims
+  token: {}
+  # One entry per protected application:
+  #   - destination: spiffe://cluster.local/ns/shop/sa/orders
+  #     clientId: <the application's client, bound to the identity of this service account>
+  #     routes:
+  #       - methods: [GET]
+  #         path: /orders/{id}
+  #         resourceType: order
+  #         action: read
+  applications: []
+  # Its own Kubernetes service account, which gives it its mesh identity.
+  serviceAccount:
+    # false: the pods use the service account named below, which must exist.
+    create: true
+    # Empty: "<release>-ext-authz".
+    name: ""
+    annotations: {}
+  service:
+    # The gRPC port the mesh's provider names.
+    port: 9191
+  resources:
+    requests:
+      cpu: 100m
+      memory: 32Mi
+    limits:
+      memory: 128Mi
+  podDisruptionBudget:
+    enabled: true
+    maxUnavailable: 1
+  networkPolicy:
+    # With networkPolicy.enabled, who may reach its gRPC port, as Kubernetes writes network policy peers.
+    # Empty: anyone in the cluster. Name the namespaces of the protected applications, whose proxies call it.
+    ingressFrom: []
+  extraEnvironment: []
+  # Where a mesh's sidecar is asked for, when the namespace does not ask for it already.
+  podAnnotations: {}
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+
 serviceAccount:
   # false: the pods use the service account named below, which must exist.
   create: true

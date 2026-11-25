@@ -19,6 +19,7 @@ The chart is in `deploy/install/helm/hodor/`. It installs Hodor and nothing arou
 | Ingress | `<release>` | Only with `ingress.enabled`: routes the name in `publicUrl` to the Service |
 | HorizontalPodAutoscaler | `<release>-server` | Only with `server.autoscaling.enabled`: adds servers as processor use grows |
 | NetworkPolicy | `<release>` | Only with `networkPolicy.enabled`: who may reach the servers, and optionally where Hodor's pods may connect |
+| Deployment, Service, ServiceAccount, ConfigMap, PodDisruptionBudget | `<release>-ext-authz` | Only with `extAuthz.enabled`: [`hodor-ext-authz`](hodor-ext-authz.md), from its own image, two replicas by default, its gRPC port 9191 in the Service. Its service account gives it its mesh identity. See [Envoy's external authorization](#envoys-external-authorization) |
 
 Every pod runs as a user that is not root, with a read-only file system, no Linux capability, no privilege escalation and the default seccomp profile, which the `restricted` Pod Security Standard asks for. The three health checks of [deployment](deployment.md#kubernetes-reference), `/startupz`, `/readyz` and `/livez`, are wired to the operations port.
 
@@ -179,6 +180,7 @@ kubectl exec --namespace hodor deployment/hodor-server -- /usr/local/bin/hodor-c
 | `keyProvider.openbao.authMethod` | `kubernetes` | `kubernetes`: the pods present a token of the release's service account made for the audience `keyProvider.openbao.tokenAudience` alone, mounted for that purpose, under the role `kubernetesRole`. `approle`: the identifiers in the Secret |
 | `keyProvider.openbao.certificateAuthority.configMap`, `key` | Empty; `ca.crt` | A ConfigMap holding the certificate of the authority that issued OpenBao's certificate. Set, only that authority is trusted for OpenBao |
 | `outboundAuthorities.configMap`, `outboundAuthorities.key` | Empty; `authorities.pem` | A ConfigMap of yours whose key holds the certificates, in PEM, of the authorities Hodor's outbound requests trust in place of the image's, for an identity provider or a bundle endpoint served under an authority of your own. It replaces them all: [the authorities it trusts](../security/outbound-http.md#the-authorities-it-trusts) |
+| `extAuthz.enabled` | `false` | Installs `hodor-ext-authz`. See [Envoy's external authorization](#envoys-external-authorization) |
 
 Changing the Secret does not restart anything. After changing it, restart the pods so that they read it again:
 
@@ -246,6 +248,44 @@ clientIdentityHeader: x-forwarded-client-cert
 - **Give the tenant the workload's trust domain**: by its bundle, so that the forwarded certificate is checked against it, or as checked by the mesh, which is needed when the proxy forwards only the names of the certificate, as Istio does by default, or the Linkerd identity.
 
 [The demonstration of Milestone 10](quick-start.md#the-demonstration-of-milestone-10) installs the chart this way on a kind cluster with Istio and SPIRE, and checks it: Istio's sidecar does connect to Hodor from `127.0.0.6`, takes away an `X-Forwarded-Client-Cert` sent by a caller outside the mesh, and forwards the names and the `Hash` of the certificate of a caller inside it. Its settings are in `deploy/demo/workload-identity/hodor-values.yaml`.
+
+### Envoy's external authorization
+
+With `extAuthz.enabled`, the chart installs [`hodor-ext-authz`](hodor-ext-authz.md), which lets the proxies of a service mesh ask Hodor's decisions. It runs from its own image, `ghcr.io/ortisun/hodor-ext-authz`, as a Kubernetes service account of its own, `<release>-ext-authz`, so that its mesh identity is its own: in Istio, `spiffe://<trust domain>/ns/<namespace>/sa/<release>-ext-authz`. Its configuration file is written from the values into a ConfigMap, and a change of the values restarts its pods.
+
+```yaml
+extAuthz:
+  enabled: true
+  tenant: acme
+  token:
+    header: x-hodor-token-claims
+  applications:
+    - destination: spiffe://cluster.local/ns/shop/sa/orders
+      clientId: 0193f1c2-6a1d-7c55-b0c8-6b1f2c9d4e01
+      routes:
+        - methods: [GET]
+          path: /orders/{id}
+          resourceType: order
+          action: read
+```
+
+| Setting | Default | Meaning |
+|---|---|---|
+| `extAuthz.image.repository`, `extAuthz.image.tag` | `ghcr.io/ortisun/hodor-ext-authz`; the version of the chart | Where its image is, and which version runs |
+| `extAuthz.replicas` | `2` | Replicas. Each answers alone, keeping nothing but its access tokens |
+| `extAuthz.tenant` | None | The tenant's slug. Required when enabled |
+| `extAuthz.hodorUrl` | The release's Service, `http://<release>.<namespace>.svc.cluster.local:8080` | Where it reaches Hodor |
+| `extAuthz.issuer` | `publicUrl` followed by `/t/<tenant>` | The tenant's issuer, which `iss` must name |
+| `extAuthz.timeoutMilliseconds` | `1000` | How long one call to Hodor may take before the request is denied |
+| `extAuthz.token` | Empty | Where the checked token's claims are: `metadata` with `namespace` and `key`, or `header`. Empty: the subject is always the caller's identity |
+| `extAuthz.applications` | Empty | One entry per protected application: `destination`, `clientId` and `routes`, each route with `methods`, `path`, `resourceType` and `action`, as [the configuration](hodor-ext-authz.md#configuration) says |
+| `extAuthz.serviceAccount.name`, `extAuthz.serviceAccount.annotations` | `<release>-ext-authz` | Its Kubernetes service account. `extAuthz.serviceAccount.create: false` uses one that exists |
+| `extAuthz.service.port` | `9191` | The gRPC port of its Service, which the mesh's provider names |
+| `extAuthz.resources` | 100m and 32Mi to 128Mi | Requests and limits |
+| `extAuthz.networkPolicy.ingressFrom` | Empty | With `networkPolicy.enabled`, who may reach its gRPC port, as network policy peers. Empty: anyone in the cluster. Name the namespaces of the protected applications, whose proxies call it |
+| `extAuthz.podAnnotations`, `extAuthz.extraEnvironment`, `extAuthz.nodeSelector`, `extAuthz.tolerations`, `extAuthz.affinity` | Empty | As for the server. The annotations are where a mesh's sidecar is asked for, when the namespace does not ask for it already |
+
+With `networkPolicy.enabled` and `networkPolicy.egress.enabled`, its pods may also reach the servers' public port. Setting up the tenant, the service account and the clients it uses is in [setting it up in Hodor](hodor-ext-authz.md#setting-it-up-in-hodor).
 
 ## Upgrading
 

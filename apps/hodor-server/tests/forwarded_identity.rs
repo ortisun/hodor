@@ -797,7 +797,8 @@ async fn the_administration_interface_binds_a_client_to_one_identity() {
     assert_eq!(changed["spiffe_id"], Value::Null);
     assert_eq!(changed["linkerd_identity"], Value::Null);
 
-    // One Linkerd identity, one client of the tenant.
+    // One Linkerd identity, one service account of the tenant: `client`
+    // acts as a service account of its own, `with` as another.
     world
         .client(
             "linkerd_identity",

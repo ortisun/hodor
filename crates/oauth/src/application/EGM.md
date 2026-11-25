@@ -14,7 +14,7 @@ tenant and records its events in it.
 | Port | Methods |
 | --- | --- |
 | `ApplicationStore` | `insert`, `update` (version checked), `get`, `list` (oldest first) |
-| `ClientStore` | `insert` (`oauth.application_not_found` for an application the tenant does not have), `update` (version checked; replaces secrets and keys), `get`, `list_for_application` (oldest first) |
+| `ClientStore` | `insert` (`oauth.application_not_found` for an application the tenant does not have), `update` (version checked; replaces secrets and keys), `get`, `list_for_application` (oldest first), `bound_to` (the clients bound to a `WorkloadIdentity`, oldest first); `insert` and `update` refuse a client whose identity a client of another principal holds (`oauth.client_spiffe_id_taken`, `oauth.client_linkerd_identity_taken`, Decision 0058) |
 | `ResourceServerStore` | `insert` (`oauth.audience_taken`, `oauth.application_has_resource_server`, `oauth.application_not_found`), `update` (version checked; replaces the scopes), `get`, `find_by_audience` (exact), `find_by_application` (the application's one, if any), `list` (oldest first) |
 | `AuthorizationRequestStore` | `insert` (`oauth.client_not_found`), `get`, `remove` (answers whether this call removed it), `answer` (records the answer of a request that waits for consent and has none; answers whether this call recorded it) |
 | `GrantStore` | `insert` (`oauth.client_not_found`), `get`, `update` (status and revocation; `oauth.grant_not_found`), `list_active_for(user, client)`, `list_active_of(user)` (every client, oldest first) |
@@ -36,7 +36,9 @@ clients, resource_servers, digest, random, clock })`:
   most 20 per application, `oauth.too_many_clients`; returns the first
   secret once), `change_client`, `rotate_client_secret(RotateSecret)`,
   `revoke_client_secret`, `add_client_key` (the key as JSON),
-  `remove_client_key`, `set_client_status`, `client`, `clients`.
+  `remove_client_key`, `set_client_status`, `client`, `clients`,
+  `service_account_of(tenant, &WorkloadIdentity)` (the principal of the
+  enabled clients bound to the identity, or `None`; Decision 0058).
 - `with_destinations(check)` gives it the kernel's `DestinationCheck`: a
   client's back-channel logout address is checked through it when it is
   set by `create_client`, or new or changed by `change_client`, and the

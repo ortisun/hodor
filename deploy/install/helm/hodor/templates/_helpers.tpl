@@ -253,3 +253,35 @@ topologySpreadConstraints:
         path: {{ $.Values.outboundAuthorities.key }}
 {{- end }}
 {{- end -}}
+
+{{/* The name of the service account hodor-ext-authz runs as, which gives it its mesh identity. */}}
+{{- define "hodor.extAuthzServiceAccountName" -}}
+{{- if .Values.extAuthz.serviceAccount.create -}}
+{{- .Values.extAuthz.serviceAccount.name | default (printf "%s-ext-authz" (include "hodor.fullname" .)) -}}
+{{- else -}}
+{{- required "extAuthz.serviceAccount.name is required when extAuthz.serviceAccount.create is false" .Values.extAuthz.serviceAccount.name -}}
+{{- end -}}
+{{- end -}}
+
+{{/* The configuration file of hodor-ext-authz, written from extAuthz as docs/operations/hodor-ext-authz.md
+     describes it. */}}
+{{- define "hodor.extAuthzConfig" -}}
+{{- $tenant := required "extAuthz.tenant is required when extAuthz.enabled is true: the tenant's slug" .Values.extAuthz.tenant -}}
+{{- $url := .Values.extAuthz.hodorUrl | default (printf "http://%s.%s.svc.cluster.local:%v" (include "hodor.fullname" .) .Release.Namespace .Values.service.port) -}}
+{{- $issuer := .Values.extAuthz.issuer | default (printf "%s/t/%s" (include "hodor.publicUrl" .) $tenant) -}}
+{{- $hodor := dict "url" $url "tenant" $tenant "issuer" $issuer "timeout_milliseconds" (int .Values.extAuthz.timeoutMilliseconds) -}}
+{{- $config := dict "hodor" $hodor -}}
+{{- with .Values.extAuthz.token }}
+{{- $_ := set $config "token" . -}}
+{{- end }}
+{{- $applications := list -}}
+{{- range $index, $application := .Values.extAuthz.applications }}
+{{- $routes := list -}}
+{{- range $application.routes }}
+{{- $routes = append $routes (dict "methods" .methods "path" .path "resource_type" .resourceType "action" .action) -}}
+{{- end }}
+{{- $applications = append $applications (dict "destination" (required (printf "extAuthz.applications[%d].destination is required" $index) $application.destination) "client_id" (required (printf "extAuthz.applications[%d].clientId is required" $index) $application.clientId) "routes" $routes) -}}
+{{- end }}
+{{- $_ := set $config "applications" $applications -}}
+{{- $config | toPrettyJson -}}
+{{- end -}}

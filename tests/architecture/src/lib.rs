@@ -198,6 +198,10 @@ const RULES: &[Rule] = &[
     app("hodor-server"),
     app("hodor-worker"),
     app("hodor-cli"),
+    // Envoy's external authorization asks Hodor over the Authorization API
+    // like any application, so it holds no decision of its own and no
+    // context crate (Decision 0058).
+    adapter("hodor-ext-authz", &["hodor-observability"]),
     // Test support.
     adapter("hodor-architecture-tests", &[]),
     // How tests start containers and reach their ports; a dependency of
@@ -398,6 +402,21 @@ mod tests {
             ),
         ];
         assert_eq!(violations(&workspace), Vec::<String>::new());
+    }
+
+    #[test]
+    fn the_external_authorization_adapter_reaches_no_context() {
+        let workspace = [
+            krate("hodor-observability", &[]),
+            krate("hodor-oauth", &[]),
+            krate(
+                "hodor-ext-authz",
+                &["hodor-observability", "tonic", "reqwest", "hodor-oauth"],
+            ),
+        ];
+        let found = violations(&workspace);
+        assert_eq!(found.len(), 1, "{found:?}");
+        assert!(found[0].contains("`hodor-oauth`"), "{found:?}");
     }
 
     #[test]

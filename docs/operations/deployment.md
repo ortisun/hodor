@@ -7,6 +7,7 @@ How Hodor is meant to run, and where that is heading. To install it as it is tod
 | Artifact | Contents |
 |---|---|
 | `hodor` image | One image with the three binaries: `hodor-server` (the entrypoint), `hodor-worker` and `hodor-cli`, run by overriding the command. It also holds [the hosted pages](../architecture/hosted-pages.md#how-the-pages-are-served), built into `/usr/share/hodor/auth-ui`, which `HODOR_PAGES_DIRECTORY` points at. The [admin console](../architecture/admin-console.md#how-it-is-served) is built into `/usr/share/hodor/admin-console`, which `HODOR_CONSOLE_DIRECTORY` points at. The account console is added when it exists. Distroless, non-root, `linux/amd64` and `linux/arm64` |
+| `hodor-ext-authz` image | [`hodor-ext-authz`](hodor-ext-authz.md) alone, which serves Envoy's external authorization over the Authorization API. Distroless, non-root, `linux/amd64` and `linux/arm64`; the chart installs it with `extAuthz.enabled` |
 | `hodor-policy-tools` image | The `opa` binary for the Rego validation job (Phase 5) |
 | Helm chart | `deploy/install/helm/hodor`: Deployments, service, ingress, migration job, network policy, PodDisruptionBudgets and horizontal pod autoscaler, as [installing on Kubernetes](install-on-kubernetes.md) describes. The optional Open Policy Agent sidecar and Redis come with the phases that use them |
 | Compose installation | `deploy/install/docker`: the migrations, the server and the worker on one machine, with PostgreSQL and HTTPS as optional parts, as [installing with Docker](install-with-docker.md) describes |

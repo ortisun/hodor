@@ -897,8 +897,8 @@ export const ptBR: Messages = {
   trustDomainNotFound: "Este domínio de confiança não existe neste tenant.",
   trustDomainNameTaken: "Este tenant já tem um domínio de confiança com este nome.",
   tooManyTrustDomains: "Este tenant já tem 50 domínios de confiança, o máximo que pode ter.",
-  spiffeIdTaken: "Outro cliente deste tenant já está vinculado a este identificador SPIFFE.",
-  linkerdIdentityTaken: "Outro cliente deste tenant já está vinculado a esta identidade do Linkerd.",
+  spiffeIdTaken: "Um cliente de outra conta de serviço deste tenant já está vinculado a este identificador SPIFFE.",
+  linkerdIdentityTaken: "Um cliente de outra conta de serviço deste tenant já está vinculado a esta identidade do Linkerd.",
 
   valueInvalid: {
     "federation.alias_invalid":

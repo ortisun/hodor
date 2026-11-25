@@ -311,13 +311,16 @@
                 "type": "string",
                 "enum": [
                   "user",
-                  "client"
-                ]
+                  "client",
+                  "workload_identity"
+                ],
+                "description": "`workload_identity` names a workload by its SPIFFE identifier or its Linkerd identity; Hodor resolves it to the service account whose enabled clients are bound to it, and the request is about that user."
               },
               "id": {
                 "type": "string",
                 "minLength": 1,
-                "maxLength": 255
+                "maxLength": 2048,
+                "description": "A user's or a client's identifier, of at most 255 characters, or a workload's identity, of at most 2048."
               }
             }
           },

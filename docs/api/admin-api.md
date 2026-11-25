@@ -695,7 +695,7 @@ A resource server:
 | The tenant already has 100 applications, or the application 20 clients | `409` | `oauth.too_many_applications`, `oauth.too_many_clients` |
 | The audience is taken, or the application already has a resource server | `409` | `oauth.audience_taken`, `oauth.application_has_resource_server` |
 | A `kid` the client already has, or a sixth key | `409` | `oauth.client_key_taken`, `oauth.client_too_many_keys` |
-| A SPIFFE identifier or a Linkerd identity another client of the tenant is bound to | `409` | `oauth.client_spiffe_id_taken`, `oauth.client_linkerd_identity_taken` |
+| A SPIFFE identifier or a Linkerd identity a client of the tenant acting as another principal is bound to | `409` | `oauth.client_spiffe_id_taken`, `oauth.client_linkerd_identity_taken` |
 | No such application, client, secret, key or resource server in this tenant | `404` | `oauth.application_not_found`, `oauth.client_not_found`, `oauth.client_secret_not_found`, `oauth.client_key_not_found`, `oauth.resource_server_not_found` |
 | Someone else changed it at the same moment | `409` | `oauth.application_modified_concurrently`, `oauth.client_modified_concurrently`, `oauth.resource_server_modified_concurrently` |
 

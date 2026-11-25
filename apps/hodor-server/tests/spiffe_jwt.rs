@@ -557,16 +557,35 @@ async fn a_client_is_bound_to_one_exact_identifier_of_a_service_account() {
         )
     );
 
-    // One client per identifier in the tenant.
+    // One service account per identifier in the tenant (Decision 0058):
+    // another client of the same service account may share it, a client
+    // of another may not.
+    let other = world
+        .created(
+            "/service-accounts",
+            json!({ "name": "Nightly import", "owners": [world.ana] }),
+        )
+        .await;
+    let other = other["id"].as_str().expect("id").to_owned();
     let first = world.created(&clients, client_body(&account, EXPORT)).await;
     assert_eq!(
-        refused(client_body(&account, EXPORT)).await,
+        refused(client_body(&other, EXPORT)).await,
         (
             StatusCode::CONFLICT,
             "oauth.client_spiffe_id_taken".to_owned()
         )
     );
-    let second = world.created(&clients, client_body(&account, IMPORT)).await;
+    let sharing = world.created(&clients, client_body(&account, EXPORT)).await;
+    let sharing = sharing["id"].as_str().expect("id").to_owned();
+    let (status, answer) = world
+        .admin(
+            Method::PATCH,
+            &format!("/clients/{sharing}"),
+            Some(json!({ "authentication_method": "client_secret_basic" })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{answer}");
+    let second = world.created(&clients, client_body(&other, IMPORT)).await;
     let second = second["id"].as_str().expect("id").to_owned();
     let (status, answer) = world
         .admin(

@@ -696,15 +696,35 @@ async fn a_service_accounts_clients_are_bound_to_its_workload_identities() {
         ),
         "oauth.client_spiffe_id_invalid",
     );
+    // An identity binds the clients of one service account (Decision
+    // 0058): another client of Payroll may share it, a client of another
+    // service account may not.
+    let ledger = word(
+        &run(
+            &database,
+            &[
+                "service-account",
+                "create",
+                "--tenant",
+                "acme",
+                "--name",
+                "Ledger",
+                "--owner",
+                &ana,
+            ],
+        ),
+        1,
+    );
+    said(&client("spiffe_jwt", &["--spiffe-id", PAYROLL], &payroll));
     refused(
-        &client("spiffe_jwt", &["--spiffe-id", PAYROLL], &payroll),
+        &client("spiffe_jwt", &["--spiffe-id", PAYROLL], &ledger),
         "oauth.client_spiffe_id_taken",
     );
     refused(
         &client(
             "linkerd_identity",
             &["--linkerd-identity", LINKERD],
-            &payroll,
+            &ledger,
         ),
         "oauth.client_linkerd_identity_taken",
     );
