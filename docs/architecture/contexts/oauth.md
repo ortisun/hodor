@@ -1121,7 +1121,7 @@ OpenID Connect Registration makes `RS256` the default for a client that names no
 
 `azp` is not added: the audience is always the one client, and OpenID Connect asks for `azp` only when it is not.
 
-**The person's claims are not in the ID token.** OpenID Connect returns the claims of the `profile` and `email` scopes from UserInfo whenever an access token is issued as well ([section 5.4](https://openid.net/specs/openid-connect-core-1_0.html#ScopeClaims)), and Hodor always issues one. A client that wants the person's name or address reads UserInfo with the access token. This keeps personal data out of a token that a browser may hold. An administrator may still put a claim into a client's ID tokens with a [claim mapper](#claim-mappers) that names the ID token; it is added after the claims above.
+**The person's claims are not in the ID token.** OpenID Connect returns the claims of the `profile`, `email`, `address` and `phone` scopes from UserInfo whenever an access token is issued as well ([section 5.4](https://openid.net/specs/openid-connect-core-1_0.html#ScopeClaims)), and Hodor always issues one. A client that wants the person's name or address reads UserInfo with the access token. This keeps personal data out of a token that a browser may hold. An administrator may still put a claim into a client's ID tokens with a [claim mapper](#claim-mappers) that names the ID token, the person's [standard claims](identity.md#standard-claims) included, under a name of the tenant's own; it is added after the claims above.
 
 ### Methods and assurance
 
@@ -1183,8 +1183,10 @@ The answer is JSON with `sub`, the token's own, which is the `sub` of the ID tok
 | Scope | Claims |
 |---|---|
 | `openid` | `sub`, as in the token |
-| `profile` | `name`, the person's display name; `preferred_username`, their primary username; `locale`; `updated_at`. Each is left out when the person has none |
+| `profile` | `name`, the person's display name; `preferred_username`, their primary username; `given_name`, `family_name`, `middle_name`, `nickname`, `profile`, `picture`, `website`, `gender`, `birthdate` and `zoneinfo`, their [standard claims](identity.md#standard-claims); `locale`; `updated_at`, when the person last changed, in seconds. Each is left out when the person has none |
 | `email` | `email`, the person's primary email address, and `email_verified`. Left out when they have no address |
+| `address` | `address`, a JSON object of the parts the person has: `formatted`, `street_address`, `locality`, `region`, `postal_code`, `country`. Left out when they have no address |
+| `phone` | `phone_number`, in E.164, and `phone_number_verified`. Left out when they have no number |
 | `groups` | `groups`, the identifiers of the person's [effective groups](#the-groups-claim), all of them. An empty list when they are in none |
 
 The [claim mappers](#claim-mappers) of the token's client that name UserInfo add their claims after these.
@@ -1260,7 +1262,7 @@ It names only what is built:
 | `id_token_signing_alg_values_supported` | `ES256`, `RS256`, `PS256`, `EdDSA` |
 | `userinfo_signing_alg_values_supported` | `ES256`, `RS256`, `PS256`, `EdDSA`: the algorithms of [signed UserInfo answers](#signed-userinfo-answers). `none` is not named: a client that wants no signature gets JSON |
 | `subject_types_supported` | `public`, `pairwise` |
-| `scopes_supported` | `openid`, `profile`, `email`, `groups`. A tenant's own scopes belong to its resource servers and are not listed |
+| `scopes_supported` | `openid`, `profile`, `email`, `address`, `phone`, `groups`. A tenant's own scopes belong to its resource servers and are not listed |
 | `claims_supported` | The claims of the ID token and of UserInfo, `org_id` and `groups` among them. Claims of [claim mappers](#claim-mappers) are a client's, and are not listed |
 | `acr_values_supported` | The names of the tenant's [assurance levels](tenant.md#assurance-levels), weakest first |
 | `prompt_values_supported` | `none`, `login`, `consent`, `select_account`, and `create` when the tenant's [registration policy](tenant.md#registration-policy) is open ([registering for an application](#registering-for-an-application)). A tenant closed to registration leaves `create` out, as the specification lets a provider that does not support it do |
@@ -1758,13 +1760,13 @@ A client has at most 20 mappers. Mappers are kept with their client and go with 
 
 | Source | Written as | The value | The largest value |
 |---|---|---|---|
-| An attribute of the person | `{"kind": "attribute", "attribute": "…"}` | `display_name`: the display name. `username`: the primary username. `email`: the primary email address. `email_verified`: whether the primary email address is verified, a boolean. `locale`: the language tag. The claim is left out when the person has no such value, and `email_verified` when they have no address | `display_name` 802 bytes, `username` 258, `email` 1018, `email_verified` 5, `locale` 142 |
+| An attribute of the person | `{"kind": "attribute", "attribute": "…"}` | `display_name`: the display name. `username`: the primary username. `email`: the primary email address. `email_verified`: whether the primary email address is verified, a boolean. `locale`: the language tag. And each [standard claim](identity.md#standard-claims) by its name: `given_name`, `family_name`, `middle_name`, `nickname`, `profile`, `picture`, `website`, `gender`, `birthdate`, `zoneinfo`, `phone_number`, `phone_number_verified`, a boolean, and `address`, an object of the parts the person has, as UserInfo writes it. The claim is left out when the person has no such value, `email_verified` when they have no address and `phone_number_verified` when they have no number | `display_name` 802 bytes, `username` 258, `email` 1018, `email_verified` 5, `locale` 142; `given_name`, `family_name`, `middle_name` and `nickname` 802 each, `profile`, `picture` and `website` 1026, `gender` 202, `birthdate` 12, `zoneinfo` 66, `phone_number` 33, `phone_number_verified` 5, `address` 3372 |
 | The person's groups | `{"kind": "groups"}` | The identifiers of the person's [effective groups](identity.md#groups-inside-groups), sorted, as the [`groups` claim](#the-groups-claim) names them. Left out for a person in more than 100 | 3901 bytes |
 | Membership of one group | `{"kind": "group_member", "group_id": "…"}` | `true` when the group is one of the person's effective groups, `false` otherwise. The group must be one of the tenant's when the mapper is saved; a group deleted later makes it `false` | 5 bytes |
 | The organization of the sign-in | `{"kind": "organization", "attribute": "id"}` or `"name"` | The identifier or the name of the [organization of the sign-in](#the-organization-of-a-sign-in). Left out when the sign-in named none, or the organization is gone | `id` 38 bytes, `name` 402 |
 | A constant | `{"kind": "constant", "value": …}` | The value as given: any JSON value but `null`, at most 1024 bytes as Hodor writes it | Its own size |
 
-The largest value of a text is four bytes for each character the identity context allows it, plus its two quotes: a display name has at most 200 characters, a username 64, an email address 254 and an organization's name 100. A locale has no length of its own in the identity context; a mapper writes one of at most 35 characters, the length [RFC 5646](https://www.rfc-editor.org/rfc/rfc5646#section-4.4.1) asks every implementation to hold. **A value is never written larger than its largest value**: one that would be, which only a locale longer than 35 characters or the escaping of unusual characters can make, leaves the claim out.
+The largest value of a text is four bytes for each character the identity context allows it, plus its two quotes: a display name has at most 200 characters, a username 64, an email address 254 and an organization's name 100. A text the identity context holds to printable ASCII, as an address of a page, a birth date, a time zone and a telephone number are, is one byte for each character and its two quotes. The largest address is each part's largest text, with its name, the colons, the commas and the two braces. A locale has no length of its own in the identity context; a mapper writes one of at most 35 characters, the length [RFC 5646](https://www.rfc-editor.org/rfc/rfc5646#section-4.4.1) asks every implementation to hold. **A value is never written larger than its largest value**: one that would be, which only a locale longer than 35 characters or the escaping of unusual characters can make, leaves the claim out.
 
 Every value is read when the token is issued, in the tenant of the token, from the person the token is about: the attributes through the `PersonClaimSources` port, the groups and the organization through `PersonMemberships` and `PersonClaimSources`. A person taken out of a group loses it from the next token.
 
@@ -1772,7 +1774,9 @@ Every value is read when the token is issued, in the tenant of the token, from t
 
 A mapper may not name a claim Hodor sets, nor one a specification Hodor follows gives a meaning to in these tokens, compared without regard to case:
 
-`iss`, `sub`, `aud`, `exp`, `nbf`, `iat`, `jti`, `auth_time`, `nonce`, `acr`, `amr`, `azp`, `at_hash`, `c_hash`, `s_hash`, `sid`, `scope`, `client_id`, `cnf`, `act`, `may_act`, `events`, `org_id`, `groups`, `principal_kind`, `name`, `preferred_username`, `locale`, `updated_at`, `email`, `email_verified`, `_claim_names`, `_claim_sources`.
+`iss`, `sub`, `aud`, `exp`, `nbf`, `iat`, `jti`, `auth_time`, `nonce`, `acr`, `amr`, `azp`, `at_hash`, `c_hash`, `s_hash`, `sid`, `scope`, `client_id`, `cnf`, `act`, `may_act`, `events`, `org_id`, `groups`, `principal_kind`, `name`, `preferred_username`, `locale`, `updated_at`, `email`, `email_verified`, `given_name`, `family_name`, `middle_name`, `nickname`, `profile`, `picture`, `website`, `gender`, `birthdate`, `zoneinfo`, `phone_number`, `phone_number_verified`, `address`, `_claim_names`, `_claim_sources`.
+
+The names of the standard claims were added when UserInfo began to answer them ([Decision 0065](../../decisions/0065-where-the-standard-claims-come-from.md)). A mapper stored earlier under one of them is kept, and writes nothing: a reserved name is never written by a mapper, whatever is stored. Its administrator gives it another name.
 
 These are every claim of [the ID token](#the-id-token), [the access token](#the-access-token) and [UserInfo](#userinfo), and the registered claims of JSON Web Tokens, OpenID Connect, token exchange and proof of possession that a reader checks. A mapper that names one is refused with `oauth.claim_mapper_name_reserved`.
 

@@ -128,6 +128,7 @@ Every case has the same shape. First something is shown to work in the tenant it
 | A code and a link to sign in by email, presented to a sign-in of the other tenant that asked for one for the same address | Rejected, as any wrong code; both still sign in where they belong |
 | A second factor begun at the enrollment step of one tenant's sign-in: the sign-in's cookie and CSRF token on the other tenant's enrollment step; the code of the authenticator application's secret, and a security key's answer to the first tenant's options, presented to the other tenant's own sign-in at that step | No such sign-in; rejected. Each tenant then has the person set up a factor of its own, and asks for that one at the next sign-in |
 | The identifier of a user or of a session, asked for by the other tenant's own administrator | No such user, no such session |
+| The identifier of a person, to read or replace their standard claims, by the other tenant's own administrator; a session cookie of one tenant on the other's routes of the person's profile | No such user; not authenticated. Each tenant's person keeps their own claims |
 | A code of the person's authenticator application, and one of their recovery codes | Rejected, as any wrong code; both still work where they belong |
 | A passkey, in place of the identifier | Rejected: the credential is unknown there |
 | A security key's answer to the other tenant's challenge | Rejected; the challenge names only the other tenant's own keys |
