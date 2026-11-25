@@ -44,6 +44,7 @@ Start with the [critical review](architecture/critical-review.md): it lists wher
 | 26 | Deployment Architecture | [operations/deployment.md](operations/deployment.md) |
 | — | Installing with Docker: Hodor on one machine, with passwords of your own, PostgreSQL and HTTPS | [operations/install-with-docker.md](operations/install-with-docker.md) |
 | — | Installing on Kubernetes: the Helm chart, what it creates and what it expects to find | [operations/install-on-kubernetes.md](operations/install-on-kubernetes.md) |
+| — | Keys in OpenBao: the tenants' signing keys made and used in OpenBao, how to prepare it, and what that means | [operations/keys-in-openbao.md](operations/keys-in-openbao.md) |
 | — | Quick-start: from a clean checkout to a tenant people sign in to, and the demonstration of Milestone 1 | [operations/quick-start.md](operations/quick-start.md) |
 | — | OpenID conformance: the OpenID Foundation's suite run against Hodor on every pull request, and the results it is expected to give | [operations/conformance.md](operations/conformance.md) |
 | — | Examples: a tenant and its first administrator, signing in through identity providers, calling the administration interface | [examples/](examples/README.md) |

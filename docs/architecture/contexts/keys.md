@@ -2,9 +2,9 @@
 
 The `keys` context owns the keys a tenant's tokens are signed with and, later, the keys its secrets are encrypted under, and the keys of others a tenant trusts: the bundles of its [trust domains](#trust-domains). It answers two questions for the rest of the system: which key signs now, and which keys may a signature be checked against?
 
-It holds no cryptography of its own. Keys are made, kept and used by a **key provider**, a port that `hodor-adapters-crypto` implements on `aws-lc-rs` ([Decision 0008](../../decisions/0008-cryptography.md)). This context decides which key is used when, and keeps what the provider hands back.
+It holds no cryptography of its own. Keys are made, kept and used by a **key provider**, a port with two implementations: the local provider of `hodor-adapters-crypto`, on `aws-lc-rs` ([Decision 0008](../../decisions/0008-cryptography.md)), and the OpenBao provider of `hodor-adapters-kms`, where keys are made and used in OpenBao and never leave it ([Decision 0030](../../decisions/0030-optional-certificate-authority.md#what-protects-the-key)). This context decides which key is used when, and keeps what the provider hands back.
 
-This page specifies what Issues 50, 51 and 52 build. Issue-50: key sets, key versions and their states, the key provider port, the local provider and the storage. Issue-51: rotation on a schedule, the published key set, and managing keys with the command-line tool and the administration interface. Issue-52: [secrets sealed under data keys](#secrets-under-data-keys), which moves the secrets of Milestone 2 under managed keys. Issue-105: [trust domains](#trust-domains) and their bundles, which [Decision 0042](../../decisions/0042-trust-domains.md) puts in this context.
+This page specifies what Issues 50, 51, 52, 105 and 115 build. Issue-50: key sets, key versions and their states, the key provider port, the local provider and the storage. Issue-51: rotation on a schedule, the published key set, and managing keys with the command-line tool and the administration interface. Issue-52: [secrets sealed under data keys](#secrets-under-data-keys), which moves the secrets of Milestone 2 under managed keys. Issue-105: [trust domains](#trust-domains) and their bundles, which [Decision 0042](../../decisions/0042-trust-domains.md) puts in this context. Issue-115: [the OpenBao provider](#the-openbao-provider), signatures in two encodings, and [several providers at once](#choosing-the-provider).
 
 ## Key sets and key versions
 
@@ -27,7 +27,7 @@ The key set is not stored as a row of its own: it is the versions of one tenant 
 | State | See the lifecycle below |
 | Public key | For a signing key: its numbers, which anyone may know |
 | Key material | What the provider handed back: the private key or the data key, sealed by the provider. This context never reads it and has no way to |
-| Provider | Which provider made it, `local` for now |
+| Provider | Which provider made it, `local` or `openbao`. Every later use of the version goes to that provider and to no other |
 | Times | When it was made, activated, set to retire, retired and revoked |
 | Retire after | For a retiring version: the moment after which it may be retired |
 | Revocation reason | Why it was revoked, if it was |
@@ -98,7 +98,7 @@ Events carry identifiers, uses, algorithms and times. They never carry key mater
 | Port | Purpose |
 |---|---|
 | `KeyStore` | Store and load key versions; load the key set of one use |
-| `KeyProvider` | Make a key; sign with a signing key; encrypt and decrypt with a data key. Asynchronous, because a provider of a key management service answers over the network |
+| `KeyProvider` | Make a key; sign with a signing key, in the JOSE or the DER encoding; encrypt and decrypt with a data key. Asynchronous, because a provider outside the server answers over the network |
 | `Clock` | The times of the lifecycle |
 
 ## Rotation
@@ -179,18 +179,68 @@ A provider makes a key and answers two things: the public key, for a signing key
 
 The material is opaque to this context. It is printed as its length only, has no way to be read as a key, and is stored as it came.
 
-The provider is told the tenant, the version's identifier and the algorithm every time, and a provider must refuse to use material for any other tenant, version or algorithm than the one it was made for.
+The provider is told the tenant, the version's identifier and the algorithm every time, and a provider must refuse to use material for any other tenant, version or algorithm than the one it was made for, and a version another provider made. Every refusal is `keys.unusable`, whatever the reason; the reason goes to the log.
+
+### Two encodings of a signature
+
+A signature is asked for in one of two encodings, which differ for ECDSA only:
+
+| Encoding | An ECDSA signature is | Used by |
+|---|---|---|
+| JOSE | Its two numbers, 32 bytes each for P-256, one after the other (RFC 7518, section 3.4) | Tokens: every signature the keys context makes today |
+| DER | An ASN.1 sequence of its two integers, in DER (RFC 3279, section 2.2.3) | X.509 certificates, such as those of the [certificate authority of a tenant](../../decisions/0030-optional-certificate-authority.md) |
+
+An RSA signature is the same bytes in both.
+
+### The contract of a provider
+
+Every provider passes one suite, `run_provider_contract` in the context's `testing` module, run against the local provider and against OpenBao in a container:
+
+- each signing algorithm it makes signs in both encodings, and the signature checks with the version's public key, independently of the provider, and with no other message;
+- two keys are never the same;
+- material is refused for another tenant, for another version of the same tenant, for a version of another tenant, for another algorithm, when any byte of it changed, and on a version another provider made;
+- a signing key does not encrypt and a data key does not sign; a provider that makes no data keys refuses to make one.
+
+### Choosing the provider
+
+An installation may use both providers at once. `KeyProviders`, in this context, is a provider made of others:
+
+- **new signing keys** are made by the provider the operator chose, `HODOR_KEY_PROVIDER`: `local` (the default) or `openbao`;
+- **new data keys** are always made by the local provider: the policy Hodor holds in OpenBao allows signing and nothing else, and the root keys of [secrets at rest](../../security/secrets-at-rest.md) stay as they are ([Decision 0030](../../decisions/0030-optional-certificate-authority.md#what-protects-the-key));
+- **every version is used by the provider whose name it was stored with**, and by no other. A version whose provider is not configured is refused with `keys.provider_not_configured`. Nothing ever falls back: when OpenBao does not answer, a version made there does not sign, `keys.provider_unavailable`, and no key is made elsewhere instead, so a tenant whose signing keys are in OpenBao issues no token until it answers again.
+
+Changing `HODOR_KEY_PROVIDER` changes where new keys are made, never where a version is used. An installation that moves its signing keys into OpenBao sets it to `openbao` and [rotates](#rotating-and-revoking-by-hand) each tenant's keys, or waits for the schedule to replace them; one that moves them back sets it to `local` and keeps OpenBao's address while a version made there may sign. The server, the worker and the command-line tool must have the same settings: the worker makes keys the server signs with.
 
 ### The local provider
 
-`LocalKeyProvider` in `hodor-adapters-crypto` is the provider of this issue: keys are made and used inside the server with `aws-lc-rs`, and kept wrapped under a root key. This is the envelope encryption of Decision 0008.
+`LocalKeyProvider` in `hodor-adapters-crypto` is the provider of Issue-50: keys are made and used inside the server with `aws-lc-rs`, and kept wrapped under a root key. This is the envelope encryption of Decision 0008.
 
 - **Making a key.** A P-256 key for ES256, an RSA key of 2048 bits for RS256 and PS256, 32 random bytes for AES-256-GCM, all from the library and the operating system's random source.
 - **Wrapping it.** The private key, as a PKCS#8 document, or the data key is sealed with the keys of `HODOR_SECRET_KEYS`, the same root keys as [secrets at rest](../../security/secrets-at-rest.md). The purpose it is sealed for names the algorithm and the version, `keys.<algorithm>.<version>`, and the tenant is bound in too: material copied to another version's row, another algorithm or another tenant does not open.
 - **Using it.** The material is opened for one operation and the key dropped after it. The private key in the clear lives only in the provider's memory, for the time of one signature.
 - **Changing the root key** follows the rules of secrets at rest: the first root key wraps new material, every root key opens.
 
-What the root key protects against is what it protects for secrets at rest: a copy of the database alone yields no private key. Someone holding both the database and the server's configuration holds the keys. Keeping the root key elsewhere is what the providers of key management services in Phase 9 are for.
+What the root key protects against is what it protects for secrets at rest: a copy of the database alone yields no private key. Someone holding both the database and the server's configuration holds the keys. Keeping the key elsewhere is what the OpenBao provider is for.
+
+### The OpenBao provider
+
+`OpenBaoKeyProvider` in `hodor-adapters-kms`, named `openbao`, keeps the tenants' signing keys in OpenBao's Transit secrets engine, on a mount of Hodor's own (`HODOR_OPENBAO_TRANSIT_MOUNT`, `hodor-transit` by default). OpenBao makes each key and makes every signature; the private key is never sent to Hodor, never stored in Hodor's database, and cannot be read by Hodor at all. [Keys in OpenBao](../../operations/keys-in-openbao.md) says how an operator prepares OpenBao and what each setting means.
+
+| Algorithm | Transit key type | How it signs |
+|---|---|---|
+| ES256 | `ecdsa-p256` | SHA-256; `marshaling_algorithm` `jws` for the JOSE encoding, `asn1` for DER |
+| RS256 | `rsa-2048` | SHA-256, `signature_algorithm` `pkcs1v15` |
+| PS256 | `rsa-2048` | SHA-256, `signature_algorithm` `pss`, a salt as long as the hash, as JSON Web Algorithms ask |
+| A256GCM | None | Refused with `keys.algorithm_unsupported`: data keys stay local |
+
+- **One key per tenant and version.** The Transit key of a version is named `tenant-<tenant>-version-<version>`, both identifiers as UUIDs. A rotation in Hodor makes a new version and so a new Transit key; a Transit key is never rotated, and Hodor signs with its first version only.
+- **Making a key.** Hodor asks OpenBao to make the key with its type and nothing else, so that it is made not exportable and with no plaintext backup; Hodor's policy refuses any other parameter. It then reads the key back and keeps it only if it is of the type asked, not exportable, without plaintext backup, not imported, and at its first version: a key that someone made under that name beforehand is refused with `keys.provider_failed`. The public key it reads, a PEM document, becomes the version's public key.
+- **The material** is `openbao:1:<name of the key>:<algorithm>`. Nothing in it is secret. Before anything is sent, the provider computes the name from the tenant and the version it is told and refuses the version, `keys.unusable`, unless the material is exactly what it made for them: material copied from another tenant's or another version's row signs nothing, and the name a request names always comes from the tenant and the version, never from the material.
+- **Signing in.** Hodor signs in with Kubernetes authentication, presenting its service account's token, read again from its file at every sign-in since the cluster replaces it, or with an AppRole's role identifier and secret identifier. The token OpenBao gives is kept and replaced once two thirds of its life have passed. A token OpenBao refuses before then, revoked for example, is replaced by signing in again once, and the request is sent again once.
+- **The way out.** Requests go through the kernel's `HttpClient` port, filled by `ServiceHttpClient`, which calls OpenBao's address and nothing else ([outbound HTTP](../../security/outbound-http.md#what-does-not-go-through-this-client)), with a time limit per request (`HODOR_OPENBAO_TIMEOUT_MS`, 5 seconds by default). When OpenBao's certificate comes from an authority of the operator's own, `HODOR_OPENBAO_CA_FILE` names it, and only that authority is trusted for OpenBao.
+- **Failures.** OpenBao unreachable, slow past the time limit or answering with a server error, a sealed OpenBao among them, is `keys.provider_unavailable`. A sign-in refused is `keys.provider_sign_in_refused`; a request Hodor's policy refuses, after signing in again, `keys.provider_refused`; any other answer that is not what was asked, such as a key deleted in OpenBao, `keys.provider_failed`. Each is a failure to sign or to make a key, and nothing is signed instead.
+
+**Hodor's policy.** `deploy/openbao/hodor-policy.hcl` is the policy Hodor's sign-in gives it. On Hodor's mount it allows making a key of type `ecdsa-p256` or `rsa-2048` with no other parameter, reading a key, and signing, on paths of one segment below `keys/` and `sign/`, and nothing else: not exporting a key, backing one up, changing a key's settings, rotating, trimming or deleting a key, listing keys, encrypting or decrypting, nor any path outside the mount. Hodor therefore cannot read a key's private part, even of a key an administrator of OpenBao made exportable. The tests sign in with that file as Hodor does and try each of these.
 
 ## Secrets under data keys
 
@@ -353,7 +403,7 @@ A bundle's summary is `bundle_sha256`, the SHA-256 of the bundle as it is kept, 
 | `key_use` | `text` | `sig`, `enc` or `data` |
 | `algorithm` | `text` | `ES256`, `RS256`, `PS256` or `A256GCM`; checked against the use |
 | `state` | `text` | `pending`, `active`, `retiring`, `retired` or `revoked` |
-| `provider` | `text` | `local` |
+| `provider` | `text` | `local` or `openbao`; any name of lowercase letters, digits and `_` up to 32 characters is accepted, for the providers to come |
 | `key_material` | `bytea` | As the provider handed it back |
 | `public_rsa_modulus`, `public_rsa_exponent` | `bytea` | For an RSA signing key |
 | `public_p256_x`, `public_p256_y` | `bytea` | For a P-256 signing key, 32 bytes each |
@@ -406,8 +456,11 @@ A tenant table under row-level security. A partial index on `next_refresh_at` of
 | Algorithms for the encryption key set | When Hodor accepts encrypted requests or encrypts tokens |
 | EdDSA | Optional, not scheduled |
 | A rotation policy per tenant | When a tenant asks for one |
-| Providers of key management services and vaults | Phase 9 |
 | Managing trust domains from the command-line tool and the console | Issue-109 |
 | Checking JWT-SVIDs and certificates against a trust domain's bundle | Issue-106 and Issue-107 |
 | Following a temporary redirect of a bundle endpoint; the `https_spiffe` profile, where the endpoint proves itself with an SVID of its own trust domain | Not scheduled |
 | Asking for a bundle to be fetched again at once | Not scheduled: replacing the trust domain with the same address fetches it |
+| The cloud's key management services: Amazon Web Services, Google Cloud, Azure Key Vault (Requirement-Key-03) | Phase 9, on the same port and the same contract |
+| Data keys, and the root keys of secrets at rest, in OpenBao or a key management service | Not scheduled ([Decision 0030](../../decisions/0030-optional-certificate-authority.md#what-protects-the-key)) |
+| Showing which provider holds a version, in the administration interface and `hodor-cli keys` | When someone asks |
+| Signing in the DER encoding through `KeyService` | Issue-116, the certificate authority of a tenant |

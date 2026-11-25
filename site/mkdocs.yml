@@ -138,6 +138,7 @@ nav:
       - Install with Docker: operations/install-with-docker.md
       - Install on Kubernetes: operations/install-on-kubernetes.md
       - Deployment: operations/deployment.md
+      - Keys in OpenBao: operations/keys-in-openbao.md
       - OpenID conformance: operations/conformance.md
   - Examples:
       - examples/README.md

@@ -89,7 +89,7 @@ Mail delivery runs only when `HODOR_SMTP_URL` is set. Without it the worker says
 | `hodor.notification.messages` | Counter | `outcome`: `sent`, `retrying`, `failed`, `expired` |
 | `hodor.notification.passes` | Counter | `outcome`: `ok`, `error` |
 
-Key rotation runs only when `HODOR_SECRET_KEYS` is set, with the same keys as the server: the worker makes the keys, and the server signs with them. Without it the worker says so once when it starts, and no tenant gets a signing key. Unlike the other jobs, rotation needs a leader: a pass holds a PostgreSQL advisory lock, and a worker that does not get it skips the pass.
+Key rotation runs only when `HODOR_SECRET_KEYS` is set, with the same keys as the server: the worker makes the keys, and the server signs with them. Without it the worker says so once when it starts, and no tenant gets a signing key. When the signing keys are made in OpenBao, the worker needs the same [OpenBao settings](keys-in-openbao.md#settings) as the server, and a route to OpenBao. Unlike the other jobs, rotation needs a leader: a pass holds a PostgreSQL advisory lock, and a worker that does not get it skips the pass.
 
 | Metric | Kind | Labels |
 |---|---|---|
@@ -179,7 +179,8 @@ Rows that are never removed today: the counters of failed attempts, which keep t
 |---|---|
 | Static configuration | A file plus environment overrides, validated at startup; the process refuses to start on unknown or invalid keys |
 | Bootstrap secrets | Database credentials and the root key reference, from Kubernetes secrets or an external secret store; never in the image or chart values |
-| Root key | Wraps the per-tenant data keys. Local mode: a key file mounted from a secret. Production: a key management service or Vault key |
+| Root key | Wraps the per-tenant data keys, and the signing keys the local provider makes. `HODOR_SECRET_KEYS`, from a secret |
+| Signing keys in OpenBao | Optional: the tenants' signing keys made and used in OpenBao, never exported. Its address and Hodor's sign-in: [keys in OpenBao](keys-in-openbao.md) |
 | Tenant configuration | In the database, managed through the Admin API or Terraform; not in files |
 
 Nothing tenant-specific is configured through deployment files, so adding a tenant never requires a rollout.
@@ -209,7 +210,7 @@ The server checks the schema version at startup and refuses to run against a sch
 | Item | Approach |
 |---|---|
 | Database | Continuous write-ahead log archiving and daily base backups; restore rehearsed on a schedule (Requirement-Operations-02) |
-| Keys | Local provider: wrapped keys are in the database backup; the root key is backed up separately and offline. Key management service: the provider's own durability |
+| Keys | Local provider: wrapped keys are in the database backup; the root key is backed up separately and offline. OpenBao: the database holds only each key's name and public key; the keys are in OpenBao's own backups, and a key lost there cannot sign again |
 | Redis | Not backed up; it is rebuildable |
 | Policy bundles | Rebuildable from `policy_version`; kept in the database |
 | Regional failure | Warm standby region with a replicated database; DNS failover; the same root key reachable from both regions. Active-active across regions is out of scope for v1 |

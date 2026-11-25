@@ -168,6 +168,7 @@ Change it when that is not true:
 | Stop | `docker compose -f deploy/install/docker/compose.yaml down`. The data stays in the volumes. Adding `--volumes` deletes the database and the certificates, for good |
 | Change a setting | Edit `.env`, then run the command of [step 3](#3-start) again. Only the containers whose settings changed are replaced |
 | Send metrics and traces somewhere | Set `HODOR_OTLP_METRICS_ENDPOINT` and `HODOR_OTLP_TRACES_ENDPOINT`. [Deployment](deployment.md#observability) says what is sent |
+| Keep the signing keys in OpenBao | Set `HODOR_KEY_PROVIDER=openbao` and the `HODOR_OPENBAO_*` settings of [keys in OpenBao](keys-in-openbao.md#settings), with an AppRole. The server, the worker and `cli` all get them |
 
 ### Backing up
 

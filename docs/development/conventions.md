@@ -55,7 +55,7 @@ Some names are the actual name of a standard, protocol, format or product. Nobod
 | Group | Names |
 |---|---|
 | Protocols and standards | OAuth, SAML, SCIM, LDAP, RADIUS, HTTP, HTTPS, TLS, DNS, SMTP, SMS, OTLP, PKCE, DPoP, TOTP, HOTP, WebAuthn, XACML, FAPI, SPIFFE, gRPC, ACME, EST, CMP, SCEP, OCSP |
-| Formats and data | JSON, NDJSON, XML, YAML, HTML, CSS, SVG, PNG, OKLCH, SQL, URL, URI, UUID, JWT, JWK, JWKS, JWS, JOSE, COSE, UTC, UTF-8, X.509, SVID (as in X.509-SVID and JWT-SVID), PEM |
+| Formats and data | JSON, NDJSON, XML, YAML, HTML, CSS, SVG, PNG, OKLCH, SQL, URL, URI, UUID, JWT, JWK, JWKS, JWS, JOSE, COSE, UTC, UTF-8, X.509, SVID (as in X.509-SVID and JWT-SVID), PEM, ASN.1, DER |
 | Cryptography | RSA, SHA, HMAC, AES, GCM, ECDSA, EdDSA, PKCS, FIPS, and algorithm identifiers such as ES256 |
 | Attack classes | CSRF, SSRF, XSS, XXE |
 | Products, projects and organizations | PostgreSQL, Redis, OpenTelemetry, VictoriaMetrics, Kubernetes, Helm, OWASP, STRIDE, C4, RFC numbers, NIST, IBM, Entra ID, Envoy, Istio, Linkerd, Consul, Kuma, Cilium, OpenBao, SPIRE, cert-manager |
