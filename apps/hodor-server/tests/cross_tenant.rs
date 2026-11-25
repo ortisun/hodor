@@ -3817,6 +3817,41 @@ async fn an_enrollment_begun_in_one_tenant_cannot_be_finished_in_another() {
     assert_eq!(body["step"], "totp", "{body}");
 }
 
+#[tokio::test]
+async fn wrong_codes_by_email_in_one_tenant_do_not_lock_the_same_address_out_in_another() {
+    let world = world().await;
+    let (acme, globex) = (&world.acme, &world.globex);
+    offer_by_email(&world, acme).await;
+    offer_by_email(&world, globex).await;
+
+    // Five wrong codes for the shared address in Acme, in two sign-ins,
+    // after which even the right password waits there.
+    for tries in [4, 1] {
+        let (mut browser, sent) = asked_by_email(&world, acme, "email_code", "code").await;
+        let wrong = if sent == "000000" { "000001" } else { "000000" };
+        for _ in 0..tries {
+            let (_, body) = present_by_email(&mut browser, acme, "email_code", "code", wrong).await;
+            assert_eq!(body["status"], "rejected", "{body}");
+        }
+    }
+    let (status, body) = Browser::new(&world.server)
+        .sign_in(acme.slug, EMAIL, PASSWORD)
+        .await;
+    assert_eq!(status, StatusCode::TOO_MANY_REQUESTS, "{body}");
+    assert_eq!(body["code"], "authentication.too_many_attempts");
+
+    // The person with the same address in Globex signs in at once, with
+    // the password and with a code.
+    let (status, body) = Browser::new(&world.server)
+        .sign_in(globex.slug, EMAIL, PASSWORD)
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["status"], "completed", "{body}");
+    let (mut browser, sent) = asked_by_email(&world, globex, "email_code", "code").await;
+    let (_, body) = present_by_email(&mut browser, globex, "email_code", "code", &sent).await;
+    assert_eq!(body["status"], "completed", "{body}");
+}
+
 /// A first-party client of a new application of `tenant` that is told
 /// when a session it signed a person in with ends.
 async fn client_told_of_sign_outs(world: &World, tenant: &Tenant, address: &str) -> String {
@@ -3968,8 +4003,12 @@ async fn a_sign_out_in_one_tenant_tells_none_of_another_tenants_clients() {
 
 /// A pairwise client of a new first-party application of `tenant`, whose
 /// sector is the host of `REDIRECT`, and the tokens the person gets from
-/// it. Answers the client's identifier and secret, and the tokens.
-async fn pairwise_tokens(world: &World, tenant: &Tenant) -> ((String, String), serde_json::Value) {
+/// it. Answers the client's identifier and secret, the tokens, and the
+/// browser, still signed in.
+async fn pairwise_tokens(
+    world: &World,
+    tenant: &Tenant,
+) -> ((String, String), serde_json::Value, Browser) {
     use hodor_adapters_postgres::{PgApplicationStore, PgClientStore, PgResourceServerStore};
     use hodor_oauth::api::{
         ApplicationPorts, ApplicationService, ApplicationSettings, ClientSettings, ClientType,
@@ -4061,7 +4100,7 @@ async fn pairwise_tokens(world: &World, tenant: &Tenant) -> ((String, String), s
     )
     .await;
     assert_eq!(status, StatusCode::OK, "{tokens}");
-    (pair, tokens)
+    (pair, tokens, browser)
 }
 
 fn id_token_claims(tokens: &serde_json::Value) -> serde_json::Value {
@@ -4080,8 +4119,8 @@ fn id_token_claims(tokens: &serde_json::Value) -> serde_json::Value {
 async fn one_sector_in_two_tenants_knows_the_same_address_by_two_identifiers() {
     let world = world_with(&[("HODOR_SECRET_KEYS", ROOT_KEY)]).await;
     let (acme, globex) = (&world.acme, &world.globex);
-    let (acme_client, in_acme) = pairwise_tokens(&world, acme).await;
-    let (globex_client, in_globex) = pairwise_tokens(&world, globex).await;
+    let (acme_client, in_acme, _) = pairwise_tokens(&world, acme).await;
+    let (globex_client, in_globex, _) = pairwise_tokens(&world, globex).await;
     let acme_sub = id_token_claims(&in_acme)["sub"].clone();
     let globex_sub = id_token_claims(&in_globex)["sub"].clone();
     // The same address, the same sector, two tenants: two identifiers, and
@@ -4123,6 +4162,72 @@ async fn one_sector_in_two_tenants_knows_the_same_address_by_two_identifiers() {
     .await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(introspected["sub"], acme_sub);
+}
+
+/// The end-session endpoint of a tenant, with an ID token as the hint.
+fn end_session_path(slug: &str, hint: &str) -> String {
+    format!(
+        "/t/{slug}/oauth2/logout?{}",
+        form_urlencoded::Serializer::new(String::new())
+            .append_pair("id_token_hint", hint)
+            .finish()
+    )
+}
+
+#[tokio::test]
+async fn a_pairwise_id_token_of_one_tenant_ends_no_session_at_another() {
+    let world = world_with(&[("HODOR_SECRET_KEYS", ROOT_KEY)]).await;
+    let (acme, globex) = (&world.acme, &world.globex);
+    // The person is signed in to a pairwise client of the same sector in
+    // each tenant.
+    let (_, in_acme, mut acme_browser) = pairwise_tokens(&world, acme).await;
+    let (_, _, mut globex_browser) = pairwise_tokens(&world, globex).await;
+    let hint = in_acme["id_token"].as_str().expect("an ID token");
+
+    // Acme's ID token, the hint of Globex's end-session endpoint in the
+    // browser signed in to Globex: not an ID token of Globex, never a
+    // redirect, and Globex's session goes on.
+    let (status, location, body) = globex_browser
+        .navigate(Method::GET, &end_session_path(globex.slug, hint), None)
+        .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    assert_eq!(location, None);
+    assert!(
+        body.contains("oauth.logout_id_token_hint_invalid"),
+        "{body}"
+    );
+    let (status, _) = globex_browser
+        .send(Method::GET, "/t/globex/interaction/session", None)
+        .await;
+    assert_eq!(status, StatusCode::OK, "Globex's session goes on");
+    // Acme's own browser, carried to Globex's path with its cookies: the
+    // same refusal.
+    let (status, location, _) = acme_browser
+        .navigate(Method::GET, &end_session_path(globex.slug, hint), None)
+        .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(location, None);
+
+    // Where it belongs, its pairwise `sub` and `sid` name the session, which
+    // ends without asking; Globex's still goes on.
+    let (status, location, _) = acme_browser
+        .navigate(Method::GET, &end_session_path(acme.slug, hint), None)
+        .await;
+    assert!(status.is_redirection(), "{status}");
+    assert!(
+        location
+            .as_deref()
+            .is_some_and(|location| !location.contains("/account/sign-out")),
+        "ended without asking: {location:?}"
+    );
+    let (status, _) = acme_browser
+        .send(Method::GET, "/t/acme/interaction/session", None)
+        .await;
+    assert_ne!(status, StatusCode::OK, "Acme's session ended");
+    let (status, _) = globex_browser
+        .send(Method::GET, "/t/globex/interaction/session", None)
+        .await;
+    assert_eq!(status, StatusCode::OK, "Globex's session goes on");
 }
 
 /// The ID token and the access token a person gets at a tenant's
@@ -4275,4 +4380,41 @@ async fn one_tenants_claim_mappers_are_out_of_reach_of_another_and_read_only_the
     let (_, listed) = call(&world, acme, Method::GET, mappers, None).await;
     assert_eq!(listed["items"][0]["id"], mapper.as_str());
     assert_eq!(listed["items"][0]["claim"], "in_finance");
+}
+
+#[tokio::test]
+async fn one_tenants_second_factor_policy_asks_no_enrollment_of_another() {
+    let world = world_with(&[("HODOR_SECRET_KEYS", ROOT_KEY)]).await;
+    let (acme, globex) = (&world.acme, &world.globex);
+    require_second_factor(&world, acme).await;
+
+    // In Acme the shared person, who has no second factor, is asked to set
+    // one up after the password, and nobody is signed in yet.
+    let (in_acme, body) = waiting_after_password(&world, acme).await;
+    assert_eq!(
+        (body["status"].as_str(), body["step"].as_str()),
+        (Some("pending"), Some("enrollment")),
+        "{body}"
+    );
+    assert!(!in_acme.cookies.contains_key(SESSION_COOKIE));
+
+    // In Globex, which requires nothing more, the person with the same
+    // address signs in with the password alone.
+    let (mut in_globex, body) = waiting_after_password(&world, globex).await;
+    assert_eq!(body["status"], "completed", "{body}");
+    let (status, who) = in_globex
+        .send(Method::GET, "/t/globex/interaction/session", None)
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(who["methods"], serde_json::json!(["password"]));
+
+    // Acme's sign-in, still waiting, is finished only by enrolling there.
+    let mut carried = Browser::new(&world.server);
+    carried.cookies = in_acme.cookies.clone();
+    carried.csrf_token = in_acme.csrf_token.clone();
+    let (status, body) = carried
+        .send(Method::GET, "/t/acme/interaction/sign-in", None)
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["step"], "enrollment", "{body}");
 }

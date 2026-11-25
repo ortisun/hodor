@@ -2,7 +2,7 @@
 
 ## Overview
 
-A development receiver of webhooks in one file, `receiver.mjs`, using only Node.js and its standard library (`node:http`). The header comment says it is "NOT FOR ANYTHING REAL". It answers every `POST` with `204` and keeps what it got, so that the development stack and the demonstration of Milestone 8 ([demo](../demo/EGM.md)) have an endpoint Hodor can deliver to. It checks nothing: the demonstration checks the signatures itself. In the stack it is the `webhook-receiver` service of [docker](../docker/EGM.md), reached by Hodor as `webhook-receiver:9600` and from this machine as `localhost:9600`.
+A development receiver of webhooks in one file, `receiver.mjs`, using only Node.js and its standard library (`node:http`). The header comment says it is "NOT FOR ANYTHING REAL". It answers every `POST` with `204` and keeps what it got, so that the development stack and the demonstrations of Milestones 8 and 9 ([demo](../demo/EGM.md)) have an endpoint Hodor can deliver webhooks and logout tokens to. It checks nothing: the demonstrations check the signatures themselves. In the stack it is the `webhook-receiver` service of [docker](../docker/EGM.md), reached by Hodor as `webhook-receiver:9600` and from this machine as `localhost:9600`.
 
 ## Interface
 

@@ -40,16 +40,22 @@ watched page and the steps a person repeats.
   - `expectAccessible(page)` - waits for running animations to finish, then
     runs `AxeBuilder` with the tags `wcag2a`, `wcag2aa`, `wcag21a`,
     `wcag21aa`, `wcag22aa` and expects no violations.
-  - `messageTo(address, count = 1): Promise<Message>` - polls
+  - `mailTo(address, count = 1): Promise<Mail>` - polls
     `{MAIL}/api/v1/search?query=to:"{address}"` for up to 20 seconds until
-    `count` messages exist, reads `{MAIL}/api/v1/message/{ID}`, and returns
-    `{ subject, text, link }`, where `link` is the path and `#token=` fragment
-    of the first `https?://...#token=[0-9a-f]+` in the text.
-  - `register(page, address, password = PASSWORD)` - registers through
-    `register`, the message link and `complete-registration`, up to
-    `en.noticeRegistered`.
-  - `signIn(page, identifier, password)` - the identifier step and the
-    password step of the sign-in page.
+    `count` messages exist, reads `{MAIL}/api/v1/message/{ID}` of the
+    `count`-th oldest, and returns `{ subject, text }`.
+  - `messageTo(address, count = 1): Promise<Message>` - `mailTo`, and
+    `link`, the path and `#token=` fragment of the first
+    `https?://...#token=[0-9a-f]+` in the text; fails when there is none.
+  - `register(page, address, password = PASSWORD, tenant = TENANT)` -
+    registers through `register`, the message link and
+    `complete-registration`, up to `en.noticeRegistered`.
+  - `signIn(page, identifier, password, tenant = TENANT)` - the identifier
+    step and the password step of the sign-in page.
+  - `newTenant(...settings)` - makes a tenant with open registration,
+    `browser-` and eight characters of a UUID, with `hodor-cli tenant
+    create`, then runs `hodor-cli tenant <command> --slug <slug> <rest>` for
+    each `[command, ...rest]` of `settings`; returns the slug.
   - `signInThroughProvider(page, identity: Identity)` - leaves through
     `en.continueWith(PROVIDER_NAME)` and fills the development provider's
     page (`Subject`, `Email address`, "The provider vouches for this address",
@@ -61,7 +67,7 @@ watched page and the steps a person repeats.
     = 0)` - the code an authenticator application shows, computed with
     `node:crypto` as RFC 6238 says, `steps` periods of thirty seconds from
     now.
-  - `at(page)` (path of a page of `TENANT`), `newAddress()`
+  - `at(page, tenant = TENANT)` (path of a page of a tenant), `newAddress()`
     (`person-{uuid}@example.com`), `PASSWORD`, `PROVIDER_NAME`
     (`"Development provider"`), and re-exports `en`, `PROVIDER`, `TENANT`.
 - Spec files (scenarios by `test(...)` title):
@@ -135,6 +141,26 @@ watched page and the steps a person repeats.
     page asks for the code and nothing else, no identifier; the browser
     goes back with a code, and the tokens it is exchanged for say the
     multi-factor level, with `otp` and `mfa` in `amr`.
+  - `email-sign-in.spec.ts` - each test in a tenant of its own
+    (`newTenant(["email-sign-in", "--code", "on", "--link", "on"])`) with a
+    person registered there. A person asks for a code from the first step,
+    types the six digits of the second message to them (the field is
+    focused, `one-time-code`, numeric) and is signed in with `email_code`;
+    in a new sign-in the same code is rejected and the next one works. A
+    person asks for a link, the link of the second message opened in
+    another browser context says `en.signInLinkElsewhere` and signs nothing
+    in, opened in the browser that asked signs in with `email_link`, and
+    within a new sign-in is refused with `en.signInLinkRefused`.
+  - `enrollment.spec.ts` - each test in a tenant of its own that requires a
+    second factor (`newTenant(["second-factor", "--policy", "required"])`),
+    with a person registered there who has none. After the password the
+    sign-in page says `en.enrollLead` and nobody is signed in yet; the
+    person sets up an authenticator application from the key shown under
+    its QR code, a mistyped code first, keeps the ten recovery codes and is
+    signed in with `password` and `enrollment` at `multi_factor`; the next
+    sign-in asks for the application's code. With a virtual security key, a
+    person adds the key during the sign-in, keeps the codes, and the next
+    sign-in asks for the key.
   - `webauthn.spec.ts` (a virtual authenticator of Chromium, added through
     the DevTools protocol) - a person registers, signs in with a password,
     registers a key through the interaction interface from a page of
@@ -153,8 +179,9 @@ watched page and the steps a person repeats.
   `HODOR_URL`, the development mail server at `HODOR_MAIL_URL`, and a tenant
   `HODOR_TENANT` with open registration that offers the three development
   providers (commands in `stack.ts:HELP`). Otherwise `checkTheStack` stops
-  the run before any test. `totp.spec.ts`, `consent.spec.ts` and
-  `step-up.spec.ts` also need `docker compose` on the machine that runs the
+  the run before any test. `totp.spec.ts`, `consent.spec.ts`,
+  `step-up.spec.ts`, `email-sign-in.spec.ts` and `enrollment.spec.ts` also
+  need `docker compose` on the machine that runs the
   tests, to run `hodor-cli` in the stack.
 - Tests run one at a time (`workers: 1`, `fullyParallel: false`), because
   the server limits attempts by the address requests come from and every test
