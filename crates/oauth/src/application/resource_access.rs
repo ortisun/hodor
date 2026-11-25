@@ -46,7 +46,8 @@ pub struct ResourceCaller {
     pub client_id: ClientId,
     /// The application that client belongs to.
     pub application_id: ApplicationId,
-    /// The token's subject: a user's identifier, or the client's own.
+    /// The token's subject: a user's identifier, a pairwise one for a
+    /// pairwise client, or the client's own.
     pub subject: String,
     /// The token's scopes.
     pub scopes: Vec<String>,

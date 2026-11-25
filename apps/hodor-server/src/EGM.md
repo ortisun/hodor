@@ -54,7 +54,8 @@ Routers, as assembled in `run`:
   addresses are checked by a `GuardedHttpClient` with the development
   exception; its `applications` is an `ApplicationService` given such a
   client too, with `with_destinations`, to check clients' back-channel
-  logout addresses.
+  logout addresses and sector identifier addresses, and another with
+  `with_sector_documents`, to fetch the latter.
 - `/console/api` nests `hodor_protocol_http::console_routes`.
 - `/api/v1/authorization` nests `hodor_protocol_http::authorization_api_routes`
   with the `AuthorizationApiState` built by `authorization_api`, only when
@@ -138,8 +139,11 @@ too),
 `external_sign_in` (`ExternalSignIn` with OpenID Connect, GitHub, SAML and,
 through `with_directories`, `LdapDirectoryClient`), `keys`, `key_rotation`
 (the default policy with `HODOR_KEY_OVERLAP_HOURS`), `token` (the token
-endpoint, with `PgRefreshTokenStore`, `ServerStanding`, the secret box and
-the retry window of `HODOR_REFRESH_RETRY_SECONDS`), `consents` (the
+endpoint, with `PgRefreshTokenStore`, `ServerStanding`, the secret box,
+the retry window of `HODOR_REFRESH_RETRY_SECONDS` and `pairwise_subjects`),
+`pairwise_subjects` (`PairwiseSubjects` over `PgPairwiseSecretStore`, a
+secret box and `AwsLcHmacSha256`, given to the token endpoint and to
+`logout`, the end-session endpoint), `consents` (the
 `ConsentService` over `PgConsentStore`, which the authorization endpoint,
 the consent routes and the administration interface use),
 `administration`,
@@ -159,7 +163,7 @@ and `run`.
   `HODOR_SECRET_KEYS`; a retry window outside 0 to 60 seconds aborts startup
   (`token`).
 - Every context that keeps secrets (federation, authenticator applications,
-  refresh token families)
+  refresh token families, pairwise secrets)
   gets the same kind of `TenantSecretBox`, built by `secret_box` with
   `PgKeyStore`, `LocalKeyProvider` over the root keys, `PgSealingStateStore`
   and the root keys to open the first format.

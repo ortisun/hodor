@@ -22,7 +22,7 @@ use hodor_oauth::api::{
     Application, ApplicationId, ApplicationSettings, AuthenticationMethod, Client, ClientId,
     ClientSecret, ClientSecretId, ClientSettings, ClientType, CreateClient, CreateResourceServer,
     ExchangeRule, GrantType, IdTokenAlgorithm, ResourceServer, ResourceServerId,
-    ResourceServerSettings, RotateSecret, ScopeDefinition, Status, TokenPolicy,
+    ResourceServerSettings, RotateSecret, ScopeDefinition, Status, SubjectType, TokenPolicy,
 };
 use serde::{Deserialize, Serialize};
 use time::Duration;
@@ -408,6 +408,10 @@ struct ClientBody {
     /// Where its logout tokens are sent, or `null`.
     backchannel_logout_uri: Option<String>,
     backchannel_logout_session_required: bool,
+    /// `public` or `pairwise`.
+    subject_type: &'static str,
+    /// The sector identifier address of a pairwise client, or `null`.
+    sector_identifier_uri: Option<String>,
     /// The service account or agent it acts as, or `null`.
     principal: Option<String>,
     exchange_rules: Vec<ExchangeRuleBody>,
@@ -440,6 +444,8 @@ impl From<&Client> for ClientBody {
             id_token_signed_response_alg: settings.id_token_algorithm.as_str(),
             backchannel_logout_uri: settings.backchannel_logout_uri.clone(),
             backchannel_logout_session_required: settings.backchannel_logout_session_required,
+            subject_type: settings.subject_type.as_str(),
+            sector_identifier_uri: settings.sector_identifier_uri.clone(),
             principal: settings.principal.map(|principal| principal.to_string()),
             exchange_rules: settings
                 .exchange_rules
@@ -507,6 +513,8 @@ struct NewClientBody {
     id_token_signed_response_alg: Option<String>,
     backchannel_logout_uri: Option<String>,
     backchannel_logout_session_required: Option<bool>,
+    subject_type: Option<String>,
+    sector_identifier_uri: Option<String>,
     token_policy: Option<TokenPolicyInput>,
     secret_lifetime_days: Option<u32>,
     principal: Option<String>,
@@ -546,6 +554,10 @@ struct ClientChangesBody {
     #[serde(default, deserialize_with = "present")]
     backchannel_logout_uri: Option<Option<String>>,
     backchannel_logout_session_required: Option<bool>,
+    subject_type: Option<String>,
+    /// Left out: unchanged; `null`: removed; an address: replaced.
+    #[serde(default, deserialize_with = "present")]
+    sector_identifier_uri: Option<Option<String>>,
     token_policy: Option<TokenPolicyInput>,
     /// Left out: unchanged; `null`: removed; an identifier: replaced.
     #[serde(default, deserialize_with = "present")]
@@ -694,6 +706,10 @@ async fn create_client(
             settings.backchannel_logout_uri = new.backchannel_logout_uri;
             settings.backchannel_logout_session_required =
                 new.backchannel_logout_session_required.unwrap_or(false);
+            if let Some(subject_type) = new.subject_type {
+                settings.subject_type = SubjectType::parse(&subject_type).map_err(failed)?;
+            }
+            settings.sector_identifier_uri = new.sector_identifier_uri;
             if let Some(policy) = new.token_policy {
                 settings.token_policy = policy.over(settings.token_policy);
             }
@@ -798,6 +814,13 @@ async fn change_client(
                 backchannel_logout_session_required: changes
                     .backchannel_logout_session_required
                     .unwrap_or(now.backchannel_logout_session_required),
+                subject_type: match changes.subject_type {
+                    Some(given) => SubjectType::parse(&given).map_err(failed)?,
+                    None => now.subject_type,
+                },
+                sector_identifier_uri: changes
+                    .sector_identifier_uri
+                    .unwrap_or(now.sector_identifier_uri),
                 token_policy: changes
                     .token_policy
                     .map_or(now.token_policy, |given| given.over(now.token_policy)),

@@ -109,8 +109,8 @@ fn a_logout_token_names_the_session_and_the_person_never_a_nonce() {
         LogoutTokenSubject {
             issuer: "https://login.example.com/t/acme",
             client_id,
-            user_id,
-            session_id,
+            subject: &user_id.to_string(),
+            session: &session_id.to_string(),
         },
         NOW + Duration::seconds(100),
         "jti-1",

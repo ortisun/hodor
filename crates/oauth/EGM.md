@@ -19,7 +19,10 @@ UserInfo ask; and Issue-62: consent, with the question asked of a person,
 their answer, their consents and withdrawing one; and Issue-100:
 back-channel logout, with the back-channel logout address of clients, the
 deliveries made when a session ends and the logout tokens the worker signs
-and sends. Storage,
+and sends; and Issue-98: pairwise subject identifiers, with the subject
+type and sector identifier address of clients, the tenant's pairwise
+secret, and every token and answer naming the person as the client's
+sector knows them. Storage,
 randomness, hashing, signature checking and time are reached through ports
 and kernel traits.
 
@@ -100,6 +103,12 @@ and kernel traits.
   `BackChannelLogoutSender::send` makes to a client's back-channel logout
   address; it is signed anew for every attempt and stored nowhere, and
   `oauth.backchannel_logout_set_aside` carries neither it nor the address.
+- A pairwise client is never given a person's user identifier: every
+  service that names a person to it goes through `PairwiseSubjects`, and
+  a service given none refuses (`oauth.pairwise_unavailable`). A token
+  that comes back is read through its record in the register, never
+  through its `sub`. The pairwise secret is made once per tenant, sealed,
+  and never replaced; one that does not open is an error.
 - Every store call is scoped to the tenant of the unit of work (see
   [application](./src/application/EGM.md)).
 
@@ -109,10 +118,12 @@ and kernel traits.
   servers, pending authorization requests, grants, codes, the `jti`s of
   client assertions, refresh token families with their tokens' hashes,
   the records of access tokens by `jti`, consents with their history, and
-  logout deliveries. Through `HttpClient`: posts logout tokens. Through
+  logout deliveries, and the tenant's sealed pairwise secret. Through
+  `HttpClient`: posts logout tokens, and fetches a sector identifier
+  document when a client is saved with one. Through
   `KeyService`: signs access, ID and logout tokens, and lists the
   published keys. Through `SecretBox`: seals and opens the secrets of
-  refresh token families. Through `IdentityService`: reads people. Through
+  refresh token families and the pairwise secret. Through `IdentityService`: reads people. Through
   `UnitOfWork::record_event`: records the `oauth.*` events.
 
 ## Verification
@@ -126,4 +137,6 @@ and kernel traits.
   binary; `cargo test -p hodor-adapters-postgres --test backchannel_logout`,
   `cargo test -p hodor-server --test logout` and
   `cargo test -p hodor-worker --test backchannel_logout` for back-channel
-  logout.
+  logout; `cargo test -p hodor-oauth --test pairwise` and
+  `cargo test -p hodor-server --test pairwise` for pairwise subject
+  identifiers.

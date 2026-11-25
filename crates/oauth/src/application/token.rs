@@ -3,6 +3,7 @@
 //! tokens.
 
 use crate::application::authorization::AuthorizationCodeService;
+use crate::application::pairwise::{PairwiseSubjects, session_for, subject_for};
 use crate::application::ports::{
     AccessTokenRecordStore, ApplicationStore, ClientAssertionStore, ClientStore, GrantStore,
     PersonMemberships, PersonStanding, RefreshTokenStore, ResourceServerStore,
@@ -11,7 +12,7 @@ use crate::domain::authorization::{CodePresentation, GrantStatus};
 use crate::domain::client::{AuthenticationMethod, Client, ClientId, GrantType, TokenPolicy};
 use crate::domain::event::OauthEvent;
 use crate::domain::introspection::AccessTokenRecord;
-use crate::domain::openid::{asks_for_openid, id_token_claims, id_token_header};
+use crate::domain::openid::{IdTokenNames, asks_for_openid, id_token_claims, id_token_header};
 use crate::domain::refresh::{
     DEFAULT_RETRY_WINDOW, FAMILY_SECRET_PURPOSE, FamilySecret, LONGEST_RETRY_WINDOW,
     RefreshDecision, RefreshFamily, RefreshRefusal, RefreshTokenHash,
@@ -127,6 +128,7 @@ pub(crate) struct SignedAccessToken {
 pub struct TokenService {
     pub(crate) ports: TokenPorts,
     retry_window: Duration,
+    pub(crate) pairwise: Option<PairwiseSubjects>,
 }
 
 impl fmt::Debug for TokenService {
@@ -165,7 +167,17 @@ impl TokenService {
         Self {
             ports,
             retry_window: DEFAULT_RETRY_WINDOW,
+            pairwise: None,
         }
+    }
+
+    /// Names people to pairwise clients through `pairwise`. Without it, a
+    /// pairwise client is answered `server_error` rather than given a
+    /// person's user identifier.
+    #[must_use]
+    pub fn with_pairwise_subjects(mut self, pairwise: PairwiseSubjects) -> Self {
+        self.pairwise = Some(pairwise);
+        self
     }
 
     /// The same, with another retry window for refresh tokens.
@@ -420,7 +432,11 @@ impl TokenService {
     }
 
     /// Signs the ID token for a redeemed `code`, issued with
-    /// `access_token`.
+    /// `access_token`, naming the person as `subject`.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "each is one part of the ID token; grouping them would only rename them"
+    )]
     async fn sign_id_token(
         &self,
         tenant: &TenantContext,
@@ -429,6 +445,7 @@ impl TokenService {
         code: &crate::domain::authorization::AuthorizationCode,
         organization: Option<OrganizationId>,
         access_token: &str,
+        subject: &str,
     ) -> Result<Result<Secret<String>, TokenError>, DomainError> {
         let lifetime = client.snapshot().settings.token_policy.id_token;
         if lifetime > TokenPolicy::LONGEST_SIGNED_LIFETIME {
@@ -436,9 +453,14 @@ impl TokenService {
                 "the ID token would outlive the rotation overlap",
             )));
         }
+        let session = session_for(self.pairwise.as_ref(), tenant, client, code.session_id).await?;
         let claims = id_token_claims(
             issuer.issuer,
             code,
+            IdTokenNames {
+                subject,
+                session: &session,
+            },
             organization,
             client.id(),
             lifetime,
@@ -567,7 +589,12 @@ impl TokenService {
         };
         drop(uow);
 
+        // The person as the client knows them: pairwise for a pairwise
+        // client, in the access token as in the ID token.
+        let known_as =
+            subject_for(self.pairwise.as_ref(), tenant, client, redeemed.user_id).await?;
         let mut subject = TokenSubject::of_code(&redeemed);
+        subject.subject.clone_from(&known_as);
         subject.organization = grant.organization;
         subject.groups = self
             .groups_for(tenant, redeemed.user_id, &redeemed.scopes)
@@ -586,6 +613,7 @@ impl TokenService {
                     &redeemed,
                     grant.organization,
                     &signed.token,
+                    &known_as,
                 )
                 .await?
             {
@@ -908,7 +936,8 @@ impl TokenService {
             };
             let groups = self.groups_for(tenant, family.user_id, &scopes).await?;
             let subject = TokenSubject {
-                subject: family.user_id.to_string(),
+                subject: subject_for(self.pairwise.as_ref(), tenant, client, family.user_id)
+                    .await?,
                 scopes,
                 audiences: asked
                     .resource

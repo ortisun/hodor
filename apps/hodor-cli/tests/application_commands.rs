@@ -315,3 +315,131 @@ async fn a_client_is_given_a_back_channel_logout_address_checked_as_the_server_c
     .expect("client");
     assert_eq!(stored, (Some("http://relay:8080/logout".to_owned()), true));
 }
+
+/// Answers every request on a port of this machine with `body` as JSON,
+/// as a sector identifier address would; answers the address.
+fn sector_document(body: &'static str) -> String {
+    use std::io::{Read as _, Write as _};
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("a port");
+    let address = listener.local_addr().expect("address");
+    std::thread::spawn(move || {
+        for stream in listener.incoming() {
+            let Ok(mut stream) = stream else { continue };
+            let mut request = [0_u8; 4096];
+            let _ = stream.read(&mut request);
+            let _ = write!(
+                stream,
+                "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\n\
+                 connection: close\r\n\r\n{body}",
+                body.len()
+            );
+        }
+    });
+    format!("127.0.0.1:{}", address.port())
+}
+
+#[tokio::test]
+async fn a_client_is_made_pairwise_and_its_sector_identifier_address_fetched() {
+    let database = TestDatabase::start().await;
+    let created = run(
+        &database,
+        &["tenant", "create", "--slug", "acme", "--name", "Acme"],
+    );
+    assert!(created.status.success(), "{created:?}");
+    let added = run(
+        &database,
+        &[
+            "application",
+            "add",
+            "--tenant",
+            "acme",
+            "--name",
+            "Billing",
+            "--first-party",
+        ],
+    );
+    let application = value(&added, "application");
+    let host = sector_document(
+        r#"["https://billing.example.com/callback", "https://billing.example.net/callback"]"#,
+    );
+    let client = |extra: &[&str], development_hosts: &str| {
+        Command::new(env!("CARGO_BIN_EXE_hodor-cli"))
+            .args([
+                "client",
+                "add",
+                "--tenant",
+                "acme",
+                "--application",
+                &application,
+                "--name",
+                "Billing web site",
+                "--type",
+                "confidential",
+                "--grant",
+                "authorization_code",
+                "--redirect-uri",
+                "https://billing.example.com/callback",
+                "--redirect-uri",
+                "https://billing.example.net/callback",
+                "--subject-type",
+                "pairwise",
+            ])
+            .args(extra)
+            .env("HODOR_DATABASE_URL", database.app_url())
+            .env("HODOR_OUTBOUND_DEVELOPMENT_HOSTS", development_hosts)
+            .output()
+            .expect("the command-line tool should run")
+    };
+    // Two hosts and no address: no sector.
+    let refused = client(&[], "");
+    assert!(!refused.status.success());
+    assert!(
+        text(&refused.stderr).contains("oauth.client_sector_identifier_uri_required"),
+        "{refused:?}"
+    );
+    // An address on this machine, outside the development exception.
+    let address = format!("http://{host}/redirect_uris.json");
+    let refused = client(&["--sector-identifier-uri", &address], "");
+    assert!(!refused.status.success());
+    assert!(
+        text(&refused.stderr).contains("oauth.client_sector_identifier_uri_"),
+        "{refused:?}"
+    );
+    // Fetched with the development exception, and listing both addresses.
+    let made = client(&["--sector-identifier-uri", &address], &host);
+    assert!(made.status.success(), "{made:?}");
+    let id = value(&made, "client");
+    let stored: (String, Option<String>) = sqlx::query_as(
+        "SELECT subject_type, sector_identifier_uri FROM oauth.client WHERE id = $1::uuid",
+    )
+    .bind(&id)
+    .fetch_one(database.owner())
+    .await
+    .expect("client");
+    assert_eq!(stored, ("pairwise".to_owned(), Some(address)));
+    // An unknown subject type is refused with the context's code.
+    let unknown = Command::new(env!("CARGO_BIN_EXE_hodor-cli"))
+        .args([
+            "client",
+            "add",
+            "--tenant",
+            "acme",
+            "--application",
+            &application,
+            "--name",
+            "Billing web site",
+            "--type",
+            "confidential",
+            "--grant",
+            "authorization_code",
+            "--redirect-uri",
+            "https://billing.example.com/callback",
+            "--subject-type",
+            "secret",
+        ])
+        .env("HODOR_DATABASE_URL", database.app_url())
+        .output()
+        .expect("the command-line tool should run");
+    assert!(!unknown.status.success());
+    assert!(text(&unknown.stderr).contains("oauth.client_subject_type_invalid"));
+}

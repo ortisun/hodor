@@ -3964,3 +3964,162 @@ async fn a_sign_out_in_one_tenant_tells_none_of_another_tenants_clients() {
     .expect("sessions");
     assert_eq!(ended_in_globex, 0);
 }
+
+/// A pairwise client of a new first-party application of `tenant`, whose
+/// sector is the host of `REDIRECT`, and the tokens the person gets from
+/// it. Answers the client's identifier and secret, and the tokens.
+async fn pairwise_tokens(world: &World, tenant: &Tenant) -> ((String, String), serde_json::Value) {
+    use hodor_adapters_postgres::{PgApplicationStore, PgClientStore, PgResourceServerStore};
+    use hodor_oauth::api::{
+        ApplicationPorts, ApplicationService, ApplicationSettings, ClientSettings, ClientType,
+        CreateClient, GrantType, SubjectType,
+    };
+    let applications = ApplicationService::new(ApplicationPorts {
+        units_of_work: Arc::new(world.database.app().clone()),
+        applications: Arc::new(PgApplicationStore),
+        clients: Arc::new(PgClientStore),
+        resource_servers: Arc::new(PgResourceServerStore),
+        digest: Arc::new(Sha256Digest),
+        random: Arc::new(OsRandom),
+        clock: Arc::new(SystemClock),
+    });
+    let application = applications
+        .create_application(
+            &tenant.context,
+            ApplicationSettings {
+                name: "Travel".to_owned(),
+                first_party: true,
+            },
+            Caller::system(),
+        )
+        .await
+        .expect("application");
+    let mut settings = ClientSettings::new(
+        "Travel web",
+        ClientType::Confidential,
+        vec![GrantType::AuthorizationCode],
+        vec![REDIRECT.to_owned()],
+    );
+    settings.allowed_scopes = vec!["openid".to_owned()];
+    settings.subject_type = SubjectType::Pairwise;
+    let (client, secret) = applications
+        .create_client(
+            &tenant.context,
+            CreateClient {
+                application_id: application.id(),
+                client_type: ClientType::Confidential,
+                settings,
+                secret_lifetime: None,
+            },
+            Caller::system(),
+        )
+        .await
+        .expect("client");
+    let pair = (
+        client.id().to_string(),
+        secret.expect("a secret").expose().to_owned(),
+    );
+    let mut browser = Browser::not_following(&world.server);
+    let (_, body) = browser.sign_in(tenant.slug, EMAIL, PASSWORD).await;
+    assert_eq!(body["status"], "completed", "{body}");
+    let challenge = hodor_oauth::api::s256_challenge(VERIFIER, &Sha256Digest);
+    let path = format!(
+        "/t/{}/oauth2/authorize?{}",
+        tenant.slug,
+        form_urlencoded::Serializer::new(String::new())
+            .extend_pairs([
+                ("response_type", "code"),
+                ("client_id", pair.0.as_str()),
+                ("redirect_uri", REDIRECT),
+                ("scope", "openid"),
+                ("code_challenge", challenge.as_str()),
+                ("code_challenge_method", "S256"),
+            ])
+            .finish()
+    );
+    let (status, location, _) = browser.navigate(Method::GET, &path, None).await;
+    assert_eq!(status, StatusCode::FOUND);
+    let location = location.expect("a redirect");
+    let (_, query) = location.split_once('?').expect("a query");
+    let code = form_urlencoded::parse(query.as_bytes())
+        .find(|(name, _)| name == "code")
+        .expect("a code")
+        .1
+        .into_owned();
+    let (status, tokens) = oauth_form(
+        world,
+        tenant,
+        "token",
+        (&pair.0, &pair.1),
+        &[
+            ("grant_type", "authorization_code"),
+            ("code", code.as_str()),
+            ("redirect_uri", REDIRECT),
+            ("code_verifier", VERIFIER),
+        ],
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{tokens}");
+    (pair, tokens)
+}
+
+fn id_token_claims(tokens: &serde_json::Value) -> serde_json::Value {
+    use base64::Engine as _;
+    let token = tokens["id_token"].as_str().expect("an ID token");
+    let payload = token.split('.').nth(1).expect("claims");
+    serde_json::from_slice(
+        &base64::engine::general_purpose::URL_SAFE_NO_PAD
+            .decode(payload)
+            .expect("base64url"),
+    )
+    .expect("JSON")
+}
+
+#[tokio::test]
+async fn one_sector_in_two_tenants_knows_the_same_address_by_two_identifiers() {
+    let world = world_with(&[("HODOR_SECRET_KEYS", ROOT_KEY)]).await;
+    let (acme, globex) = (&world.acme, &world.globex);
+    let (acme_client, in_acme) = pairwise_tokens(&world, acme).await;
+    let (globex_client, in_globex) = pairwise_tokens(&world, globex).await;
+    let acme_sub = id_token_claims(&in_acme)["sub"].clone();
+    let globex_sub = id_token_claims(&in_globex)["sub"].clone();
+    // The same address, the same sector, two tenants: two identifiers, and
+    // neither is the person's user identifier there.
+    assert_ne!(acme_sub, globex_sub);
+    assert_ne!(acme_sub, acme.ana.to_string());
+    assert_ne!(globex_sub, globex.ana.to_string());
+    let secrets: i64 = sqlx::query_scalar("SELECT count(*) FROM oauth.pairwise_secret")
+        .fetch_one(world.database.owner())
+        .await
+        .expect("secrets");
+    assert_eq!(secrets, 2, "a secret per tenant");
+
+    // Acme's access token: the `sub` of the ID token at Acme's UserInfo,
+    // nothing at Globex's, and not active for Globex's client.
+    let access = in_acme["access_token"].as_str().expect("access");
+    let answer: serde_json::Value = Client::new()
+        .get(format!("{}/t/acme/oauth2/userinfo", world.server.base))
+        .bearer_auth(access)
+        .send()
+        .await
+        .expect("response")
+        .json()
+        .await
+        .expect("JSON");
+    assert_eq!(answer["sub"], acme_sub);
+    assert_eq!(
+        userinfo(&world, globex, access).await,
+        StatusCode::UNAUTHORIZED
+    );
+    assert!(!active(&world, globex, (&globex_client.0, &globex_client.1), access).await);
+    let (status, introspected) = oauth_form(
+        &world,
+        acme,
+        "introspect",
+        (&acme_client.0, &acme_client.1),
+        &[("token", access)],
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(introspected["sub"], acme_sub);
+}

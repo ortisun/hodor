@@ -41,6 +41,14 @@ clients, resource_servers, digest, random, clock })`:
   check's `http.*` codes become `oauth.client_backchannel_logout_uri_*`.
   Without it, any address is refused with
   `oauth.client_backchannel_logout_uri_forbidden`.
+- `with_sector_documents(http)` gives it the guarded outbound client: a
+  pairwise client's sector identifier address is checked through the
+  `DestinationCheck` and fetched with `GET` (`SECTOR_DOCUMENT_TIME_LIMIT`,
+  at most `MAX_SECTOR_DOCUMENT_BYTES`, 2xx only) by `create_client`, and by
+  `change_client` when the address, the redirect addresses or the subject
+  type change; `check_sector_document` must find every redirect address in
+  it. The codes are `oauth.client_sector_identifier_uri_*`. Without both,
+  any address is refused with `oauth.client_sector_identifier_uri_forbidden`.
 - Resource servers: `create_resource_server(CreateResourceServer)`,
   `change_resource_server`, `resource_server`,
   `resource_server_by_audience` (`oauth.resource_server_not_found` also for
@@ -134,14 +142,17 @@ refresh tokens is `DEFAULT_RETRY_WINDOW`, 10 seconds;
     agent that may act (`workload_that_may_act` answers `agent`); the actor
     token must be the agent's own, issued to the client, without `act`, in
     force; the subject token a person's (no `principal_kind`, `sub` not the
-    client, `may_sign_in`), in force, with a chain of fewer than
+    client), in force with a grant, whose person, found by
+    `AccessTokenRegister::person_in_force` and never from the `sub`,
+    `may_sign_in`, with a chain of fewer than
     `MAX_ACTORS`; an exchange rule must pair one of its audiences with the
     one asked, which must be a resource server's; `exchanged_scopes` only
     narrows. Token refusals are `invalid_request`, the policy's
     `invalid_target`. The new token is signed with `sign_living` for the
     smaller of the client's lifetime and what is left of the subject
     token, carries `act` (`act_claim`) and the subject's `auth_time`, `acr`
-    and `amr`, is recorded with the subject's grant and family, the agent as
+    and `amr`, keeps the subject token's `sub` unchanged, is recorded with
+    the subject's grant and family, the agent as
     principal and the subject token as parent (`exchanged_from`), and
     records `oauth.token_exchanged` with the agent as actor. The answer has
     `issued_token_type`.
@@ -154,6 +165,13 @@ refresh tokens is `DEFAULT_RETRY_WINDOW`, 10 seconds;
     that signs. `TokenService::signed` makes the tenant's first key of the
     algorithm with `KeyService::ensure_active` when it has none, and only
     when even then nothing signs is it `server_error`.
+  - The person as the client knows them: `subject_for` and `session_for`
+    (`pairwise.rs`) give the user and session identifiers to a public
+    client and, through the `PairwiseSubjects` given with
+    `with_pairwise_subjects`, the pairwise ones to a pairwise client; the
+    access token's `sub` and the ID token's `sub` and `sid` (`IdTokenNames`)
+    are those, from a code and from a refresh. Without it a pairwise client
+    is answered `oauth.pairwise_unavailable`, an error of storage.
   - The ID token, when the scopes hold `openid`: claims from
     `id_token_claims`, signed the same way with the client's ID token
     algorithm (`ClientSettings::id_token_algorithm`, ES256 or RS256) and
@@ -241,7 +259,11 @@ memberships, clock })`:
   the tenant's published `ES256` keys, then asks the register: a token not
   in force is `InvalidToken`. Then it reads the person through
   `IdentityService::get`: an unknown user, or one who may not sign in (not
-  `Active`, or a service account or an agent), is `InvalidToken`. Answers `userinfo_claims` for the token's scopes.
+  `Active`, or a service account or an agent), is `InvalidToken`. The
+  person is the one of the token's grant, through
+  `AccessTokenRegister::person_in_force`, never read from its `sub`.
+  Answers `userinfo_claims` for the token's scopes, with the token's own
+  `sub`.
 - `published_keys(keys, tenant)` (crate-visible): the tenant's published
   signing keys as `PublishedKey`s, shared with logout.
 
@@ -269,9 +291,27 @@ verifier })`:
   (`check_shape`), then the `id_token_hint` against the published keys
   (`check_id_token_hint`), then loads the client named by `client_id` or
   the hint's `aud` with its application and applies `check_request`.
+- `decide(tenant, request, current, by_form)`: what to do with the
+  browser's session; the hint's `sub` and `sid` are compared with the
+  session's person and session as the hint's client knows them
+  (`KnownSession`, from `subject_for` and `session_for`). With
+  `with_pairwise_subjects`; without it a pairwise hint asks the person.
 - `still_returns(tenant, kept)`: whether a `ReturnAddress` kept in the
   browser while the person was asked still holds (`still_returns` of the
   domain).
+
+### Pairwise subject identifiers (`pairwise.rs`)
+
+`PairwiseSubjects::new(PairwisePorts { units_of_work, secrets, secret_box,
+mac, random, clock })`: `subject(tenant, client, user)` and
+`session(tenant, client, session)` answer the user or session identifier
+for a public client, and for a pairwise client `PairwiseSecret::subject`
+and `session` for its sector. The tenant's secret is read with
+`PairwiseSecretStore::find` and opened for `PAIRWISE_SECRET_PURPOSE`; a
+tenant without one gets one, sealed and stored with
+`insert_unless_present` in its own unit of work, then read back so that
+two servers use the one stored first. A secret that does not open is
+`secret.unreadable`, never replaced.
 
 ### Back-channel logout (`backchannel/`)
 
@@ -301,7 +341,8 @@ verifier })`:
   `in_flight_per_client` leased, and otherwise leases it for the time limit
   and `LEASE_MARGIN`, answering `LogoutLease`s. `send(lease)` signs a
   logout token (the client's ID token algorithm, `ensure_active` when the
-  tenant has no key of it, a `jti` of 16 random bytes), posts
+  tenant has no key of it, a `jti` of 16 random bytes, `sub` and `sid` as
+  the client knows them, through `with_pairwise_subjects`), posts
   `logout_token=` in a form through `HttpClient` with no transaction open,
   then records the answer if the delivery `is_as_leased`, answering a
   `LogoutOutcome`; a signing failure is a failed attempt.
@@ -311,6 +352,8 @@ verifier })`:
 - A change that changes nothing stores nothing and announces nothing.
 - A logout token is signed for each attempt and kept nowhere; no event
   carries it or the client's address.
+- No event carries a pairwise identifier: events name people by their user
+  identifier.
 - Not found is `oauth.application_not_found`, `oauth.client_not_found` or
   `oauth.resource_server_not_found`, the same for a row of another tenant.
 
@@ -322,6 +365,7 @@ verifier })`:
   `cargo test -p hodor-oauth --test refresh` and
   `cargo test -p hodor-oauth --test revocation`,
   `cargo test -p hodor-oauth --test consent`,
-  `cargo test -p hodor-oauth --test backchannel`; `cargo test -p hodor-oauth
+  `cargo test -p hodor-oauth --test backchannel`,
+  `cargo test -p hodor-oauth --test pairwise`; `cargo test -p hodor-oauth
   --lib openid` for the OpenID Provider's domain and `--lib logout` for
   logout's

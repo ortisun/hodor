@@ -23,7 +23,7 @@ use hodor_adapters_postgres::{
 };
 use hodor_adapters_postgres::{
     PgApplicationStore, PgClientStore, PgDueLogoutDeliveries, PgLogoutDeliveryStore,
-    PgSessionClients, PgTenantDirectory, PgTenantRepository,
+    PgPairwiseSecretStore, PgSessionClients, PgTenantDirectory, PgTenantRepository,
 };
 use hodor_adapters_smtp::SmtpSender;
 use hodor_audit::api::{AuditHandler, AuditService};
@@ -33,7 +33,7 @@ use hodor_keys::api::{KeyService, RotationPolicy, TenantSecretBox};
 use hodor_notification::api::DeliveryService;
 use hodor_oauth::api::{
     BackChannelLogoutFanOut, BackChannelLogoutSender, LogoutDeliverySettings, LogoutRetryPolicy,
-    LogoutSenderPorts, TenantIssuer,
+    LogoutSenderPorts, PairwisePorts, PairwiseSubjects, TenantIssuer,
 };
 use hodor_observability::{LogFormat, Telemetry};
 use hodor_protocol_http::{Health, ReadinessCheck, ops_router, serve};
@@ -1219,7 +1219,25 @@ fn logout_sender(
             clock: Arc::new(SystemClock),
         },
         settings,
-    ))
+    )
+    // A pairwise client is told of the person and the session as it knows
+    // them, with the tenant's pairwise secret, opened with the same root
+    // keys as the server's.
+    .with_pairwise_subjects(PairwiseSubjects::new(PairwisePorts {
+        units_of_work: Arc::new(database.clone()),
+        secrets: Arc::new(PgPairwiseSecretStore),
+        secret_box: Arc::new(TenantSecretBox::new(
+            Arc::new(database.clone()),
+            Arc::new(PgKeyStore),
+            Arc::new(LocalKeyProvider::new(root.clone())),
+            Arc::new(PgSealingStateStore),
+            Some(root.clone()),
+            Arc::new(SystemClock),
+        )),
+        mac: Arc::new(AwsLcHmacSha256),
+        random: Arc::new(OsRandom),
+        clock: Arc::new(SystemClock),
+    })))
 }
 
 /// Sets up the mail server, if one is configured.

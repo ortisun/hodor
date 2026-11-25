@@ -53,6 +53,12 @@ pub const SEALED_COLUMNS: &[SealedColumn] = &[
         purpose: hodor_oauth::api::FAMILY_SECRET_PURPOSE,
     },
     SealedColumn {
+        table: "oauth.pairwise_secret",
+        key: "id",
+        column: "sealed_secret",
+        purpose: hodor_oauth::api::PAIRWISE_SECRET_PURPOSE,
+    },
+    SealedColumn {
         table: "webhooks.signing_secret",
         key: "id",
         column: "sealed_secret",

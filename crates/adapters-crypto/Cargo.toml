@@ -22,6 +22,7 @@ hodor-authorization-opa.workspace = true
 hodor-credential.workspace = true
 hodor-kernel.workspace = true
 hodor-keys.workspace = true
+hodor-oauth.workspace = true
 hodor-webhooks.workspace = true
 serde_json = { workspace = true, optional = true }
 sha2.workspace = true

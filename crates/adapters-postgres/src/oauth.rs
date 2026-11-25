@@ -9,7 +9,7 @@ use hodor_oauth::api::{
     Audience, AuthenticationMethod, Client, ClientId, ClientKey, ClientSecret, ClientSecretHash,
     ClientSecretId, ClientSettings, ClientSnapshot, ClientStore, ClientType, ExchangeRule,
     GrantType, IdTokenAlgorithm, ResourceServer, ResourceServerId, ResourceServerSettings,
-    ResourceServerSnapshot, ResourceServerStore, ScopeDefinition, Status, TokenPolicy,
+    ResourceServerSnapshot, ResourceServerStore, ScopeDefinition, Status, SubjectType, TokenPolicy,
 };
 use sqlx::PgConnection;
 use sqlx::Row as _;
@@ -218,7 +218,8 @@ const CLIENT_COLUMNS: &str = "id, application_id, name, client_type, authenticat
      grant_types, redirect_uris, post_logout_redirect_uris, allowed_scopes, require_pkce, \
      id_token_algorithm, access_token_seconds, id_token_seconds, refresh_token_seconds, \
      refresh_idle_seconds, consent_seconds, status, created_at, updated_at, version, principal_id, \
-     exchange_rules, backchannel_logout_uri, backchannel_logout_session_required";
+     exchange_rules, backchannel_logout_uri, backchannel_logout_session_required, subject_type, \
+     sector_identifier_uri";
 
 async fn load_client(
     connection: &mut PgConnection,
@@ -300,6 +301,11 @@ async fn load_client(
             backchannel_logout_session_required: row
                 .try_get("backchannel_logout_session_required")
                 .map_err(get)?,
+            subject_type: SubjectType::parse(
+                &row.try_get::<String, _>("subject_type").map_err(get)?,
+            )
+            .map_err(|_| corrupted("subject type"))?,
+            sector_identifier_uri: row.try_get("sector_identifier_uri").map_err(get)?,
             token_policy: TokenPolicy {
                 access_token: duration("access_token_seconds")?,
                 id_token: duration("id_token_seconds")?,
@@ -392,9 +398,10 @@ impl ClientStore for PgClientStore {
                   require_pkce, access_token_seconds, id_token_seconds, refresh_token_seconds,
                   refresh_idle_seconds, consent_seconds, status, created_at, updated_at,
                   id_token_algorithm, principal_id, exchange_rules, backchannel_logout_uri,
-                  backchannel_logout_session_required, version)
+                  backchannel_logout_session_required, subject_type, sector_identifier_uri,
+                  version)
              VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16,
-                     $17, $18, $19, $20, $21, $22, $23, $24, 0)",
+                     $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, 0)",
         )
         .bind(tenant)
         .bind(state.id.as_uuid())
@@ -420,6 +427,8 @@ impl ClientStore for PgClientStore {
         .bind(exchange_rules_of(settings))
         .bind(settings.backchannel_logout_uri.as_deref())
         .bind(settings.backchannel_logout_session_required)
+        .bind(settings.subject_type.as_str())
+        .bind(settings.sector_identifier_uri.as_deref())
         .execute(&mut *connection)
         .await;
         match inserted {
@@ -451,7 +460,7 @@ impl ClientStore for PgClientStore {
                  consent_seconds = $14, status = $15, updated_at = $16,
                  id_token_algorithm = $18, principal_id = $19, exchange_rules = $20,
                  backchannel_logout_uri = $21, backchannel_logout_session_required = $22,
-                 version = version + 1
+                 subject_type = $23, sector_identifier_uri = $24, version = version + 1
              WHERE tenant_id = $1 AND id = $2 AND version = $17",
         )
         .bind(tenant)
@@ -476,6 +485,8 @@ impl ClientStore for PgClientStore {
         .bind(exchange_rules_of(settings))
         .bind(settings.backchannel_logout_uri.as_deref())
         .bind(settings.backchannel_logout_session_required)
+        .bind(settings.subject_type.as_str())
+        .bind(settings.sector_identifier_uri.as_deref())
         .execute(&mut *connection)
         .await
         .map_err(get)?;

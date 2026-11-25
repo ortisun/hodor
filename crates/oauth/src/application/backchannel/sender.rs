@@ -9,12 +9,13 @@
 use crate::application::backchannel::ports::{
     DueLogoutDeliveries, LogoutDeliveryStore, TenantIssuer,
 };
+use crate::application::pairwise::{PairwiseSubjects, session_for, subject_for};
 use crate::application::ports::ClientStore;
 use crate::domain::backchannel::{
     LogoutDeliveryId, LogoutRetryPolicy, LogoutTokenSubject, logout_token_claims,
     logout_token_header,
 };
-use crate::domain::client::{ClientId, IdTokenAlgorithm};
+use crate::domain::client::{Client, ClientId, IdTokenAlgorithm};
 use crate::domain::token::{compact, signing_input};
 use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
@@ -61,6 +62,7 @@ impl Default for LogoutDeliverySettings {
 pub struct LogoutLease {
     tenant: TenantContext,
     delivery: LogoutDeliveryId,
+    client: Client,
     client_id: ClientId,
     url: String,
     algorithm: IdTokenAlgorithm,
@@ -145,6 +147,7 @@ impl std::fmt::Debug for LogoutSenderPorts {
 pub struct BackChannelLogoutSender {
     ports: LogoutSenderPorts,
     settings: LogoutDeliverySettings,
+    pairwise: Option<PairwiseSubjects>,
 }
 
 impl std::fmt::Debug for BackChannelLogoutSender {
@@ -173,7 +176,20 @@ impl BackChannelLogoutSender {
     /// Wires the use case to its ports.
     #[must_use]
     pub const fn new(ports: LogoutSenderPorts, settings: LogoutDeliverySettings) -> Self {
-        Self { ports, settings }
+        Self {
+            ports,
+            settings,
+            pairwise: None,
+        }
+    }
+
+    /// Names the person and the session to pairwise clients through
+    /// `pairwise`. Without it, an attempt for a pairwise client fails
+    /// rather than give it the user identifier.
+    #[must_use]
+    pub fn with_pairwise_subjects(mut self, pairwise: PairwiseSubjects) -> Self {
+        self.pairwise = Some(pairwise);
+        self
     }
 
     /// How logout tokens are sent.
@@ -240,16 +256,12 @@ impl BackChannelLogoutSender {
             return Ok(None);
         }
         let client = ports.clients.get(uow.as_mut(), client_id).await?;
-        let target = client.as_ref().and_then(|client| {
-            let url = client.backchannel_logout_uri()?;
-            client.is_enabled().then(|| {
-                (
-                    url.to_owned(),
-                    client.snapshot().settings.id_token_algorithm,
-                )
-            })
+        let target = client.and_then(|client| {
+            let url = client.backchannel_logout_uri()?.to_owned();
+            let algorithm = client.snapshot().settings.id_token_algorithm;
+            client.is_enabled().then_some((url, algorithm, client))
         });
-        let Some((url, algorithm)) = target else {
+        let Some((url, algorithm, client)) = target else {
             let event = delivery.set_aside(
                 now,
                 "the client has no back-channel logout address, or is disabled",
@@ -273,6 +285,7 @@ impl BackChannelLogoutSender {
         Ok(Some(LogoutLease {
             tenant: tenant.clone(),
             delivery: id,
+            client,
             client_id,
             url,
             algorithm,
@@ -351,12 +364,17 @@ impl BackChannelLogoutSender {
         let mut drawn = [0_u8; TOKEN_ID_BYTES];
         self.ports.random.fill(&mut drawn);
         let token_id = URL_SAFE_NO_PAD.encode(drawn);
+        // The person and the session as the client knows them, computed at
+        // each attempt: pairwise for a pairwise client.
+        let pairwise = self.pairwise.as_ref();
+        let subject = subject_for(pairwise, &lease.tenant, &lease.client, lease.user_id).await?;
+        let session = session_for(pairwise, &lease.tenant, &lease.client, lease.session_id).await?;
         let claims = logout_token_claims(
             LogoutTokenSubject {
                 issuer: &issuer,
                 client_id: lease.client_id,
-                user_id: lease.user_id,
-                session_id: lease.session_id,
+                subject: &subject,
+                session: &session,
             },
             self.ports.clock.now(),
             &token_id,

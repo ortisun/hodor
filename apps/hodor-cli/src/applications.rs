@@ -18,7 +18,7 @@ use hodor_oauth::api::{
     Application, ApplicationId, ApplicationPorts, ApplicationService, ApplicationSettings,
     AuthenticationMethod, Client, ClientId, ClientSettings, ClientType, CreateClient,
     CreateResourceServer, ExchangeRule, GrantType, IdTokenAlgorithm, ResourceServerSettings,
-    RotateSecret, ScopeDefinition, Status,
+    RotateSecret, ScopeDefinition, Status, SubjectType,
 };
 use hodor_tenant::api::TenantService;
 use std::fmt::Write as _;
@@ -126,6 +126,15 @@ pub(crate) enum ClientCommand {
         /// back-channel logout address.
         #[arg(long)]
         backchannel_logout_session_required: bool,
+        /// How it knows a person: `public` unless given, or `pairwise`, by
+        /// an identifier of its sector alone.
+        #[arg(long)]
+        subject_type: Option<String>,
+        /// For a pairwise client: the address whose host is its sector,
+        /// which must answer a JSON array of every redirect address.
+        /// Fetched now, as the server fetches it.
+        #[arg(long)]
+        sector_identifier_uri: Option<String>,
         /// The service account or agent it acts as; only with the
         /// `client_credentials` grant alone.
         #[arg(long)]
@@ -394,21 +403,28 @@ pub(crate) async fn run_client(
             id_token_algorithm,
             backchannel_logout_uri,
             backchannel_logout_session_required,
+            subject_type,
+            sector_identifier_uri,
             principal,
             exchange_rules,
         } => {
             let (tenant, service) = open(database, &tenant).await?;
-            // The address is checked by the guarded outbound client, with
-            // the development exception the server has.
-            let service =
-                service.with_destinations(Arc::new(GuardedHttpClient::new(OutboundPolicy {
+            // The addresses are checked, and a sector identifier address
+            // fetched, by the guarded outbound client, with the
+            // development exception the server has.
+            let guarded = || {
+                GuardedHttpClient::new(OutboundPolicy {
                     development_hosts: development_hosts
                         .iter()
                         .map(|host| host.trim().to_owned())
                         .filter(|host| !host.is_empty())
                         .collect(),
                     ..OutboundPolicy::default()
-                })?));
+                })
+            };
+            let service = service
+                .with_destinations(Arc::new(guarded()?))
+                .with_sector_documents(Arc::new(guarded()?));
             let kind = client_type(&kind)?;
             let grants = grants
                 .iter()
@@ -430,6 +446,10 @@ pub(crate) async fn run_client(
                 .collect::<Result<_, _>>()?;
             settings.backchannel_logout_uri = backchannel_logout_uri;
             settings.backchannel_logout_session_required = backchannel_logout_session_required;
+            if let Some(subject_type) = subject_type {
+                settings.subject_type = SubjectType::parse(&subject_type)?;
+            }
+            settings.sector_identifier_uri = sector_identifier_uri;
             if let Some(principal) = principal {
                 let agent_only = settings.grant_types.contains(&GrantType::TokenExchange);
                 settings.principal = Some(

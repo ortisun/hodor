@@ -120,7 +120,8 @@ fn applications(
             random: Arc::new(hodor_oauth::testing::DistinctRandom),
             clock,
         })
-        .with_destinations(Arc::new(hodor_oauth::testing::FakeDestinations));
+        .with_destinations(Arc::new(hodor_oauth::testing::FakeDestinations))
+        .with_sector_documents(Arc::new(sector_documents()));
     (applications, consents)
 }
 
@@ -2068,6 +2069,28 @@ async fn new_application(world: &World, name: &str, first_party: bool) -> String
     created.body["id"].as_str().expect("id").to_owned()
 }
 
+/// The sector identifier address of the tests, which lists the redirect
+/// addresses of the clients of `billing.example.com` and
+/// `billing.example.net`.
+const SECTOR_DOCUMENT: &str = "https://sector.example.org/redirect_uris.json";
+
+fn sector_documents() -> hodor_oauth::testing::SectorDocuments {
+    let documents = hodor_oauth::testing::SectorDocuments::default();
+    documents.answer(
+        SECTOR_DOCUMENT,
+        200,
+        r#"["https://billing.example.com/callback", "https://billing.example.net/callback"]"#,
+    );
+    documents.answer(
+        "https://sector.example.org/short.json",
+        200,
+        r#"["https://billing.example.com/callback"]"#,
+    );
+    documents.answer("https://sector.example.org/object.json", 200, "{}");
+    documents.answer("https://sector.example.org/gone.json", 404, "");
+    documents
+}
+
 fn web_client() -> serde_json::Value {
     serde_json::json!({
         "name": "Billing web site",
@@ -2628,6 +2651,150 @@ async fn a_client_gets_a_back_channel_logout_address_checked_as_a_webhook_endpoi
         refused.code(),
         "oauth.client_backchannel_logout_uri_invalid"
     );
+}
+
+#[tokio::test]
+async fn a_client_is_made_pairwise_with_its_sector_checked_and_fetched() {
+    let world = world().await;
+    let application = new_application(&world, "Billing", true).await;
+    let path = format!("/applications/{application}/clients");
+
+    // Unless given, a client is public.
+    let plain = world
+        .as_administrator(Method::POST, &path, Some(web_client()))
+        .await;
+    assert_eq!(plain.status, StatusCode::CREATED, "{}", plain.body);
+    assert_eq!(plain.body["subject_type"], "public");
+    assert_eq!(plain.body["sector_identifier_uri"], serde_json::Value::Null);
+
+    // One host is a sector.
+    let mut body = web_client();
+    body["subject_type"] = "pairwise".into();
+    let pairwise = world
+        .as_administrator(Method::POST, &path, Some(body.clone()))
+        .await;
+    assert_eq!(pairwise.status, StatusCode::CREATED, "{}", pairwise.body);
+    assert_eq!(pairwise.body["subject_type"], "pairwise");
+
+    // Two hosts need a sector identifier address that lists both.
+    body["redirect_uris"] = serde_json::json!([
+        "https://billing.example.com/callback",
+        "https://billing.example.net/callback"
+    ]);
+    let refused = world
+        .as_administrator(Method::POST, &path, Some(body.clone()))
+        .await;
+    assert_eq!(refused.status, StatusCode::UNPROCESSABLE_ENTITY);
+    assert_eq!(
+        refused.code(),
+        "oauth.client_sector_identifier_uri_required"
+    );
+    body["sector_identifier_uri"] = SECTOR_DOCUMENT.into();
+    let named = world
+        .as_administrator(Method::POST, &path, Some(body.clone()))
+        .await;
+    assert_eq!(named.status, StatusCode::CREATED, "{}", named.body);
+    assert_eq!(named.body["sector_identifier_uri"], SECTOR_DOCUMENT);
+    let client = named.body["id"].as_str().expect("client").to_owned();
+
+    for (address, code) in [
+        (
+            "https://sector.example.org/short.json",
+            "oauth.client_sector_identifier_uri_mismatch",
+        ),
+        (
+            "https://sector.example.org/object.json",
+            "oauth.client_sector_identifier_uri_document_invalid",
+        ),
+        (
+            "https://sector.example.org/gone.json",
+            "oauth.client_sector_identifier_uri_unreachable",
+        ),
+        (
+            "https://sector.example.org/unanswered.json",
+            "oauth.client_sector_identifier_uri_unreachable",
+        ),
+        (
+            "https://localhost/uris.json",
+            "oauth.client_sector_identifier_uri_forbidden",
+        ),
+        (
+            "https://nowhere.example/uris.json",
+            "oauth.client_sector_identifier_uri_unresolvable",
+        ),
+        (
+            "ftp://sector.example.org/uris.json",
+            "oauth.client_sector_identifier_uri_invalid",
+        ),
+    ] {
+        let refused = world
+            .as_administrator(
+                Method::PATCH,
+                &format!("/clients/{client}"),
+                Some(serde_json::json!({ "sector_identifier_uri": address })),
+            )
+            .await;
+        assert_eq!(
+            refused.status,
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "{address}: {}",
+            refused.body
+        );
+        assert_eq!(refused.code(), code, "{address}");
+    }
+
+    // Back to one host, without the address, then public again.
+    let changed = world
+        .as_administrator(
+            Method::PATCH,
+            &format!("/clients/{client}"),
+            Some(serde_json::json!({
+                "redirect_uris": ["https://billing.example.com/callback"],
+                "sector_identifier_uri": null,
+            })),
+        )
+        .await;
+    assert_eq!(changed.status, StatusCode::OK, "{}", changed.body);
+    assert_eq!(
+        changed.body["sector_identifier_uri"],
+        serde_json::Value::Null
+    );
+    let public = world
+        .as_administrator(
+            Method::PATCH,
+            &format!("/clients/{client}"),
+            Some(serde_json::json!({ "subject_type": "public" })),
+        )
+        .await;
+    assert_eq!(public.status, StatusCode::OK, "{}", public.body);
+    assert_eq!(public.body["subject_type"], "public");
+
+    // An unknown subject type, an address on a public client, and a
+    // client that signs nobody in.
+    let mut unknown = web_client();
+    unknown["subject_type"] = "secret".into();
+    let refused = world
+        .as_administrator(Method::POST, &path, Some(unknown))
+        .await;
+    assert_eq!(refused.code(), "oauth.client_subject_type_invalid");
+    let mut public_with_address = web_client();
+    public_with_address["sector_identifier_uri"] = SECTOR_DOCUMENT.into();
+    let refused = world
+        .as_administrator(Method::POST, &path, Some(public_with_address))
+        .await;
+    assert_eq!(refused.code(), "oauth.client_sector_identifier_uri_invalid");
+    let mut service = web_client();
+    service["grant_types"] = serde_json::json!(["client_credentials"]);
+    service
+        .as_object_mut()
+        .expect("object")
+        .remove("redirect_uris");
+    service["subject_type"] = "pairwise".into();
+    let refused = world
+        .as_administrator(Method::POST, &path, Some(service))
+        .await;
+    assert_eq!(refused.status, StatusCode::UNPROCESSABLE_ENTITY);
+    assert_eq!(refused.code(), "oauth.client_subject_type_invalid");
 }
 
 #[tokio::test]

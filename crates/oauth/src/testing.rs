@@ -17,6 +17,7 @@ use time::Duration;
 mod authorization;
 mod backchannel;
 mod consent;
+mod pairwise;
 mod refresh;
 mod register;
 mod token;
@@ -29,6 +30,10 @@ pub use backchannel::{
     LogoutDeliveryStorePorts, RecordingClients, run_logout_delivery_contract,
 };
 pub use consent::{ConsentStorePorts, InMemoryConsents, consent_service, run_consent_contract};
+pub use pairwise::{
+    FakeHmac, InMemoryPairwiseSecrets, PairwiseSecretStorePorts, SectorDocuments,
+    pairwise_subjects, run_pairwise_secret_contract,
+};
 pub use refresh::{
     InMemoryRefreshTokens, MembershipsOf, RefreshStorePorts, StandingOf, run_refresh_token_contract,
 };
@@ -658,6 +663,10 @@ async fn a_client_change_replaces_its_secrets_and_keys(ports: Ports<'_>) {
     settings.authentication_method = AuthenticationMethod::PrivateKeyJwt;
     // And its ID tokens are now signed with RS256, which is kept too.
     settings.id_token_algorithm = crate::api::IdTokenAlgorithm::Rs256;
+    // And it becomes pairwise, its redirect addresses of two hosts put in
+    // one sector by its sector identifier address, both kept.
+    settings.subject_type = crate::api::SubjectType::Pairwise;
+    settings.sector_identifier_uri = Some("https://sector.example.org/uris.json".to_owned());
     keyed.change(settings, later).expect("changed");
     for kid in ["second", "first"] {
         let key = ClientKey::parse(
@@ -686,6 +695,8 @@ async fn a_client_change_replaces_its_secrets_and_keys(ports: Ports<'_>) {
         stored.snapshot().settings.id_token_algorithm,
         crate::api::IdTokenAlgorithm::Rs256
     );
+    assert_eq!(stored.subject_type(), crate::api::SubjectType::Pairwise);
+    assert_eq!(stored.sector().as_deref(), Some("sector.example.org"));
     assert_eq!(stored.snapshot().version, 2);
 }
 

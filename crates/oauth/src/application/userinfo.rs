@@ -108,17 +108,20 @@ impl UserInfoService {
             Ok(checked) => checked,
             Err(refusal) => return Ok(Err(refusal)),
         };
-        if !self
+        // The person is the one of the token's grant, never read from its
+        // `sub`, which a pairwise client's token gives as a pairwise
+        // identifier.
+        let Some(person) = self
             .ports
             .register
-            .in_force(tenant, &checked.token_id, &checked.client_id)
+            .person_in_force(tenant, &checked.token_id, &checked.client_id)
             .await?
-        {
+        else {
             return Ok(Err(BearerRefusal::InvalidToken(
-                "the token is not in force",
+                "the token is not in force, or is about no person",
             )));
-        }
-        let user = match self.ports.identity.get(tenant, checked.user_id).await {
+        };
+        let user = match self.ports.identity.get(tenant, person).await {
             Ok(user) => user,
             Err(error) if error.kind() == ErrorKind::NotFound => {
                 return Ok(Err(BearerRefusal::InvalidToken(
@@ -138,7 +141,7 @@ impl UserInfoService {
         let groups = if checked.scopes.iter().any(|scope| scope == GROUPS_SCOPE) {
             self.ports
                 .memberships
-                .effective_groups(tenant, checked.user_id)
+                .effective_groups(tenant, person)
                 .await?
         } else {
             Vec::new()
@@ -161,7 +164,7 @@ impl UserInfoService {
             groups,
         };
         Ok(Ok(userinfo_claims(
-            checked.user_id,
+            &checked.subject,
             &checked.scopes,
             &person,
         )))

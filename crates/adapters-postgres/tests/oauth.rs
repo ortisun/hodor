@@ -830,3 +830,139 @@ async fn expired_access_token_records_are_removed_in_every_tenant_and_no_other_i
         );
     }
 }
+
+#[tokio::test]
+async fn the_postgres_pairwise_secret_store_passes_the_contract() {
+    use hodor_adapters_postgres::PgPairwiseSecretStore;
+    use hodor_oauth::testing::{PairwiseSecretStorePorts, run_pairwise_secret_contract};
+    let database = TestDatabase::start().await;
+    run_pairwise_secret_contract(PairwiseSecretStorePorts {
+        units_of_work: database.app(),
+        secrets: &PgPairwiseSecretStore,
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn of_many_first_needs_of_a_pairwise_secret_at_once_one_is_kept() {
+    use hodor_adapters_postgres::PgPairwiseSecretStore;
+    use hodor_oauth::api::SubjectType;
+    use hodor_oauth::testing::pairwise_subjects;
+    let database = TestDatabase::start().await;
+    let tenant = TenantContext::assume(TenantId::generate());
+    let pairwise = pairwise_subjects(
+        Arc::new(database.app().clone()),
+        Arc::new(PgPairwiseSecretStore),
+    );
+    let mut settings = ClientSettings::new(
+        "Payroll web",
+        ClientType::Confidential,
+        vec![GrantType::AuthorizationCode],
+        vec!["https://payroll.example.com/callback".to_owned()],
+    );
+    settings.subject_type = SubjectType::Pairwise;
+    let client = hodor_oauth::api::Client::create(
+        hodor_oauth::api::ApplicationId::generate(),
+        ClientType::Confidential,
+        settings,
+        hodor_oauth::api::ClientSecret::DEFAULT_LIFETIME,
+        Timestamp::UNIX_EPOCH,
+        &DistinctRandom,
+        &FakeDigest,
+    )
+    .expect("client")
+    .0;
+    let person = hodor_kernel::UserId::generate();
+    let tasks: Vec<_> = (0..8)
+        .map(|_| {
+            let pairwise = pairwise.clone();
+            let tenant = tenant.clone();
+            let client = client.clone();
+            tokio::spawn(async move { pairwise.subject(&tenant, &client, person).await })
+        })
+        .collect();
+    let mut subjects = Vec::new();
+    for task in tasks {
+        subjects.push(task.await.expect("joined").expect("subject"));
+    }
+    subjects.dedup();
+    assert_eq!(subjects.len(), 1, "every server used the one secret kept");
+    let kept: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM oauth.pairwise_secret WHERE tenant_id = $1")
+            .bind(tenant.tenant_id().as_uuid())
+            .fetch_one(database.owner())
+            .await
+            .expect("count");
+    assert_eq!(kept, 1);
+}
+
+#[tokio::test]
+async fn the_database_keeps_subject_types_and_sector_addresses_to_their_rules() {
+    let database = TestDatabase::start().await;
+    let tenant = sqlx::types::Uuid::now_v7();
+    sqlx::query(
+        "INSERT INTO oauth.application VALUES ($1, $1, 'Billing', false, 'enabled', now(), now(), 0)",
+    )
+    .bind(tenant)
+    .execute(database.owner())
+    .await
+    .expect("application");
+    let insert = |grants: &str, subject_type: &str, sector: &str| {
+        format!(
+            "INSERT INTO oauth.client (tenant_id, id, application_id, name, client_type,
+                 authentication_method, grant_types, redirect_uris, allowed_scopes, require_pkce,
+                 access_token_seconds, id_token_seconds, refresh_token_seconds,
+                 refresh_idle_seconds, status, created_at, updated_at, version, subject_type,
+                 sector_identifier_uri)
+             VALUES ($1, gen_random_uuid(), $1, 'Web', 'confidential', 'client_secret_basic',
+                 {grants}, ARRAY['https://billing.example.com/callback'], ARRAY[]::text[], true,
+                 300, 300, 2592000, 604800, 'enabled', now(), now(), 0, '{subject_type}', {sector})"
+        )
+    };
+    let code = "ARRAY['authorization_code']";
+    // Every piece of the statement is a constant of this test.
+    sqlx::query(sqlx::AssertSqlSafe(insert(
+        code,
+        "pairwise",
+        "'https://sector.example.org/uris.json'",
+    )))
+    .bind(tenant)
+    .execute(database.owner())
+    .await
+    .expect("a pairwise client with an address");
+    for (case, statement) in [
+        ("an unknown subject type", insert(code, "secret", "NULL")),
+        (
+            "pairwise without a code",
+            insert("ARRAY['client_credentials']", "pairwise", "NULL"),
+        ),
+        (
+            "an address on a public client",
+            insert(code, "public", "'https://sector.example.org/uris.json'"),
+        ),
+        (
+            "an address that is not HTTPS",
+            insert(code, "pairwise", "'ftp://sector.example.org/uris.json'"),
+        ),
+    ] {
+        let refused = sqlx::query(sqlx::AssertSqlSafe(statement))
+            .bind(tenant)
+            .execute(database.owner())
+            .await;
+        assert!(refused.is_err(), "{case}");
+    }
+    let secret = "INSERT INTO oauth.pairwise_secret VALUES ($1, gen_random_uuid(), '\\x01', now())";
+    sqlx::query(secret)
+        .bind(tenant)
+        .execute(database.owner())
+        .await
+        .expect("the first secret");
+    assert!(
+        sqlx::query(secret)
+            .bind(tenant)
+            .execute(database.owner())
+            .await
+            .is_err(),
+        "a tenant has one secret"
+    );
+}

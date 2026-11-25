@@ -11,6 +11,7 @@ pub(crate) mod introspection;
 pub(crate) mod key;
 pub(crate) mod logout;
 pub(crate) mod openid;
+pub(crate) mod pairwise;
 pub(crate) mod refresh;
 pub(crate) mod resource_server;
 pub(crate) mod secret;

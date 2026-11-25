@@ -6,7 +6,7 @@
 
 use clap::{Parser, ValueEnum};
 use hodor_adapters_crypto::{
-    Argon2Parameters, Argon2idHasher, AwsLcHmacSha1, AwsLcVerifier, HashingLimits,
+    Argon2Parameters, Argon2idHasher, AwsLcHmacSha1, AwsLcHmacSha256, AwsLcVerifier, HashingLimits,
     LocalKeyProvider, OsRandom, SecretKeys, Sha256Digest,
 };
 use hodor_adapters_http::{GuardedHttpClient, OutboundPolicy, ServiceHttpClient};
@@ -18,9 +18,9 @@ use hodor_adapters_postgres::{
     PgConsentStore, PgDecisionLogStore, PgDeliveryStore, PgDeprovisioningPolicy,
     PgEmailSignInStore, PgEndpointStore, PgEngineBindingStore, PgGrantStore, PgGroupPolicy,
     PgGroupRepository, PgInstanceStatusStore, PgInstanceStore, PgInvitationRepository, PgKeyStore,
-    PgLinkStore, PgMessageQueue, PgNativeRoleStore, PgOrganizationRepository, PgPasswordStore,
-    PgPendingAuthorizationStore, PgPolicyVersionStore, PgProviderStore,
-    PgProvisionedGroupRepository, PgProvisionedUserRepository, PgPublicationStore,
+    PgLinkStore, PgMessageQueue, PgNativeRoleStore, PgOrganizationRepository,
+    PgPairwiseSecretStore, PgPasswordStore, PgPendingAuthorizationStore, PgPolicyVersionStore,
+    PgProviderStore, PgProvisionedGroupRepository, PgProvisionedUserRepository, PgPublicationStore,
     PgRecoveryCodeStore, PgRefreshTokenStore, PgResourceServerStore, PgRoleAssignmentStore,
     PgSealingStateStore, PgSessionStore, PgSimulationStore, PgTenantDirectory, PgTenantRepository,
     PgTotpStore, PgTransactionStore, PgUploadedDecisionStore, PgUserRepository,
@@ -57,8 +57,8 @@ use hodor_notification::api::Notifier;
 use hodor_oauth::api::{
     AccessTokenRegister, ApplicationPorts, ApplicationService, AuthorizationCodePorts,
     AuthorizationCodeService, ConsentPorts, ConsentService, LogoutPorts, LogoutService,
-    ResourceAccessPorts, ResourceAccessService, TokenPorts, TokenService, UserInfoPorts,
-    UserInfoService, WorkloadTokens,
+    PairwisePorts, PairwiseSubjects, ResourceAccessPorts, ResourceAccessService, TokenPorts,
+    TokenService, UserInfoPorts, UserInfoService, WorkloadTokens,
 };
 use hodor_observability::{LogFormat, Telemetry};
 use hodor_protocol_http::{
@@ -354,6 +354,7 @@ async fn run(config: Config) -> Result<(), Box<dyn Error>> {
             &database,
             keys.clone(),
             authorization.sessions.clone(),
+            pairwise_subjects(&database, secret_box(setting, &database)?),
         )));
     }
     let mut tenant_routes = axum::Router::new()
@@ -785,6 +786,7 @@ fn token(
     let digest = Arc::new(Sha256Digest);
     let random = Arc::new(OsRandom);
     let standing = standing(database);
+    let pairwise = pairwise_subjects(database, secrets.clone());
     let tokens = TokenService::new(TokenPorts {
         units_of_work: units,
         applications: Arc::new(PgApplicationStore),
@@ -804,10 +806,24 @@ fn token(
         random,
         clock,
     })
-    .with_retry_window(time::Duration::seconds(config.refresh_retry_seconds))?;
+    .with_retry_window(time::Duration::seconds(config.refresh_retry_seconds))?
+    .with_pairwise_subjects(pairwise);
     Ok(TokenState {
         tokens,
         public_url: config.public_url.clone(),
+    })
+}
+
+/// Names people to pairwise clients, with the tenants' pairwise secrets
+/// sealed by `secrets`.
+fn pairwise_subjects(database: &Database, secrets: Arc<dyn SecretBox>) -> PairwiseSubjects {
+    PairwiseSubjects::new(PairwisePorts {
+        units_of_work: Arc::new(database.clone()),
+        secrets: Arc::new(PgPairwiseSecretStore),
+        secret_box: secrets,
+        mac: Arc::new(AwsLcHmacSha256),
+        random: Arc::new(OsRandom),
+        clock: Arc::new(SystemClock),
     })
 }
 
@@ -985,6 +1001,7 @@ fn logout(
     database: &Database,
     keys: KeyService,
     sessions: SessionService,
+    pairwise: PairwiseSubjects,
 ) -> LogoutState {
     LogoutState {
         logout: LogoutService::new(LogoutPorts {
@@ -993,7 +1010,8 @@ fn logout(
             clients: Arc::new(PgClientStore),
             keys,
             verifier: Arc::new(AwsLcVerifier),
-        }),
+        })
+        .with_pairwise_subjects(pairwise),
         sessions,
         public_url: config.public_url.clone(),
     }
@@ -1377,8 +1395,13 @@ fn administration(
         clock: clock.clone(),
     })
     // Back-channel logout addresses are checked as webhook endpoints are,
-    // with this installation's development exception.
+    // and sector identifier addresses checked and fetched, with this
+    // installation's development exception.
     .with_destinations(Arc::new(GuardedHttpClient::new(OutboundPolicy {
+        development_hosts: development_hosts(config),
+        ..OutboundPolicy::default()
+    })?))
+    .with_sector_documents(Arc::new(GuardedHttpClient::new(OutboundPolicy {
         development_hosts: development_hosts(config),
         ..OutboundPolicy::default()
     })?));

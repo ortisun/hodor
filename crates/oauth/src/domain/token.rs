@@ -665,8 +665,8 @@ pub struct AccessTokenClaims {
 /// Whom an access token is about and what it allows.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TokenSubject {
-    /// Its `sub`: a user's identifier, or the client's for client
-    /// credentials.
+    /// Its `sub`: a user's identifier, or a pairwise one for a pairwise
+    /// client, or the client's for client credentials.
     pub subject: String,
     /// The scopes.
     pub scopes: Vec<String>,
