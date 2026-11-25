@@ -40,6 +40,10 @@ The caller decides what a status means. The client decides whether the request m
 | `224.0.0.0/4`, `ff00::/8`, `240.0.0.0/4` | Multicast, reserved, broadcast |
 | `::ffff:0:0/96`, `64:ff9b::/96`, `2002::/16`, `2001::/32` | An IPv4 address carried inside an IPv6 one. The address inside is checked; `2001::/32` is refused whole |
 
+## The authorities it trusts
+
+An HTTPS address is called only if its certificate chains to an authority Hodor trusts, for the name in the address. Those are the authorities of the system Hodor runs on: in the image, the public authorities its Debian base ships. `SSL_CERT_FILE`, the variable OpenSSL reads, names a file of certificates in PEM that **replaces** them, for the server, the worker and the command-line tool alike: for an identity provider or a trust domain's bundle endpoint served under an authority of the installation's own. Since it replaces them, the file holds the public authorities too when Hodor also calls public addresses. The chart's `outboundAuthorities` mounts such a file from a ConfigMap and sets the variable ([installing on Kubernetes](../operations/install-on-kubernetes.md#settings)). It changes no other rule: the address is still checked as the tables above say.
+
 ## The exception for development
 
 A stack on one machine has an identity provider at a private address, over plain HTTP. For that, and for nothing else, the client takes a list of hosts with their ports, `HODOR_OUTBOUND_DEVELOPMENT_HOSTS`, for example `provider:8080`.

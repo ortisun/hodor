@@ -7,6 +7,7 @@ mod decisions;
 mod memberships;
 mod policies;
 mod roles;
+mod trust_domains;
 mod webhooks;
 mod workloads;
 
@@ -324,6 +325,31 @@ enum Command {
         development_hosts: Vec<String>,
         #[command(subcommand)]
         command: webhooks::WebhookCommand,
+    },
+
+    /// Manage the SPIFFE trust domains a tenant trusts, and their bundles.
+    TrustDomain {
+        /// Connection URL of the application role.
+        #[arg(
+            long,
+            env = "HODOR_DATABASE_URL",
+            hide_env_values = true,
+            global = true
+        )]
+        database_url: Option<String>,
+        /// Hosts with their ports that a bundle endpoint may name at a
+        /// private address and over plain HTTP, separated by commas, as the
+        /// server has them. For a development stack; never set it anywhere
+        /// real.
+        #[arg(
+            long,
+            env = "HODOR_OUTBOUND_DEVELOPMENT_HOSTS",
+            value_delimiter = ',',
+            global = true
+        )]
+        development_hosts: Vec<String>,
+        #[command(subcommand)]
+        command: trust_domains::TrustDomainCommand,
     },
 
     /// Manage people's authenticator applications, until people can do it
@@ -2220,6 +2246,14 @@ async fn main() -> Result<(), Box<dyn Error>> {
                 )
                 .await,
             )?;
+        }
+        Command::TrustDomain {
+            database_url,
+            development_hosts,
+            command,
+        } => {
+            let database = connect(database_url).await?;
+            print(trust_domains::run(&database, &development_hosts, command).await)?;
         }
         Command::Totp {
             database_url,

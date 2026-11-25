@@ -224,3 +224,32 @@ topologySpreadConstraints:
 {{- end }}
 {{- end }}
 {{- end -}}
+
+{{/* The authorities of outboundAuthorities, for the servers and the workers: the variable that points
+     the TLS library at the file in place of the image's authorities, where the file is mounted, and the
+     ConfigMap it is read from. Each renders nothing when no ConfigMap is named. */}}
+{{- define "hodor.authoritiesEnvironment" -}}
+{{- with .Values.outboundAuthorities.configMap }}
+- name: SSL_CERT_FILE
+  value: {{ printf "/etc/hodor/authorities/%s" $.Values.outboundAuthorities.key | quote }}
+{{- end }}
+{{- end -}}
+
+{{- define "hodor.authoritiesVolumeMounts" -}}
+{{- with .Values.outboundAuthorities.configMap }}
+- name: outbound-authorities
+  mountPath: /etc/hodor/authorities
+  readOnly: true
+{{- end }}
+{{- end -}}
+
+{{- define "hodor.authoritiesVolumes" -}}
+{{- with .Values.outboundAuthorities.configMap }}
+- name: outbound-authorities
+  configMap:
+    name: {{ . | quote }}
+    items:
+      - key: {{ $.Values.outboundAuthorities.key }}
+        path: {{ $.Values.outboundAuthorities.key }}
+{{- end }}
+{{- end -}}

@@ -221,6 +221,39 @@ jobs:
           path: frontend/auth-ui/playwright-report
           retention-days: 7
 
+  # The demonstration of Milestone 10, as the quick-start tells an operator to
+  # run it: a kind cluster with Istio and SPIRE, and Hodor installed in the
+  # mesh with its chart, from the image built here. The script makes the
+  # cluster; kind, kubectl and Helm are installed at the versions named.
+  workload-identity:
+    name: Workloads in a mesh
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: helm/kind-action@1544676c07bb3570fcb70166beaa07c4528fd4aa # v1.15.1
+        with:
+          version: v0.33.0
+          kubectl_version: v1.37.1
+          install_only: true
+      - uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
+        with:
+          version: v4.3.1
+      - name: Build the image
+        run: docker build --file deploy/docker/Dockerfile --tag hodor:milestone-10 .
+      - name: Run the demonstration of Milestone 10
+        run: python3 deploy/demo/workload_identity.py
+      - name: Show what the cluster logged
+        if: failure()
+        run: |
+          kind get kubeconfig --name hodor-milestone-10 > "$RUNNER_TEMP/kubeconfig"
+          export KUBECONFIG="$RUNNER_TEMP/kubeconfig"
+          kubectl get pods --all-namespaces
+          kubectl logs --namespace hodor deployment/hodor-server --all-containers --tail 200
+          kubectl logs --namespace hodor deployment/hodor-worker --all-containers --tail 200
+          kubectl logs --namespace spire statefulset/spire-server --tail 100
+          kubectl logs --namespace spire daemonset/spire-agent --tail 100
+
   # The Basic OpenID Provider, Config OpenID Provider and Back-Channel OpenID
   # Provider plans of the OpenID conformance suite, against the image; the
   # back-channel logout plan is the acceptance of Issue-100. Then the Basic
@@ -303,6 +336,7 @@ jobs:
           --set keyProvider.signingKeys=openbao --set keyProvider.openbao.enabled=true
           --set keyProvider.openbao.address=https://openbao.openbao.svc:8200
           --set keyProvider.openbao.certificateAuthority.configMap=openbao-authority
+          --set outboundAuthorities.configMap=hodor-authorities
           > /dev/null
       - name: Render the chart signing in to OpenBao with an AppRole
         run: >

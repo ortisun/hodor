@@ -97,6 +97,15 @@ forwardedHeader: x-forwarded-for
 # client-cert, x-forwarded-client-cert or l5d-client-id. Read only from trustedProxies. Empty: none is read.
 clientIdentityHeader: ""
 
+# The authorities Hodor's outbound requests trust, in place of the public ones the image holds: a ConfigMap
+# of yours, made before the chart is installed, whose key holds certificates in PEM. For an identity
+# provider or a trust domain's bundle endpoint served under an authority of your own. The file replaces the
+# image's authorities, so it holds the public ones too when Hodor also calls public addresses.
+# Empty: the image's authorities.
+outboundAuthorities:
+  configMap: ""
+  key: authorities.pem
+
 log:
   # json or pretty.
   format: json

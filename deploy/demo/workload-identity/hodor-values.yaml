@@ -1,0 +1,56 @@
+# The chart's settings for the demonstration of Milestone 10: one server and one worker, small, in a
+# namespace injected with Istio's sidecar, beside the stand-ins of deploy/install/helm/evaluation.yaml.
+# The image is given on the command line. NOT FOR ANYTHING REAL.
+#
+#   python3 deploy/demo/workload_identity.py installs it; see docs/operations/quick-start.md.
+
+# The address the workloads of the cluster reach Hodor at; every tenant's issuer starts with it.
+publicUrl: http://hodor.hodor.svc:8080
+secret:
+  name: hodor-evaluation
+
+# Istio's sidecar connects to Hodor from 127.0.0.6 and writes the identity of the caller's certificate
+# into X-Forwarded-Client-Cert, replacing any the caller sent. It passes X-Forwarded-For as the caller
+# wrote it, so that header is not read.
+trustedProxies:
+  - 127.0.0.6
+forwardedHeader: none
+clientIdentityHeader: x-forwarded-client-cert
+
+# SPIRE's bundle endpoint is at a private address of the cluster, under the demonstration's own
+# authority, whose certificate the script puts in this ConfigMap.
+outboundAuthorities:
+  configMap: hodor-outbound-authorities
+  key: authorities.pem
+
+server:
+  replicas: 1
+  passwordHashConcurrency: 1
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      memory: 512Mi
+  podDisruptionBudget:
+    enabled: false
+  extraEnvironment:
+    - name: HODOR_OUTBOUND_DEVELOPMENT_HOSTS
+      value: spire-server.spire.svc:8443
+
+worker:
+  replicas: 1
+  resources:
+    requests:
+      cpu: 50m
+      memory: 128Mi
+    limits:
+      memory: 512Mi
+  podDisruptionBudget:
+    enabled: false
+  extraEnvironment:
+    - name: HODOR_OUTBOUND_DEVELOPMENT_HOSTS
+      value: spire-server.spire.svc:8443
+    # Fetches due bundles every second rather than every five, so that a refresh shows at once.
+    - name: HODOR_TRUST_BUNDLE_POLL_INTERVAL_MS
+      value: "1000"

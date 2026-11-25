@@ -327,6 +327,42 @@ The applications are played by the script, as in [the demonstration of Milestone
 
 It ends with `The demonstration of Milestone 9 passed.` It can be run again and again, and runs in continuous integration after the demonstration of Milestone 8 and before that of Milestone 6, whose second worker removes the delivered messages this one reads. The variables of [the first demonstration](#the-demonstration) tell it where the stack is, and `HODOR_WEBHOOK_RECEIVER_URL` where the receiver is, `http://localhost:9600` unless given.
 
+## The demonstration of Milestone 10
+
+[Milestone 10](../product/epics.md#milestone-10-workloads-prove-who-they-are-with-their-certificates) lets a service account prove who it is with the identity its service mesh or SPIRE already gave it, and no secret: a JWT-SVID, or the certificate its sidecar presents, which the proxy in front of Hodor forwards; and binds its tokens to that certificate. Its demonstration needs a cluster, not the development stack: it makes a [kind](https://kind.sigs.k8s.io/) cluster with Istio and SPIRE, installs Hodor in the mesh with [its chart](install-on-kubernetes.md), and plays an operator and two workloads:
+
+```bash
+python3 deploy/demo/workload_identity.py
+```
+
+It needs Docker, kind, `kubectl`, Helm and OpenSSL besides Python 3, and about 2 GiB of memory for Docker besides what it already runs. It never changes the current context of `kubectl` or the repositories of Helm: it gives both files of their own, in a temporary directory.
+
+| Step | What it shows |
+|---|---|
+| A kind cluster with Hodor's image | The cluster `hodor-milestone-10`, made the first time and taken as it is after. The image `hodor:milestone-10`, built from the checkout when Docker does not have it, and loaded into the cluster |
+| Istio | Istio 1.30.8, installed with its charts, whose trust domain is `cluster.local`: a workload's certificate names it `spiffe://cluster.local/ns/<namespace>/sa/<service account>`. Its sidecars are Kubernetes's own sidecar containers, which start before the pod's other containers |
+| SPIRE | SPIRE 1.15.5: a server of the trust domain `workloads.example.org`, with its SPIFFE bundle endpoint at `https://spire-server.spire.svc:8443`, and an agent on the node, which gives the pods of the service account `payroll` the identity `spiffe://workloads.example.org/ns/payroll/sa/payroll`. A second server, of `elsewhere.example.org`, which no tenant trusts. The bundle endpoint's certificate is made by the script with OpenSSL, under an authority of its own |
+| Hodor in the mesh | The chart, with the stand-ins of [trying the chart](install-on-kubernetes.md#trying-the-chart-on-a-cluster-of-your-own), in a namespace Istio injects its sidecar into: the sidecar named as the trusted proxy and `X-Forwarded-Client-Cert` as the identity header, as [the identity of a workload](install-on-kubernetes.md#the-identity-of-a-workload) says, and the demonstration's authority in `outboundAuthorities`. Two workloads: `payroll`, in the mesh and under SPIRE, and `outsider`, in neither |
+| Two tenants, and their administrators | Made with the command-line tool, in the server's pod |
+| Two trust domains | `hodor-cli trust-domain add` gives the tenant SPIRE's trust domain by its bundle endpoint, which Hodor fetches at once, and `cluster.local` as checked by the mesh. The bundle Hodor keeps holds the keys SPIRE signs JWT-SVIDs with |
+| A service account and its two clients | A Payroll resource server whose `approver` role may approve invoices, and a service account that holds it. `hodor-cli client add` binds one of its clients to its SPIRE identity with `spiffe_jwt`, and another to its identity in the mesh with `spiffe_x509` and bound tokens; neither has a secret |
+| A token with a JWT-SVID | `payroll` asks the SPIRE agent for a JWT-SVID for the tenant's issuer, which the script checks against the bundle Hodor fetched, and gets a token with it as its client assertion. The token names the service account and is signed by the tenant; the Authorization API allows the service account to approve an invoice with it |
+| A token with no credential at all | `payroll` asks for a token with its `client_id` alone. Its sidecar presents its certificate to Hodor's, which forwards its identity and its `Hash`; the token's `cnf` holds `x5t#S256`, which the script checks is the SHA-256 of the certificate the sidecar holds. The Authorization API takes the token from `payroll`, and introspection answers it with its `cnf` |
+| The bound token without its certificate | Presented by `outsider`, which has no sidecar, and from the script's machine: `401` with `invalid_token` |
+| JWT-SVIDs refused | The first JWT-SVID presented again; one minted by the SPIRE server of `elsewhere.example.org`; one the agent gives `payroll` for the second tenant's issuer: each `invalid_client` |
+| `X-Forwarded-Client-Cert` from outside the mesh | `outsider` asks for a token for the mesh's client with a header naming `payroll`'s identity, and the script does the same from its machine: each `invalid_client`. Hodor's sidecar takes the header away from a caller without a certificate, and Hodor reads it from no one but its sidecar |
+| The worker keeps the bundle current | The worker fetches SPIRE's bundle again after the refresh hint SPIRE gives, a minute, as `hodor-cli trust-domain show` says |
+| Tenants apart | The second tenant trusts no trust domain and finds none of the first's; it refuses the bound token, even with its certificate, and gives `payroll`'s certificate no token |
+| The audit log | The first tenant's log holds both trust domains added and the clients, and its chain is intact |
+
+The script reaches Hodor at `http://localhost:18080` through `kubectl port-forward`, from outside the mesh, as an operator does; the workloads reach it at `http://hodor.hodor.svc:8080`, the address every tenant's issuer starts with. The bundle endpoint is at a private address of the cluster, under the demonstration's own authority: the chart's settings name it in `HODOR_OUTBOUND_DEVELOPMENT_HOSTS` and the authority in `outboundAuthorities`, which nowhere real does for a private address. They are in `deploy/demo/workload-identity/`, with the manifests of SPIRE and of the workloads.
+
+It ends with `The demonstration of Milestone 10 passed.` It can be run again and again against the same cluster, making two new tenants each time, and runs in continuous integration, in a job of its own, against the image built from the pull request. `HODOR_KIND_CLUSTER`, `HODOR_IMAGE` and `HODOR_PORT` choose another cluster, image or port. The cluster is left running; to remove it:
+
+```bash
+kind delete cluster --name hodor-milestone-10
+```
+
 ## Stop
 
 Stop the stack and delete its data:

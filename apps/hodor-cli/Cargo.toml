@@ -38,6 +38,8 @@ hodor-adapters-postgres = { workspace = true, features = ["testing"] }
 hodor-authorization = { workspace = true, features = ["testing"] }
 hodor-authorization-opa = { workspace = true, features = ["testing"] }
 hodor-credential = { workspace = true, features = ["testing"] }
+# The sample bundles of the trust domain commands.
+hodor-keys = { workspace = true, features = ["testing"] }
 sqlx.workspace = true
 tokio.workspace = true
 

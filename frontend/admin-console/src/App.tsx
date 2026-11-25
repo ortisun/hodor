@@ -29,6 +29,7 @@ import {
   LogOut,
   type LucideIcon,
   Moon,
+  Network,
   Search,
   ShieldCheck,
   Sun,
@@ -52,6 +53,8 @@ import { OrganizationScreen } from "./screens/OrganizationScreen";
 import { OrganizationsScreen } from "./screens/OrganizationsScreen";
 import { ProviderScreen } from "./screens/ProviderScreen";
 import { ProvidersScreen } from "./screens/ProvidersScreen";
+import { TrustDomainScreen } from "./screens/TrustDomainScreen";
+import { TrustDomainsScreen } from "./screens/TrustDomainsScreen";
 import { nameOf } from "./screens/UsersScreen";
 import { UserScreen } from "./screens/UserScreen";
 import { UsersScreen } from "./screens/UsersScreen";
@@ -123,6 +126,17 @@ const SECTIONS: { title: (text: Messages) => string; entries: Entry[] }[] = [
         label: (text) => text.authorization,
         icon: ShieldCheck,
         needs: "roles:read",
+      },
+    ],
+  },
+  {
+    title: (text) => text.security,
+    entries: [
+      {
+        screen: { name: "trustDomains" },
+        label: (text) => text.trustDomains,
+        icon: Network,
+        needs: "keys:read",
       },
     ],
   },
@@ -373,6 +387,7 @@ function Frame({ place, client, text, mode, changeMode, go, leave, me }: AppProp
                         (screen?.name === "serviceAccount" && entry.screen.name === "serviceAccounts") ||
                         (screen?.name === "agent" && entry.screen.name === "agents") ||
                         (screen?.name === "webhook" && entry.screen.name === "webhooks") ||
+                        (screen?.name === "trustDomain" && entry.screen.name === "trustDomains") ||
                         ((screen?.name === "application" || screen?.name === "client") &&
                           entry.screen.name === "applications")
                       }
@@ -423,6 +438,10 @@ function Frame({ place, client, text, mode, changeMode, go, leave, me }: AppProp
         {screen?.name === "webhooks" && allowed("webhooks:read") ? <WebhooksScreen {...props} /> : null}
         {screen?.name === "webhook" && allowed("webhooks:read") ? (
           <WebhookScreen key={screen.id} id={screen.id} {...props} />
+        ) : null}
+        {screen?.name === "trustDomains" && allowed("keys:read") ? <TrustDomainsScreen {...props} /> : null}
+        {screen?.name === "trustDomain" && allowed("keys:read") ? (
+          <TrustDomainScreen key={screen.id} id={screen.id} {...props} />
         ) : null}
         {screen === null || (screen.name !== "home" && !allowed(needsOf(screen))) ? (
           <div className="console-page">
@@ -478,6 +497,9 @@ function needsOf(screen: Screen): Permission {
     case "webhooks":
     case "webhook":
       return "webhooks:read";
+    case "trustDomains":
+    case "trustDomain":
+      return "keys:read";
     default:
       return "users:read";
   }

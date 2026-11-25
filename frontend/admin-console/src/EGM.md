@@ -26,12 +26,14 @@ person sees from who they are (`Client.me`).
   `groups` and `group` need `groups:read`; `organizations` and `organization`
   need `organizations:read`; `serviceAccounts`, `serviceAccount`, `agents`
   and `agent` need `workloads:read`; `webhooks` and `webhook` need
-  `webhooks:read`; the others need `users:read`. Service accounts and agents
-  are under Directory, webhooks under Audit.
+  `webhooks:read`; `trustDomains` and `trustDomain` need `keys:read`; the
+  others need `users:read`. Service accounts and agents are under Directory,
+  trust domains under Security, webhooks under Audit.
 - `address.ts` - `Screen` (`home`, `users`, `user`, `audit`, `providers`,
   `provider`, `applications`, `application`, `client`, `authorization`,
   `groups`, `group`, `organizations`, `organization`, `serviceAccounts`,
-  `serviceAccount`, `agents`, `agent`, `webhooks`, `webhook`), `Place`, `placeOf(pathname)`, `pathOf(tenant, screen)`,
+  `serviceAccount`, `agents`, `agent`, `webhooks`, `webhook`, `trustDomains`,
+  `trustDomain`), `Place`, `placeOf(pathname)`, `pathOf(tenant, screen)`,
   `isIdentifier(text)`, `signInPath(tenant)` (`/t/{tenant}/account/sign-in`)
   and `accountPath(tenant)` (`/t/{tenant}/account`). Console addresses are
   `/t/{tenant}/console`, `.../users`, `.../users/{id}`, `.../audit`,
@@ -39,7 +41,8 @@ person sees from who they are (`Client.me`).
   `.../applications/{id}`, `.../clients/{id}`, `.../authorization`,
   `.../groups`, `.../groups/{id}`, `.../organizations`,
   `.../organizations/{id}`, `.../service-accounts`, `.../service-accounts/{id}`,
-  `.../agents`, `.../agents/{id}`, `.../webhooks` and `.../webhooks/{id}`.
+  `.../agents`, `.../agents/{id}`, `.../webhooks`, `.../webhooks/{id}`,
+  `.../trust-domains` and `.../trust-domains/{id}`.
 - `actions.ts:ACTIONS`, `ActionName`, `Level`, `Action`, `may(permissions,
   action)` - `createUser` (level 0, `users:write`); `endSession` (1,
   `sessions:revoke`); `suspendUser` (2, `users:write`); `addProvider`,
@@ -58,7 +61,9 @@ person sees from who they are (`Client.me`).
   `enableWorkload`, `createApiKey`, `rotateApiKey` (1), `disableWorkload`,
   `deleteWorkload`, `revokeApiKey` (2), all `workloads:write`;
   `registerEndpoint`, `changeSubscriptions`, `redeliver` (1),
-  `rotateEndpointSecret`, `removeEndpoint` (2), all `webhooks:write`.
+  `rotateEndpointSecret`, `removeEndpoint` (2), all `webhooks:write`;
+  `addTrustDomain`, `replaceTrustDomain` (1), `removeTrustDomain` (2), all
+  `keys:write`.
 - `client.ts:Client` - every request goes to `/t/{tenant}/console/api{path}`,
   except sign-out, which uses `/t/{tenant}/interaction{path}`:
 
@@ -87,7 +92,7 @@ person sees from who they are (`Client.me`).
   | `listClients(applicationId)` | `GET /applications/{id}/clients` |
   | `addClient(applicationId, type, settings)` | `POST /applications/{id}/clients`; returns the client and `client_secret` when given |
   | `getClient(id)` | `GET /clients/{id}` |
-  | `changeClient(id, settings)` | `PATCH /clients/{id}` |
+  | `changeClient(id, settings)` | `PATCH /clients/{id}`; with `addClient`, sends `principal`, `spiffe_id` and `linkerd_identity` only when the settings give them (not `null`), and `tls_client_certificate_bound_access_tokens` always |
   | `disableClient(id)`, `enableClient(id)` | `POST /clients/{id}:disable`, `:enable` |
   | `rotateSecret(id)` | `POST /clients/{id}/secrets` with `{}` |
   | `revokeSecret(id, secretId)` | `DELETE /clients/{id}/secrets/{secretId}` |
@@ -119,6 +124,8 @@ person sees from who they are (`Client.me`).
   | `registerEndpoint(settings)`, `rotateEndpointSecret(id)` | `POST /webhook-endpoints` with `{ url, description?, event_types }`, `POST /webhook-endpoints/{id}:rotate-secret` with no body; both answer the endpoint and its `secret`, once |
   | `replaceSubscriptions(id, eventTypes)`, `removeEndpoint(id)` | `PUT /webhook-endpoints/{id}/subscriptions`, `DELETE /webhook-endpoints/{id}` |
   | `listDeliveries(endpointId, status, cursor)`, `redeliver(id)` | `GET /webhook-deliveries?limit=50[&cursor=]&endpoint_id=…[&status=]`, `POST /webhook-deliveries/{id}:redeliver` |
+  | `listTrustDomains(cursor)`, `getTrustDomain(id)` | `GET /trust-domains?limit=50[&cursor=]`, `GET /trust-domains/{id}` |
+  | `addTrustDomain(name, settings)`, `replaceTrustDomain(id, settings)`, `removeTrustDomain(id)` | `POST /trust-domains` with `{ name, source, bundle?, bundle_endpoint_url? }`, `PUT /trust-domains/{id}` with the same body without `name`, `DELETE /trust-domains/{id}` |
 
 - `client.ts` types - `Failure` (`code`, `status`, `requestId`, `signedOut`),
   `Permission`, `Identifier`, `User`, `Me`, `Session`, `AuditRecord`,
@@ -131,8 +138,14 @@ person sees from who they are (`Client.me`).
   `Invitation` (never a link or a secret), `WorkloadKind`, `Workload`,
   `WorkloadSettings`, `ApiKey` (never the key), `ApiKeySettings`, `MadeApiKey`,
   `WebhookEndpoint` (never a secret), `EndpointSettings`, `SignedEndpoint`,
-  `DeliveryStatus`, `WebhookDelivery` (never its body). `ApplicationClient`
-  has `principal`, the workload it acts as.
+  `DeliveryStatus`, `WebhookDelivery` (never its body), `TrustDomainSource`,
+  `TrustDomain`, `TrustBundleSummary` (the sequence number, the refresh hint
+  and how many elements of each `use` the bundle holds; the keys themselves
+  are not kept), `BundleRefresh`, `TrustDomainSettings` (one of the three
+  sources, with what it needs). `ApplicationClient` has `principal`, the
+  workload it acts as, `spiffeId`, `linkerdIdentity` and
+  `certificateBoundAccessTokens`; `ClientSettings` has the same four, the
+  first three `null` when not sent.
 - `hodor-theme.d.ts` - declares the modules `@hodor-theme/hodor.js`
   (`hodorTheme: DefinedTheme`) and `@hodor-theme/hodor.css`; the alias is
   resolved by `../vite.config.ts`.
@@ -146,8 +159,9 @@ person sees from who they are (`Client.me`).
   Portuguese, failure text), [parts](./parts/EGM.md) (confirmation dialog,
   identifier, loading state, a secret shown once), [screens](./screens/EGM.md)
   (users, one user, groups, one group, organizations, one organization,
-  identity providers, one provider, applications, one application, one
-  client, authorization, audit).
+  service accounts and agents, identity providers, one provider,
+  applications, one application, one client, authorization, trust domains,
+  one trust domain, webhooks, one endpoint, audit).
 
 ## Invariants
 
@@ -164,9 +178,9 @@ person sees from who they are (`Client.me`).
 - `App.tsx:Frame` renders a screen only when `me.permissions` holds
   `needsOf(screen)`; a forbidden screen shows the same not-found page as an
   unknown address. `home` goes to the first allowed entry in the order users,
-  groups, organizations, identity providers, applications, authorization,
-  audit. A person with no allowed entry sees only the
-  no-access notice.
+  groups, organizations, service accounts, agents, identity providers,
+  applications, authorization, trust domains, audit records, webhooks. A
+  person with no allowed entry sees only the no-access notice.
 - `App.tsx:Frame` signs out by calling `client.signOut()` and always leaves for
   the sign-in page afterwards, even when sign-out fails.
 - `address.ts:placeOf` accepts tenants matching `^[a-z0-9][a-z0-9-]*$` and

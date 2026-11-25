@@ -82,19 +82,20 @@ spec:
             - name: HODOR_CLIENT_IDENTITY_HEADER
               value: {{ . | quote }}
             {{- end }}
+            {{- include "hodor.authoritiesEnvironment" . | nindent 12 }}
             {{- with .Values.server.extraEnvironment }}
             {{- toYaml . | nindent 12 }}
             {{- end }}
-          {{- with include "hodor.keyProviderVolumeMounts" . }}
+          {{- with printf "%s\n%s" (include "hodor.keyProviderVolumeMounts" . | trim) (include "hodor.authoritiesVolumeMounts" . | trim) | trim }}
           volumeMounts:
-            {{- . | trim | nindent 12 }}
+            {{- . | nindent 12 }}
           {{- end }}
           {{- include "hodor.probes" . | nindent 10 }}
           resources:
             {{- toYaml .Values.server.resources | nindent 12 }}
-      {{- with include "hodor.keyProviderVolumes" . }}
+      {{- with printf "%s\n%s" (include "hodor.keyProviderVolumes" . | trim) (include "hodor.authoritiesVolumes" . | trim) | trim }}
       volumes:
-        {{- . | trim | nindent 8 }}
+        {{- . | nindent 8 }}
       {{- end }}
       {{- include "hodor.spread" (list . "server") | nindent 6 }}
       {{- with .Values.server.nodeSelector }}
