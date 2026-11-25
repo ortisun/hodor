@@ -4,6 +4,10 @@ Every release of Hodor, newest first. The rules for versions and releases are in
 
 ## [Unreleased]
 
+### Added
+
+- Hodor is licensed under the MIT License ([Decision 0038](docs/decisions/0038-the-license.md)); until now the repository had no license.
+
 ## [0.3.0] - 2026-11-25
 
 A pre-release that gathers people in groups and organizations, gives services and agents identities of their own, and builds what 0.2.0 left out. It holds the four parts [Decision 0027](docs/decisions/0027-what-0.3.0-holds.md) set for it: what a deployment behind a load balancer needs ([Milestone 6](docs/product/epics.md#milestone-6-hodor-runs-behind-a-load-balancer-and-cleans-up-after-itself)), groups, organizations and SCIM ([Milestone 7](docs/product/epics.md#milestone-7-groups-organizations-and-scim)), workloads, agents and webhooks ([Milestone 8](docs/product/epics.md#milestone-8-workloads-agents-and-webhooks)), and the parts of OpenID Connect, email sign-in, access lists and enrollment that 0.2.0 left out ([Milestone 9](docs/product/epics.md#milestone-9-what-020-left-out)).
