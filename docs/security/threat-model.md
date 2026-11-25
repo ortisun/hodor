@@ -282,6 +282,7 @@ Planned for 0.5.0 and 0.6.0 ([Decision 0044](../decisions/0044-what-0.5.0-and-0.
 | Threat-OpenID-26 | A ping or push notification address leads inside the network | Checked as a back-channel logout address is, when set and at every attempt, through the guarded outbound client |
 | Threat-OpenID-27 | An encrypted request object is crafted to learn the tenant's key, by padding errors or points off the curve | One error and no difference in time for every failure; `RSA1_5` never offered; the curve's points checked by `aws-lc-rs`; a corpus of malformed objects in the tests ([Decision 0048](../decisions/0048-encryption.md)) |
 | Threat-OpenID-28 | The logs of a certification, which the Foundation publishes, hold credentials that still work | The certification deployment holds nothing real; its script disables the clients and revokes the keys before the logs are published, and the deployment is reset afterwards ([Decision 0051](../decisions/0051-conformance-runs-and-certification.md)) |
+| Threat-OpenID-29 | A signed UserInfo answer is passed off as an ID token, or a client is made to accept a signature of an algorithm or key it did not choose | The answer has no `typ`, no `exp` and no `iat`, so the end-session endpoint and any library that checks an ID token refuse it; the algorithm is the client's setting, never the request's, one of four, each with keys of its own, and any other name is refused when the client is saved ([signed UserInfo answers](../architecture/contexts/oauth.md#signed-userinfo-answers)) |
 
 ## Residual risks
 

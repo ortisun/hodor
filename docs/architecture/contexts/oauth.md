@@ -38,7 +38,8 @@ A client is what talks to Hodor's endpoints. Its identifier is the `client_id` o
 | Back-channel logout session required | Whether the client needs `sid` in its logout tokens, its `backchannel_logout_session_required`. `false` unless chosen. Hodor puts `sid` in every logout token, so this only records what the client relies on |
 | Scopes | The scopes it may ask for. At most 50 |
 | PKCE | Whether it must send a code challenge. Always for a public client; on by default for a confidential one |
-| ID token algorithm | How its [ID tokens](#the-id-token) are signed, its `id_token_signed_response_alg` of OpenID Connect Registration: `ES256` unless changed, or `RS256` |
+| ID token algorithm | How its [ID tokens](#the-id-token) are signed, its `id_token_signed_response_alg` of OpenID Connect Registration: `ES256` unless changed, or `RS256`, `PS256` or `EdDSA`. See [which algorithm](#the-id-token) |
+| UserInfo algorithm | How its [UserInfo answers](#signed-userinfo-answers) are signed, its `userinfo_signed_response_alg` of OpenID Connect Registration: none unless chosen, and UserInfo answers it in JSON; or one of `ES256`, `RS256`, `PS256` and `EdDSA`, and UserInfo answers it with a JSON Web Token signed with that algorithm |
 | Request object algorithm | How it signs its [request objects](#request-objects), its `request_object_signing_alg` of OpenID Connect Registration: none chosen unless changed, which accepts `ES256`, `RS256` and `PS256`; one of the three, which accepts only it; or `none`, which accepts only unsigned request objects |
 | Subject type | How it knows a person, its `subject_type` of OpenID Connect Registration: `public`, the person's user identifier, unless changed, or `pairwise`, an identifier of its sector alone. See [pairwise subject identifiers](#pairwise-subject-identifiers) |
 | Sector identifier address | Optional, for a pairwise client: an address that lists its redirect addresses and whose host is its sector, its `sector_identifier_uri`. See [the sector identifier address](#the-sector-identifier-address) |
@@ -229,7 +230,7 @@ For an operator who can reach the database, as for tenants and identity provider
 | `hodor-cli application add --tenant acme --name Billing [--first-party]` | Registers an application, enabled; third party unless `--first-party` is given. Prints its identifier |
 | `hodor-cli application list --tenant acme` | One line per application: identifier, status, first or third party, name |
 | `hodor-cli application disable --tenant acme --id …`, `enable` | |
-| `hodor-cli client add --tenant acme --application … --name … --type confidential --grant authorization_code --redirect-uri https://… --scope openid` | Creates a client. `--grant`, `--redirect-uri`, `--post-logout-redirect-uri` and `--scope` are given once per value; `--method` chooses the authentication method, `--secret-days` the lifetime of the first secret, `--without-pkce` lets a confidential client redeem a code without PKCE, `--id-token-algorithm` signs its ID tokens with `RS256` instead of `ES256`, `--request-object-signing-alg` chooses its [request object algorithm](#request-objects), `ES256`, `RS256`, `PS256` or `none`, `--backchannel-logout-uri` gives it a [back-channel logout address](#the-back-channel-logout-address), checked with the development exception of `HODOR_OUTBOUND_DEVELOPMENT_HOSTS` as the server has it, `--backchannel-logout-session-required` records that it needs `sid`, `--subject-type pairwise` makes it [pairwise](#pairwise-subject-identifiers), `--sector-identifier-uri` gives it a [sector identifier address](#the-sector-identifier-address), fetched through a guarded client with the same development exception, `--principal` binds it to a service account or an agent, `--exchange-rule '<subject audience>=><audience>'`, once per rule, gives an agent's client its exchange rules, `--spiffe-id` and `--linkerd-identity` bind a service account's client using `spiffe_jwt`, `spiffe_x509`, `tls_client_auth` or `linkerd_identity` to [its workload's identity](#an-identity-forwarded-by-a-proxy), and `--bound-tokens` asks for [certificate-bound access tokens](#certificate-bound-access-tokens). Prints the `client_id` and, for a client with a secret method, the secret, once |
+| `hodor-cli client add --tenant acme --application … --name … --type confidential --grant authorization_code --redirect-uri https://… --scope openid` | Creates a client. `--grant`, `--redirect-uri`, `--post-logout-redirect-uri` and `--scope` are given once per value; `--method` chooses the authentication method, `--secret-days` the lifetime of the first secret, `--without-pkce` lets a confidential client redeem a code without PKCE, `--id-token-algorithm` signs its ID tokens with `RS256`, `PS256` or `EdDSA` instead of `ES256`, `--userinfo-signed-response-alg` signs its [UserInfo answers](#signed-userinfo-answers) with one of the four, `--request-object-signing-alg` chooses its [request object algorithm](#request-objects), `ES256`, `RS256`, `PS256` or `none`, `--backchannel-logout-uri` gives it a [back-channel logout address](#the-back-channel-logout-address), checked with the development exception of `HODOR_OUTBOUND_DEVELOPMENT_HOSTS` as the server has it, `--backchannel-logout-session-required` records that it needs `sid`, `--subject-type pairwise` makes it [pairwise](#pairwise-subject-identifiers), `--sector-identifier-uri` gives it a [sector identifier address](#the-sector-identifier-address), fetched through a guarded client with the same development exception, `--principal` binds it to a service account or an agent, `--exchange-rule '<subject audience>=><audience>'`, once per rule, gives an agent's client its exchange rules, `--spiffe-id` and `--linkerd-identity` bind a service account's client using `spiffe_jwt`, `spiffe_x509`, `tls_client_auth` or `linkerd_identity` to [its workload's identity](#an-identity-forwarded-by-a-proxy), and `--bound-tokens` asks for [certificate-bound access tokens](#certificate-bound-access-tokens). Prints the `client_id` and, for a client with a secret method, the secret, once |
 | `hodor-cli client list --tenant acme --application …` | One line per client: `client_id`, status, type, authentication method, name |
 | `hodor-cli client rotate-secret --tenant acme --id … [--lifetime-days 365] [--keep-previous-days 7]` | Gives a client a new secret and prints it, once |
 | `hodor-cli client disable --tenant acme --id …`, `enable` | |
@@ -291,7 +292,8 @@ Every table is a tenant table under row-level security, in the schema `oauth`. R
 | `linkerd_identity` | `text` | The [Linkerd identity](#the-spiffe-identifier-of-a-client) of a client using `linkerd_identity` or `tls_client_auth`, or null, compared byte for byte (`COLLATE "C"`). Check constraints keep its shape (`client_linkerd_identity_shape`), its method (`client_identity_of_its_method`) and a principal with it (`client_linkerd_identity_needs_principal`). The partial index `client_linkerd_identity_bound` (migration 0084, which replaced the unique index of migration 0080) finds its clients, and the store keeps it to one principal per tenant as for `spiffe_id` |
 | `certificate_bound_access_tokens` | `boolean` | Whether the client asks for [certificate-bound access tokens](#certificate-bound-access-tokens); `false` for a client made before it existed (migration 0082). A check constraint (`client_certificate_bound_not_linkerd`) refuses it with `linkerd_identity` |
 | `exchange_rules` | `jsonb` | The exchange rules, a list of `{"subject_audience": …, "audience": …}`; empty unless the client has the token exchange grant |
-| `id_token_algorithm` | `text` | `ES256` or `RS256`, by a check constraint; `ES256` for a client made before it existed |
+| `id_token_algorithm` | `text` | `ES256`, `RS256`, `PS256` or `EdDSA`, by a check constraint (`PS256` and `EdDSA` since migration 0109); `ES256` for a client made before it existed |
+| `userinfo_signed_response_alg` | `text` | `ES256`, `RS256`, `PS256` or `EdDSA`, by a check constraint, or null for a client whose UserInfo answers are JSON, as for every client made before it existed (migration 0109) |
 | `request_object_signing_alg` | `text` | `ES256`, `RS256`, `PS256` or `none`, by a check constraint, or null when none is chosen, as for every client made before it existed |
 | `backchannel_logout_uri` | `text` | The [back-channel logout address](#the-back-channel-logout-address), or null. At most 2000 characters, `https://` or `http://`, compared byte for byte (`COLLATE "C"`); a check constraint allows it only with the `authorization_code` grant |
 | `backchannel_logout_session_required` | `boolean` | `false` for a client made before it existed; a check constraint allows `true` only with an address |
@@ -1091,7 +1093,16 @@ Issue-59 makes Hodor an OpenID Provider ([OpenID Connect Core 1.0](https://openi
 
 When the scopes of a code hold `openid`, the token endpoint answers with an `id_token` beside the access token. It is a JSON Web Token signed by the [keys context](keys.md) with the tenant's active key of the client's ID token algorithm, and it lives the client's ID token lifetime (five minutes unless changed, never more than `TokenPolicy::LONGEST_SIGNED_LIFETIME`).
 
-**Which algorithm.** A client's ID tokens are signed with `ES256`, the algorithm Hodor signs with unless told otherwise ([Decision 0004](../../decisions/0004-token-formats.md)), or with `RS256` when an administrator chose it for the client. OpenID Connect Discovery requires every OpenID Provider to offer `RS256` for ID tokens, and some relying parties understand nothing else; OpenID Connect Registration makes `RS256` the default for a client that names none, while Hodor keeps `ES256`, a choice the specification leaves to the provider ("SHOULD"). A tenant that has never signed with `RS256` has no such key: the first ID token a client asks for with it makes the key at once, through `KeyService::ensure_active` (see [the keys context](keys.md#rotation)), and from then on the key rotates like the default. The access token is always signed with `ES256`.
+**Which algorithm.** A client's ID tokens are signed with `ES256`, the algorithm Hodor signs with unless told otherwise ([Decision 0004](../../decisions/0004-token-formats.md)), or with the one an administrator chose for the client among those Hodor offers ([Decision 0008](../../decisions/0008-cryptography.md)):
+
+| Algorithm | Key | For |
+|---|---|---|
+| `ES256` | ECDSA on P-256 with SHA-256 | The default |
+| `RS256` | RSA of 2048 bits, PKCS#1 version 1.5 padding, SHA-256 | OpenID Connect Discovery requires every OpenID Provider to offer it for ID tokens, and some relying parties understand nothing else |
+| `PS256` | RSA of 2048 bits, PSS padding, SHA-256, a key of its own | Relying parties held to FAPI, which accepts `PS256` or `ES256` and never `RS256` |
+| `EdDSA` | Ed25519 ([RFC 8037](https://www.rfc-editor.org/rfc/rfc8037)) | Relying parties that prefer it; FAPI 2.0 accepts it |
+
+OpenID Connect Registration makes `RS256` the default for a client that names none, while Hodor keeps `ES256`, a choice the specification leaves to the provider ("SHOULD"). **A client that names another algorithm cannot be saved**: `none`, the shared-secret algorithms, `ES384`, `RS512` or any other name is refused with `oauth.client_id_token_algorithm_invalid`, by the administration interface and the command-line tool alike, before anything is stored. Each of the four is one every tenant can sign with: both key providers make keys of each ([the key provider](keys.md#the-key-provider)), and a tenant that has never signed with one has no such key until the first ID token a client asks for with it makes the key at once, through `KeyService::ensure_active` (see [the keys context](keys.md#rotation)); from then on the key rotates like the default. The published key set names a key of every one of them before any token is signed with it. The access token is always signed with `ES256`, and a [logout token](#the-logout-token) with the client's ID token algorithm.
 
 | Part | Value |
 |---|---|
@@ -1180,6 +1191,21 @@ The [claim mappers](#claim-mappers) of the token's client that name UserInfo add
 
 The answer carries `Cache-Control: no-store`. A browser on another origin cannot call UserInfo yet: clients have no registered origins, so no cross-origin headers are sent.
 
+### Signed UserInfo answers
+
+Issue-130. A client whose administrator chose a UserInfo algorithm, its `userinfo_signed_response_alg`, gets its answers as a JSON Web Token signed by the tenant ([section 5.3.2](https://openid.net/specs/openid-connect-core-1_0.html#UserInfoResponse)); every other client gets JSON, as before. The client is the one the access token was issued to, read in the token's tenant once the token passed every check above: an answer is never signed for a client of another tenant, nor with another tenant's key.
+
+| Part | Value |
+|---|---|
+| `Content-Type` | `application/jwt` |
+| Header | `alg` the client's UserInfo algorithm, `kid` the key version that signed. No `typ`: the answer is not an ID token, and the [end-session endpoint](#logout-initiated-by-the-relying-party) refuses as a hint anything that does not say `typ` `JWT` |
+| Claims | Those of the JSON answer, with the claims of the client's mappers, and then `iss`, the tenant's issuer, and `aud`, the client's identifier, as section 5.3.2 asks. A mapper can write neither: both are [names a mapper may not use](#names-a-mapper-may-not-use) |
+| Signature | The tenant's active key of the algorithm, made at once if the tenant has none, as for [an ID token](#the-id-token). The same four algorithms are offered, and the same names are refused when the client is saved, with `oauth.client_userinfo_algorithm_invalid` |
+
+The answer has neither `exp` nor `iat`, which section 5.3.2 does not ask for: a relying party reads it once, as it read the JSON answer, and a library that checks an ID token refuses it for lacking them, so it is never taken for one. `none` is not offered: an unsigned answer is the JSON one. The refusals of a token are the same as for a JSON answer, `401` and `403` with `WWW-Authenticate`, never a signed error: every check above comes first, a [certificate-bound token](#certificate-bound-access-tokens) presented without its certificate among them, and only a token that passes them all is answered, signed or not. When the key provider cannot sign, OpenBao unreachable for example, the answer is `500` and no unsigned answer is given instead.
+
+A client checks the answer with [the tenant's published key set](keys.md#the-published-key-set), as it checks the ID token. The UserInfo answer is not encrypted; encryption is [Decision 0048](../../decisions/0048-encryption.md), in 0.6.0.
+
 ### The `groups` claim
 
 Issue-89. The scope `groups` asks for the [groups](identity.md#groups) the person is in. It is a scope of Hodor's, beside those of OpenID Connect: no resource server may define it, a client asks for it only if it may ask for it, as for any scope, and the consent page names it. Client credentials refuse it with `invalid_scope`, since nobody signed in.
@@ -1231,7 +1257,8 @@ It names only what is built:
 | `revocation_endpoint_auth_methods_supported` | Those of the token endpoint: a public client may revoke its own tokens |
 | `introspection_endpoint_auth_methods_supported` | Those of the token endpoint but `none`: a public client may not introspect |
 | `revocation_endpoint_auth_signing_alg_values_supported`, `introspection_endpoint_auth_signing_alg_values_supported` | `ES256`, `RS256`, `PS256` |
-| `id_token_signing_alg_values_supported` | `ES256`, `RS256` |
+| `id_token_signing_alg_values_supported` | `ES256`, `RS256`, `PS256`, `EdDSA` |
+| `userinfo_signing_alg_values_supported` | `ES256`, `RS256`, `PS256`, `EdDSA`: the algorithms of [signed UserInfo answers](#signed-userinfo-answers). `none` is not named: a client that wants no signature gets JSON |
 | `subject_types_supported` | `public`, `pairwise` |
 | `scopes_supported` | `openid`, `profile`, `email`, `groups`. A tenant's own scopes belong to its resource servers and are not listed |
 | `claims_supported` | The claims of the ID token and of UserInfo, `org_id` and `groups` among them. Claims of [claim mappers](#claim-mappers) are a client's, and are not listed |
@@ -1254,8 +1281,10 @@ The document may be kept by caches for five minutes and carries `Access-Control-
 
 | Port | Purpose |
 |---|---|
-| `KeyService` | Lists the tenant's published keys, to check an access token at UserInfo |
+| `KeyService` | Lists the tenant's published keys, to check an access token at UserInfo; signs a [signed UserInfo answer](#signed-userinfo-answers) |
 | `Digest` | The SHA-256 of a forwarded certificate, compared with a bound token's `cnf` at UserInfo, from the kernel |
+| `ClientStore` | Reads the token's client, for its UserInfo algorithm |
+| `UnitOfWork` | The transaction the client is read in |
 | `SignatureVerifier` | Checks the access token's signature, from the kernel |
 | `IdentityService` | Reads the person, for UserInfo, from the identity context |
 | `PersonMemberships` | The person's effective groups, for the `groups` claim |
@@ -1283,7 +1312,7 @@ The request is checked before anything happens. A request that fails is answered
 | Failure | Code |
 |---|---|
 | A parameter is given more than once; `state` is longer than 1024 characters or holds characters outside printable ASCII; `ui_locales` is longer than 255 characters | `oauth.logout_request_invalid` |
-| `id_token_hint` is not an ID token of this tenant: not three parts, a header that is not `typ` `JWT` and `alg` `ES256` or `RS256`, a `kid` the tenant does not publish, a signature that does not verify, or an `iss` that is not the tenant's issuer | `oauth.logout_id_token_hint_invalid` |
+| `id_token_hint` is not an ID token of this tenant: not three parts, a header that is not `typ` `JWT` and `alg` one of the four a client's ID tokens may be signed with, `ES256`, `RS256`, `PS256` and `EdDSA`, a `kid` the tenant does not publish, a signature that does not verify, or an `iss` that is not the tenant's issuer | `oauth.logout_id_token_hint_invalid` |
 | `client_id` is not a client of this tenant, or the client or its application is disabled; or `post_logout_redirect_uri` is given and the request names no client, by `client_id` or by the hint's `aud` | `oauth.logout_client_unknown` |
 | `client_id` and the hint's `aud` name different clients | `oauth.logout_client_mismatch` |
 | `post_logout_redirect_uri` is not one of the client's post-logout redirect addresses | `oauth.logout_redirect_uri_unregistered` |
@@ -1840,7 +1869,9 @@ Administrators reach them through [the administration interface](../../api/admin
 | The person's claims in the ID token when asked for with the `claims` parameter | 0.5.0, [Milestone 13](../../product/epics.md#milestone-13-requests-that-say-what-they-need) ([Decision 0047](../../decisions/0047-claims-and-the-person-s-claims.md)) |
 | More than one `resource` in a refresh or client credentials request: a parameter may be given once | With resource indicators given more than once at the token endpoint |
 | Calling the token endpoint from a browser on another origin: clients have no registered origins yet, so no cross-origin headers are sent | With origins in the client settings |
-| Client assertions signed with `ES384` or `EdDSA`, which client keys on P-384 and Ed25519 would need | `EdDSA` with 0.5.0, [Issue-130](../../product/epics.md#slice-signed-answers-epic-34); `ES384` when the kernel's signature checking covers it |
+| Client assertions, request objects and JWT-SVIDs signed with `ES384` or `EdDSA`, which client keys on P-384 and Ed25519 would need. The kernel's signature checking covers `EdDSA` since Issue-130, for the tenant's own signatures; no header of another's is read as `EdDSA` yet | When a client needs it; `ES384` when the kernel's signature checking covers it |
+| Choosing a client's ID token and UserInfo algorithms from the console | With the console pages of clients |
+| Encrypted UserInfo answers and ID tokens | 0.6.0, [Milestone 18](../../product/epics.md#milestone-18-fapi-20-message-signing-and-fapi-10-advanced) ([Decision 0048](../../decisions/0048-encryption.md)) |
 | Asking for an `acr` with the `claims` parameter. `acr_values` is the way to ask | 0.5.0, [Milestone 13](../../product/epics.md#milestone-13-requests-that-say-what-they-need) |
 | A page where a person sees the history of their consents | The account console, Phase 2 |
 | Limits on requests to the authorization endpoint per address | With the other limits per address, before any deployment behind a load balancer |

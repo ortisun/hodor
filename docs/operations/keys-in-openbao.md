@@ -29,6 +29,8 @@ With the `bao` command line, as an administrator of OpenBao. The names `hodor-tr
     bao policy write hodor deploy/openbao/hodor-policy.hcl
     ```
 
+    The policy names the types of key Hodor makes: `ecdsa-p256`, `rsa-2048` and, since EdDSA was added, `ed25519`. An installation that wrote it before must write it again from the file of its new version; until then OpenBao refuses the first EdDSA key a client's tokens need, with `keys.provider_refused`, and nothing else changes.
+
 3. **A way for Hodor to sign in**, one of these two.
 
     **Kubernetes authentication**, when Hodor runs on Kubernetes. Hodor presents a token of its service account, made for the audience `openbao` alone, which OpenBao checks with the cluster:
@@ -97,7 +99,7 @@ The authority's key is named in Transit as a version's is, `tenant-<tenant>-vers
 
 ## How a key is kept
 
-Each version of a tenant's key is a Transit key of its own, named `tenant-<tenant>-version-<version>` with both identifiers, of type `ecdsa-p256` for ES256 and `rsa-2048` for RS256 and PS256. It is never rotated in OpenBao: rotating in Hodor makes a new version, and so a new key. Revoking a version in Hodor leaves its key in OpenBao, unused; deleting it is the administrator's, and Hodor's policy cannot.
+Each version of a tenant's key is a Transit key of its own, named `tenant-<tenant>-version-<version>` with both identifiers, of type `ecdsa-p256` for ES256, `rsa-2048` for RS256 and PS256, each with a key of its own, and `ed25519` for EdDSA. It is never rotated in OpenBao: rotating in Hodor makes a new version, and so a new key. Revoking a version in Hodor leaves its key in OpenBao, unused; deleting it is the administrator's, and Hodor's policy cannot.
 
 A key Hodor finds under that name and did not make, one that is exportable, has a plaintext backup, was imported or rotated, is refused. The [keys context](../architecture/contexts/keys.md#the-openbao-provider) has the rest.
 
