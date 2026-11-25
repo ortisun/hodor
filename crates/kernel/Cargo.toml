@@ -6,6 +6,7 @@ edition.workspace = true
 rust-version.workspace = true
 publish.workspace = true
 repository.workspace = true
+license.workspace = true
 
 [features]
 # Deterministic clock and random source for tests in other crates.

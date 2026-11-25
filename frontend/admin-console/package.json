@@ -1,6 +1,7 @@
 {
   "name": "hodor-admin-console",
   "private": true,
+  "license": "MIT",
   "version": "0.0.0",
   "type": "module",
   "description": "The admin console of Hodor: users, their sessions and the audit log of a tenant.",

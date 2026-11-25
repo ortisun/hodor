@@ -8,6 +8,7 @@ edition = "2024"
 rust-version = "1.98"
 publish = false
 repository = "https://github.com/ortisun/hodor"
+license = "MIT"
 
 [workspace.dependencies]
 hodor-adapters-crypto = { path = "crates/adapters-crypto" }
