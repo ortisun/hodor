@@ -97,12 +97,12 @@ Evaluation order, first decisive step wins:
 5. **Relationship-based access control**: if the resource type has a relation model, check `resource#relation@subject` by bounded graph traversal.
 6. No rule matched → `Deny` with reason `no_matching_policy`.
 
-What is built (Issue-73) is step 3, without groups and organizations: assignments to users and clients, scoped to the tenant or to one application, roles with hierarchy and composites, and `no_matching_role` as the reason of a deny. Step 4 is built (Issue-74) for the conditions a role's permission carries; conditions on policies that target a resource kind are not. Steps 1, 2 and 5 are not built ([Decision 0023](../decisions/0023-what-0.2.0-holds.md)). The exact rules are in [the authorization context](contexts/authorization.md#native-role-based-access-control).
+What is built (Issue-73) is step 3, without groups and organizations: assignments to users and clients, scoped to the tenant or to one application, roles with hierarchy and composites, and `no_matching_role` as the reason of a deny. Step 4 is built (Issue-74) for the conditions a role's permission carries; conditions on policies that target a resource kind are not. Step 2 is built (Issue-102) with entries that only allow, read before roles at every decision that names a resource ([Decision 0035](../decisions/0035-access-control-lists.md)); a deny still says `no_matching_role`. Steps 1 and 5 are not built ([Decision 0023](../decisions/0023-what-0.2.0-holds.md)). The exact rules are in [the authorization context](contexts/authorization.md#native-role-based-access-control).
 
 | Model | Implementation notes |
 |---|---|
 | Role-based access control | The role closure per (tenant, principal, scope) is cached and invalidated by `RoleAssigned`/`RoleRevoked`/group events |
-| Access control list | Indexed by `(tenant, resource_type, resource_id)` |
+| Access control list | Indexed by `(tenant, namespace, resource_type, resource_id)` and read at every decision that names a resource, never cached ([access control lists](contexts/authorization.md#access-control-lists)) |
 | Attribute-based access control | Conditions in Common Expression Language, checked and compiled when a role is defined; no input or output, bounded cost. The interpreter is `cel`, in `hodor-authorization-native` ([Decision 0025](../decisions/0025-condition-language.md)) |
 | Relationship-based access control | Zanzibar-style tuples; depth and fan-out limits; no consistency tokens in v1 |
 

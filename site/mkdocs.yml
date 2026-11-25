@@ -228,6 +228,7 @@ nav:
       - decisions/0032-webhooks.md
       - decisions/0033-api-keys.md
       - decisions/0034-token-exchange.md
+      - decisions/0035-access-control-lists.md
   - Contributing:
       - development/conventions.md
       - development/documentation-site.md
