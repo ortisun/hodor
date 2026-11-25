@@ -1633,6 +1633,7 @@ dependencies = [
  "hodor-adapters-http",
  "hodor-kernel",
  "hodor-keys",
+ "hodor-test-containers",
  "reqwest",
  "serde_json",
  "testcontainers",
@@ -1648,6 +1649,7 @@ dependencies = [
  "hodor-adapters-ldap",
  "hodor-federation",
  "hodor-kernel",
+ "hodor-test-containers",
  "ldap3",
  "testcontainers",
  "tokio",
@@ -1688,6 +1690,7 @@ dependencies = [
  "hodor-saml",
  "hodor-session",
  "hodor-tenant",
+ "hodor-test-containers",
  "hodor-webhooks",
  "serde",
  "serde_json",
@@ -1705,6 +1708,7 @@ dependencies = [
  "async-trait",
  "hodor-kernel",
  "hodor-notification",
+ "hodor-test-containers",
  "lettre",
  "reqwest",
  "serde_json",
@@ -1790,6 +1794,7 @@ dependencies = [
  "hodor-authorization",
  "hodor-authorization-opa",
  "hodor-kernel",
+ "hodor-test-containers",
  "miniz_oxide",
  "serde",
  "serde_json",
@@ -1937,6 +1942,7 @@ dependencies = [
 name = "hodor-observability"
 version = "0.3.0"
 dependencies = [
+ "hodor-test-containers",
  "opentelemetry",
  "opentelemetry-otlp",
  "opentelemetry_sdk",
@@ -1977,6 +1983,7 @@ dependencies = [
  "hodor-saml",
  "hodor-session",
  "hodor-tenant",
+ "hodor-test-containers",
  "hodor-webhooks",
  "http-body-util",
  "miniz_oxide",
@@ -2092,6 +2099,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "hodor-test-containers"
+version = "0.3.0"
+dependencies = [
+ "testcontainers",
+ "tokio",
+]
+
+[[package]]
 name = "hodor-webhooks"
 version = "0.3.0"
 dependencies = [
@@ -2128,6 +2143,7 @@ dependencies = [
  "hodor-protocol-http",
  "hodor-session",
  "hodor-tenant",
+ "hodor-test-containers",
  "hodor-webhooks",
  "http",
  "jsonwebtoken",

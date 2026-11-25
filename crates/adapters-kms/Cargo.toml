@@ -24,6 +24,7 @@ hodor-keys = { workspace = true, features = ["testing"] }
 # Only for what OpenBao's administrator does in the tests, and for paths
 # Hodor never calls, with methods its port has not.
 reqwest = { workspace = true, features = ["rustls"] }
+hodor-test-containers.workspace = true
 testcontainers.workspace = true
 tokio.workspace = true
 

@@ -30,6 +30,7 @@ hodor-adapters-http.workspace = true
 hodor-authorization = { workspace = true, features = ["testing"] }
 hodor-authorization-opa = { path = ".", features = ["testing"] }
 hodor-kernel = { workspace = true, features = ["testing"] }
+hodor-test-containers.workspace = true
 testcontainers.workspace = true
 tokio = { workspace = true, features = ["io-util"] }
 

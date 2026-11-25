@@ -134,6 +134,8 @@ const RULES: &[Rule] = &[
             "hodor-audit",
             "hodor-notification",
             "hodor-webhooks",
+            // The database its tests start comes with its `testing` feature.
+            "hodor-test-containers",
         ],
     ),
     adapter(
@@ -163,7 +165,11 @@ const RULES: &[Rule] = &[
         "hodor-adapters-policy-check",
         &["hodor-kernel", "hodor-authorization-opa"],
     ),
-    adapter("hodor-adapters-ldap", &["hodor-kernel", "hodor-federation"]),
+    // The directory its tests start comes with its `testing` feature.
+    adapter(
+        "hodor-adapters-ldap",
+        &["hodor-kernel", "hodor-federation", "hodor-test-containers"],
+    ),
     adapter(
         "hodor-adapters-smtp",
         &["hodor-kernel", "hodor-notification"],
@@ -194,6 +200,9 @@ const RULES: &[Rule] = &[
     app("hodor-cli"),
     // Test support.
     adapter("hodor-architecture-tests", &[]),
+    // How tests start containers and reach their ports; a dependency of
+    // tests only, or of the `testing` feature of an adapter.
+    adapter("hodor-test-containers", &[]),
 ];
 
 /// Libraries that domain and application crates must not depend on.
