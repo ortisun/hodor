@@ -12,8 +12,9 @@ use hodor_adapters_crypto::{
 };
 use hodor_adapters_postgres::testing::TestDatabase;
 use hodor_adapters_postgres::{
-    OutboxDispatcher, PgAccessTokenStore, PgAuditLog, PgPasswordStore, PgRoleAssignmentStore,
-    PgTenantDirectory, PgTenantRepository, PgUserRepository,
+    OutboxDispatcher, PgAccessTokenStore, PgAuditLog, PgDeliveryStore, PgEndpointStore,
+    PgPasswordStore, PgRoleAssignmentStore, PgTenantDirectory, PgTenantRepository,
+    PgUserRepository,
 };
 use hodor_audit::api::{AuditHandler, AuditService};
 use hodor_authorization::api::{AuthorizationService, Role};
@@ -21,6 +22,7 @@ use hodor_credential::api::{AccessTokenService, CredentialService, NewPassword, 
 use hodor_identity::api::{CreateUser, IdentifierKind, IdentityService, Profile, UserKind};
 use hodor_kernel::{Caller, Secret, SystemClock, TenantContext, UserId};
 use hodor_tenant::api::{CreateTenant, TenantService};
+use hodor_webhooks::api::WebhookFanOut;
 use reqwest::header::COOKIE;
 use reqwest::{Client, Method, StatusCode};
 use std::sync::Arc;
@@ -2902,6 +2904,29 @@ async fn a_service_accounts_api_key_of_one_tenant_means_nothing_in_another() {
         );
     }
 
+    // Nor make one for Acme's workload.
+    let (status, body) = world
+        .admin(
+            globex,
+            globex_token,
+            Method::POST,
+            &format!("/service-accounts/{account}/api-keys"),
+            Some(serde_json::json!({ "name": "Mine now", "scopes": ["users:read"] })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "{body}");
+    assert_eq!(body["code"], "identity.workload_not_found");
+    let (_, keys) = world
+        .admin(
+            acme,
+            &acme.administrator_token,
+            Method::GET,
+            &format!("/service-accounts/{account}/api-keys"),
+            None,
+        )
+        .await;
+    assert_eq!(keys["items"].as_array().map(Vec::len), Some(1), "{keys}");
+
     // And it still works where it belongs.
     let (status, _) = world.admin(acme, &key, Method::GET, "/users", None).await;
     assert_eq!(status, StatusCode::OK);
@@ -3330,4 +3355,193 @@ async fn one_tenants_access_control_lists_are_never_read_or_reached_from_another
         reads_document(&world, acme, &acme_client, &ana, "d-42").await,
         "ALLOW"
     );
+}
+
+/// Where both tenants' endpoints point: a development exception nothing
+/// listens on, since no delivery is sent in this suite.
+const RECEIVER: &str = "127.0.0.1:9";
+
+/// Registers an endpoint of a tenant subscribed to `session.started`, and
+/// answers its identifier and what the answer said of its secrets.
+async fn endpoint_of(world: &World, tenant: &Tenant) -> (String, serde_json::Value) {
+    let (status, made) = world
+        .admin(
+            tenant,
+            &tenant.administrator_token,
+            Method::POST,
+            "/webhook-endpoints",
+            Some(serde_json::json!({
+                "url": format!("http://{RECEIVER}/{}", tenant.slug),
+                "event_types": ["session.started"],
+            })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::CREATED, "{made}");
+    (
+        made["endpoint"]["id"].as_str().expect("id").to_owned(),
+        made["endpoint"]["secrets"].clone(),
+    )
+}
+
+/// Does the worker's part for webhooks: every waiting event goes to the
+/// audit log and is fanned out to the endpoints subscribed to it.
+async fn fan_out(world: &World) {
+    let audit = AuditService::new(
+        Arc::new(world.database.app().clone()),
+        Arc::new(PgAuditLog),
+        Arc::new(Sha256Digest),
+        Arc::new(SystemClock),
+    );
+    let dispatcher = OutboxDispatcher::new(
+        world.database.platform().clone(),
+        world.database.app().clone(),
+        vec![
+            Arc::new(AuditHandler::new(audit)),
+            Arc::new(WebhookFanOut::new(
+                Arc::new(PgEndpointStore),
+                Arc::new(PgDeliveryStore),
+                Arc::new(SystemClock),
+            )),
+        ],
+    );
+    while dispatcher
+        .dispatch_batch(100)
+        .await
+        .expect("dispatch")
+        .delivered
+        > 0
+    {}
+}
+
+#[tokio::test]
+async fn one_tenants_webhooks_and_their_deliveries_are_out_of_reach_of_another() {
+    let world = world_with(&[
+        ("HODOR_SECRET_KEYS", ROOT_KEY),
+        ("HODOR_OUTBOUND_DEVELOPMENT_HOSTS", RECEIVER),
+    ])
+    .await;
+    let (acme, globex) = (&world.acme, &world.globex);
+    let (endpoint, secrets) = endpoint_of(&world, acme).await;
+    let (theirs, _) = endpoint_of(&world, globex).await;
+
+    // The person signs in to Acme: the event is Acme's, and only Acme's
+    // endpoint gets a delivery of it, though Globex's is subscribed to the
+    // same type.
+    signed_in(&world, acme).await;
+    fan_out(&world).await;
+    let (status, listed) = world
+        .admin(
+            acme,
+            &acme.administrator_token,
+            Method::GET,
+            &format!("/webhook-deliveries?endpoint_id={endpoint}"),
+            None,
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{listed}");
+    let deliveries = listed["items"].as_array().expect("items").clone();
+    assert_eq!(deliveries.len(), 1, "{listed}");
+    assert_eq!(deliveries[0]["event_type"], "session.started");
+    let delivery = deliveries[0]["id"].as_str().expect("id").to_owned();
+    let globex_token = &globex.administrator_token;
+    let (_, theirs_listed) = world
+        .admin(
+            globex,
+            globex_token,
+            Method::GET,
+            "/webhook-deliveries",
+            None,
+        )
+        .await;
+    assert_eq!(
+        theirs_listed["items"],
+        serde_json::json!([]),
+        "{theirs_listed}"
+    );
+
+    // Globex's administrator names Acme's endpoint and Acme's delivery.
+    for (method, path, body) in [
+        (Method::GET, format!("/webhook-endpoints/{endpoint}"), None),
+        (
+            Method::PUT,
+            format!("/webhook-endpoints/{endpoint}/subscriptions"),
+            Some(serde_json::json!({ "event_types": ["identity.user_created"] })),
+        ),
+        (
+            Method::POST,
+            format!("/webhook-endpoints/{endpoint}:rotate-secret"),
+            None,
+        ),
+        (
+            Method::DELETE,
+            format!("/webhook-endpoints/{endpoint}"),
+            None,
+        ),
+        (
+            Method::POST,
+            format!("/webhook-deliveries/{delivery}:redeliver"),
+            None,
+        ),
+    ] {
+        let (status, answer) = world
+            .admin(globex, globex_token, method.clone(), &path, body)
+            .await;
+        assert_eq!(status, StatusCode::NOT_FOUND, "{method} {path}: {answer}");
+        assert!(
+            answer["code"] == "webhooks.endpoint_not_found"
+                || answer["code"] == "webhooks.delivery_not_found",
+            "{method} {path}: {answer}"
+        );
+    }
+    let (status, named) = world
+        .admin(
+            globex,
+            globex_token,
+            Method::GET,
+            &format!("/webhook-deliveries?endpoint_id={endpoint}"),
+            None,
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(named["items"], serde_json::json!([]), "{named}");
+    let (_, endpoints) = world
+        .admin(
+            globex,
+            globex_token,
+            Method::GET,
+            "/webhook-endpoints",
+            None,
+        )
+        .await;
+    let ids: Vec<&str> = endpoints["items"]
+        .as_array()
+        .expect("items")
+        .iter()
+        .filter_map(|item| item["id"].as_str())
+        .collect();
+    assert_eq!(ids, [theirs.as_str()], "only its own endpoint");
+
+    // Acme's endpoint, its secret and its delivery are as they were.
+    let (status, kept) = world
+        .admin(
+            acme,
+            &acme.administrator_token,
+            Method::GET,
+            &format!("/webhook-endpoints/{endpoint}"),
+            None,
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(kept["event_types"], serde_json::json!(["session.started"]));
+    assert_eq!(kept["secrets"], secrets);
+    let (_, still) = world
+        .admin(
+            acme,
+            &acme.administrator_token,
+            Method::GET,
+            &format!("/webhook-deliveries?endpoint_id={endpoint}"),
+            None,
+        )
+        .await;
+    assert_eq!(still["items"], listed["items"]);
 }
