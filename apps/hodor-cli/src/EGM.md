@@ -11,8 +11,8 @@ The operations tool of a Hodor installation: `main.rs`, and
 `bindings` (a resource server named by
 its audience; `bind` knows the engine names `native` and `open_policy_agent`
 through a registry of names only, since the tool never evaluates), and
-`webhooks.rs` for `hodor-cli webhook`, and `trust_domains.rs` for
-`hodor-cli trust-domain`. It parses
+`webhooks.rs` for `hodor-cli webhook`, `trust_domains.rs` for
+`hodor-cli trust-domain`, and `mesh.rs` for `hodor-cli mesh linkerd-policy`. It parses
 the command line with clap (`Cli`, `Command`), connects to PostgreSQL and calls
 the services of the domain crates directly. It applies migrations, manages
 tenants, makes the first administrator of a tenant, verifies the audit chain,
@@ -59,6 +59,7 @@ Commands, as typed, from the clap enums in `main.rs`:
 | `hodor-cli trust-domain show` | `--tenant`, `--name` | `TrustDomainService::find_by_name` (`keys.trust_domain_not_found` when none); prints `trust-domain <id>` then `described`: `name`, `source`, `bundle-endpoint`, `sequence`, `refresh-hint`, `x509-authorities`, `jwt-authorities`, `bundle-sha256` (`Sha256Digest` of the kept document, as events name it), `bundle-changed`, `fetched`, `next-fetch`, `failing-since`, `last-error`, each only when it applies |
 | `hodor-cli trust-domain replace` | `--tenant`, `--name`, and one source as for `add` | the source read first, then `find_by_name` and `TrustDomainService::replace`; prints `replaced <id>` then `described` |
 | `hodor-cli trust-domain remove` | `--tenant`, `--name` | `find_by_name`, then `TrustDomainService::remove`; prints `removed <id> <name>` |
+| `hodor-cli mesh linkerd-policy` | `--tenant`, `--application`, `--namespace` (a Kubernetes label), `--server` and `--name` (Kubernetes names; `hodor-<application>` unless given), `--output` (the file, read first as the last run) | `applications::open`, `ApplicationService::application` and `resource_server_of` (`oauth.resource_server_not_found` without one); `bound_identities`: every enabled client of an enabled application with a principal and a `linkerd_identity`; `identities_let_in`: for each principal, `IdentityService::get` (an active service account only), `GroupService::effective_groups`, `OrganizationService::organizations_of`, then `RoleService::assignments_on` for the resource server's audience and the application; `render` writes the `MeshTLSAuthentication` (`NOBODY` when no one holds a role) and the `AuthorizationPolicy` as JSON documents after a comment; `read_back` and `changes` compare with the last run; `replace` writes beside and renames. Prints `added`, `removed`, `changed`, `no service account holds a role on`, then `wrote` or `unchanged` (`mesh.rs:run`) |
 | `hodor-cli webhook event-types` | none; no tenant | `CATALOG`, one a line (`webhooks.rs:run`) |
 | `hodor-cli webhook add` | `--tenant`, `--url`, `--event` (repeatable, required), `--description`; `HODOR_SECRET_KEYS` and `HODOR_OUTBOUND_DEVELOPMENT_HOSTS` | `WebhookService::register`, the address checked by `GuardedHttpClient` as `DestinationCheck`; prints `created <id> <url>` and `secret <whsec_…>`, once |
 | `hodor-cli webhook list` | `--tenant` | `WebhookService::list`, every page; one line `<id> <url> <type>,<type>…` each |
@@ -105,8 +106,8 @@ Commands, as typed, from the clap enums in `main.rs`:
 
 Global flags of the command groups (`Command` in `main.rs`):
 
-- `tenant`, `admin`, `audit`, `provider`, `application`, `client` and
-  `resource-server` take `--database-url` /
+- `tenant`, `admin`, `audit`, `provider`, `application`, `client`,
+  `resource-server` and `mesh` take `--database-url` /
   `HODOR_DATABASE_URL`, the application role, connected with
   `Database::connect(&Secret, 2)`.
 - `trust-domain` takes `--database-url` / `HODOR_DATABASE_URL` and

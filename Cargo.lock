@@ -2021,6 +2021,7 @@ dependencies = [
  "hodor-oauth",
  "hodor-tenant",
  "hodor-webhooks",
+ "regex",
  "serde_json",
  "sqlx",
  "time",

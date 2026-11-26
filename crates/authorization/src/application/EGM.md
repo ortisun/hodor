@@ -146,6 +146,11 @@ them in one unit of work. Port `DecisionLogStore` (`ports.rs`): `settings`,
 - `assign(tenant, principal, role, scope, validity, caller)`,
   `revoke(tenant, principal, role, scope, caller) -> bool`,
   `assignments_of(tenant, principal)`.
+- `assignments_on(tenant, principals, namespace, application,
+  organizations)`: in one unit of work, the assignments of `principals`
+  in force at `clock.now()` whose role `RoleGraph::reaches` `namespace`
+  and whose scope is the tenant, `application`, or one of
+  `organizations`. Read by `hodor-cli mesh linkerd-policy`.
 
 `AccessListService` (`access_list.rs:AccessListService`), `Clone`:
 

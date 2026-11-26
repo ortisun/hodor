@@ -42,7 +42,8 @@ The specification is `docs/architecture/contexts/authorization.md`
   `roles_of`, `check`), `EvaluationService` (`bind`, `unbind`, `binding`,
   `bindings`, `evaluate`, `evaluate_batch`, `simulate`) and `RoleService`
   (`declare_permission`, `remove_permission`, `permissions`, `define_role`,
-  `remove_role`, `roles`, `role`, `assign`, `revoke`, `assignments_of`)
+  `remove_role`, `roles`, `role`, `assign`, `revoke`, `assignments_of`,
+  `assignments_on`)
   and `AccessListService` (`grant`, `remove`, `entry`, `entries`).
 - Domain events: `AuthorizationEvent` (`authorization.role_assigned`,
   `authorization.role_revoked`, `authorization.engine_bound`,

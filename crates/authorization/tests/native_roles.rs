@@ -5,8 +5,9 @@ use hodor_authorization::api::{
     Action, ApplicationReference, AssignmentScope, Attributes, AuthorizationEngine,
     AuthorizationRequest, AuthorizationService, BindingSettings, Effect, EngineId, EngineRegistry,
     EvaluationContext, EvaluationInput, EvaluationService, MATCHING_ROLE, Namespace, NativeEngine,
-    Permission, PermissionName, PolicyRevision, PolicySelection, PolicySimulator, Resource, Role,
-    RoleContents, RoleKey, RoleName, RoleService, Subject, SubjectKind, Validity,
+    OrganizationReference, Permission, PermissionName, PolicyRevision, PolicySelection,
+    PolicySimulator, Resource, Role, RoleContents, RoleKey, RoleName, RoleService, Subject,
+    SubjectKind, Validity,
 };
 use hodor_authorization::testing::{
     InMemoryEngineBindings, InMemoryNativeRoles, InMemoryRoleAssignments, NativeRolePorts,
@@ -1044,4 +1045,142 @@ async fn a_role_scoped_to_an_organization_counts_for_its_members_in_it() {
         Effect::Deny,
         "a person who left the organization"
     );
+}
+
+#[tokio::test]
+async fn the_assignments_on_a_resource_server_are_those_that_could_allow_there() {
+    let world = world();
+    world.documents().await;
+    world.declare(BILLING, &["invoice:read"]).await;
+    world
+        .define(key(BILLING, "reader"), &["invoice:read"], &[])
+        .await;
+    let support = "urn:example:support";
+    world
+        .define(key(support, "support"), &[], &[key(DOCUMENTS, "viewer")])
+        .await;
+    world.define(key(support, "lonely"), &[], &[]).await;
+    let portal = ApplicationReference::parse("portal").expect("application");
+    let intranet = ApplicationReference::parse("intranet").expect("application");
+    let north = OrganizationReference::parse("north").expect("organization");
+    let south = OrganizationReference::parse("south").expect("organization");
+    let held = |principals: Vec<Subject>, organizations: Vec<OrganizationReference>| {
+        let world = &world;
+        let portal = portal.clone();
+        async move {
+            world
+                .roles
+                .assignments_on(
+                    &world.tenant,
+                    &principals,
+                    &namespace(DOCUMENTS),
+                    &portal,
+                    &organizations,
+                )
+                .await
+                .expect("assignments")
+                .iter()
+                .map(|assignment| assignment.role().reference())
+                .collect::<Vec<_>>()
+        }
+    };
+
+    // A role of the resource server, for the tenant or this application,
+    // and a role of another one that includes one of its roles.
+    let ana = user("ana");
+    world
+        .assign(&ana, key(DOCUMENTS, "viewer"), AssignmentScope::Tenant)
+        .await;
+    let bia = user("bia");
+    world
+        .assign(
+            &bia,
+            key(DOCUMENTS, "editor"),
+            AssignmentScope::Application(portal.clone()),
+        )
+        .await;
+    let caio = user("caio");
+    world
+        .assign(&caio, key(support, "support"), AssignmentScope::Tenant)
+        .await;
+    assert_eq!(
+        held(vec![ana], vec![]).await,
+        [format!("{DOCUMENTS}#viewer")]
+    );
+    assert_eq!(
+        held(vec![bia], vec![]).await,
+        [format!("{DOCUMENTS}#editor")]
+    );
+    assert_eq!(
+        held(vec![caio], vec![]).await,
+        [format!("{support}#support")]
+    );
+
+    // A role of another resource server, a role that includes nothing of
+    // this one, and a role for another application count for nothing.
+    let dani = user("dani");
+    world
+        .assign(&dani, key(BILLING, "reader"), AssignmentScope::Tenant)
+        .await;
+    world
+        .assign(&dani, key(support, "lonely"), AssignmentScope::Tenant)
+        .await;
+    world
+        .assign(
+            &dani,
+            key(DOCUMENTS, "viewer"),
+            AssignmentScope::Application(intranet),
+        )
+        .await;
+    assert!(held(vec![dani.clone()], vec![]).await.is_empty());
+
+    // For an organization, only when the principal is a member of it.
+    world
+        .assign(
+            &dani,
+            key(DOCUMENTS, "viewer"),
+            AssignmentScope::Organization(north.clone()),
+        )
+        .await;
+    assert!(held(vec![dani.clone()], vec![south]).await.is_empty());
+    assert_eq!(
+        held(vec![dani], vec![north]).await,
+        [format!("{DOCUMENTS}#viewer")]
+    );
+
+    // Through a group the principal is in.
+    let readers = Subject::new(SubjectKind::Group, "readers").expect("group");
+    world
+        .assign(&readers, key(DOCUMENTS, "viewer"), AssignmentScope::Tenant)
+        .await;
+    let eva = user("eva");
+    assert!(held(vec![eva.clone()], vec![]).await.is_empty());
+    assert_eq!(
+        held(vec![eva, readers], vec![]).await,
+        [format!("{DOCUMENTS}#viewer")]
+    );
+
+    // Only while it is in force.
+    let now = world.clock.now();
+    let fabio = user("fabio");
+    world
+        .roles
+        .assign(
+            &world.tenant,
+            fabio.clone(),
+            key(DOCUMENTS, "viewer"),
+            AssignmentScope::Tenant,
+            Validity {
+                from: Some(now + time::Duration::hours(1)),
+                until: Some(now + time::Duration::hours(2)),
+            },
+            Caller::system(),
+        )
+        .await
+        .expect("assign");
+    assert!(held(vec![fabio.clone()], vec![]).await.is_empty(), "before");
+    world.clock.advance(time::Duration::hours(1));
+    assert_eq!(held(vec![fabio.clone()], vec![]).await.len(), 1, "from");
+    world.clock.advance(time::Duration::hours(1));
+    assert!(held(vec![fabio], vec![]).await.is_empty(), "at the end");
 }

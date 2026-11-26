@@ -445,6 +445,27 @@ impl RoleGraph {
             .collect()
     }
 
+    /// Whether holding `key` is holding a role of `namespace`: `key`
+    /// itself, or a role it includes as far as inclusion goes, belongs to
+    /// it. A role the graph does not have includes nothing.
+    #[must_use]
+    pub fn reaches(&self, key: &RoleKey, namespace: &Namespace) -> bool {
+        let mut pending = vec![key];
+        let mut seen = BTreeSet::new();
+        while let Some(next) = pending.pop() {
+            if !seen.insert(next) {
+                continue;
+            }
+            if &next.namespace == namespace {
+                return true;
+            }
+            if let Some(role) = self.roles.get(next) {
+                pending.extend(role.contents.includes.iter());
+            }
+        }
+        false
+    }
+
     /// Checks that `candidate` may replace or join the graph: what it
     /// includes exists, it holds only declared permissions of its
     /// namespace, and no cycle and no chain deeper than ten roles comes of
@@ -871,6 +892,29 @@ mod tests {
             )
             .is_err()
         );
+    }
+
+    #[test]
+    fn a_role_reaches_the_namespaces_of_what_it_includes() {
+        let viewer = role(DOCS, "viewer", &[], &[]);
+        let editor = role(DOCS, "editor", &[], &[key(DOCS, "viewer")]);
+        let reader = role(BILLING, "reader", &[], &[]);
+        let support = role(
+            "urn:example:support",
+            "support",
+            &[],
+            &[key(DOCS, "editor"), key(BILLING, "reader")],
+        );
+        let lonely = role("urn:example:support", "lonely", &[], &[]);
+        let graph = RoleGraph::new([viewer, editor, reader, support, lonely]);
+        assert!(graph.reaches(&key(DOCS, "viewer"), &ns(DOCS)));
+        assert!(graph.reaches(&key(DOCS, "editor"), &ns(DOCS)));
+        assert!(!graph.reaches(&key(DOCS, "editor"), &ns(BILLING)));
+        let composite = key("urn:example:support", "support");
+        assert!(graph.reaches(&composite, &ns(DOCS)));
+        assert!(graph.reaches(&composite, &ns(BILLING)));
+        assert!(!graph.reaches(&key("urn:example:support", "lonely"), &ns(DOCS)));
+        assert!(!graph.reaches(&key(BILLING, "absent"), &ns(DOCS)));
     }
 
     #[test]
