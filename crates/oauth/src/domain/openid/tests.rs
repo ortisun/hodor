@@ -406,6 +406,30 @@ fn every_bad_access_token_is_refused_for_its_own_reason() {
     );
 }
 
+/// A person with every standard claim.
+pub(crate) fn every_claim() -> StandardClaims {
+    StandardClaims {
+        given_name: Some("Ana".to_owned()),
+        family_name: Some("Lima".to_owned()),
+        middle_name: Some("Maria".to_owned()),
+        nickname: Some("Aninha".to_owned()),
+        profile: Some("https://example.com/ana".to_owned()),
+        picture: Some("https://example.com/ana.png".to_owned()),
+        website: Some("https://ana.example.org".to_owned()),
+        gender: Some("female".to_owned()),
+        birthdate: Some("1990-04-12".to_owned()),
+        zoneinfo: Some("America/Sao_Paulo".to_owned()),
+        phone_number: Some("+5511912345678".to_owned()),
+        phone_number_verified: true,
+        address: Some(PostalAddress {
+            street_address: Some("Rua Augusta, 100".to_owned()),
+            locality: Some("São Paulo".to_owned()),
+            country: Some("BR".to_owned()),
+            ..PostalAddress::default()
+        }),
+    }
+}
+
 #[test]
 fn userinfo_answers_only_the_claims_of_the_token_s_scopes() {
     let user = UserId::generate();
@@ -415,6 +439,7 @@ fn userinfo_answers_only_the_claims_of_the_token_s_scopes() {
         locale: Some("pt-BR".to_owned()),
         updated_at: Some(now()),
         email: Some(("ana@example.com".to_owned(), true)),
+        claims: every_claim(),
         groups: vec![GroupId::generate()],
     };
     let scopes =
@@ -437,14 +462,43 @@ fn userinfo_answers_only_the_claims_of_the_token_s_scopes() {
             "sub": user.to_string(),
             "name": "Ana Lima",
             "preferred_username": "ana",
+            "given_name": "Ana",
+            "family_name": "Lima",
+            "middle_name": "Maria",
+            "nickname": "Aninha",
+            "profile": "https://example.com/ana",
+            "picture": "https://example.com/ana.png",
+            "website": "https://ana.example.org",
+            "gender": "female",
+            "birthdate": "1990-04-12",
+            "zoneinfo": "America/Sao_Paulo",
             "locale": "pt-BR",
             "updated_at": now().unix_timestamp(),
         })
     );
     assert_eq!(
+        userinfo_claims(&user.to_string(), &scopes(&["openid", "address"]), &person),
+        json!({
+            "sub": user.to_string(),
+            "address": {
+                "street_address": "Rua Augusta, 100",
+                "locality": "São Paulo",
+                "country": "BR",
+            },
+        })
+    );
+    assert_eq!(
+        userinfo_claims(&user.to_string(), &scopes(&["openid", "phone"]), &person),
+        json!({
+            "sub": user.to_string(),
+            "phone_number": "+5511912345678",
+            "phone_number_verified": true,
+        })
+    );
+    assert_eq!(
         userinfo_claims(
             &user.to_string(),
-            &scopes(&["openid", "profile", "email"]),
+            &scopes(&["openid", "profile", "email", "address", "phone"]),
             &PersonClaims::default()
         ),
         json!({"sub": user.to_string()}),
@@ -489,6 +543,28 @@ fn discovery_names_only_what_is_built() {
         document["response_modes_supported"],
         json!(["query", "form_post"])
     );
+    assert_eq!(
+        document["scopes_supported"],
+        json!(["openid", "profile", "email", "address", "phone", "groups"])
+    );
+    let claims = document["claims_supported"].as_array().expect("a list");
+    for claim in [
+        "given_name",
+        "family_name",
+        "middle_name",
+        "nickname",
+        "profile",
+        "picture",
+        "website",
+        "gender",
+        "birthdate",
+        "zoneinfo",
+        "address",
+        "phone_number",
+        "phone_number_verified",
+    ] {
+        assert!(claims.contains(&json!(claim)), "{claim} is supported");
+    }
     assert_eq!(
         document["subject_types_supported"],
         json!(["public", "pairwise"])
@@ -588,6 +664,7 @@ fn userinfo_answers_every_group_however_many() {
         locale: None,
         updated_at: None,
         email: None,
+        claims: StandardClaims::default(),
         groups: (0..150).map(|_| GroupId::generate()).collect(),
     };
     let claims = userinfo_claims(

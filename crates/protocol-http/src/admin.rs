@@ -14,6 +14,7 @@
 //! request that is refused learns nothing about what it asked for, which
 //! is why bodies and queries are read only after the check.
 
+use crate::claims::ClaimsBody;
 use crate::interaction::{
     CSRF_HEADER, SESSION_COOKIE, cookie, csrf_token, refuse_other_origins, same,
 };
@@ -31,9 +32,9 @@ use hodor_authentication::api::FactorService;
 use hodor_authorization::api::{AuthorizationService, DecisionLog, Permission};
 use hodor_credential::api::{AccessTokenService, ApiKey, ApiKeyService, looks_like_api_key};
 use hodor_federation::api::{
-    ChangeProvider, CreateProvider, DirectorySettings, FederationService, IdentityProvider,
-    ProviderId, ProviderKind, ProviderSettings, ProviderStatus, SamlSettings, callback_address,
-    saml_metadata_address,
+    ChangeProvider, ClaimAttributes, CreateProvider, DirectorySettings, FederationService,
+    IdentityProvider, ProviderId, ProviderKind, ProviderSettings, ProviderStatus, SamlSettings,
+    callback_address, saml_metadata_address,
 };
 use hodor_identity::api::{CreateUser, IdentifierKind, IdentityService, Profile, User, UserKind};
 use hodor_kernel::{
@@ -79,6 +80,7 @@ pub const ADMIN_OPERATIONS: &[(&str, &str, Permission)] = &[
     ("GET", "/users", Permission::UsersRead),
     ("GET", "/users/{user_id}", Permission::UsersRead),
     ("POST", "/users/{user_id}:suspend", Permission::UsersWrite),
+    ("PUT", "/users/{user_id}/claims", Permission::UsersWrite),
     ("GET", "/users/{user_id}/sessions", Permission::SessionsRead),
     ("GET", "/users/{user_id}/consents", Permission::UsersRead),
     (
@@ -762,6 +764,7 @@ fn shared_routes() -> Router<Shared> {
         // `POST /users/{user_id}:suspend` arrives here as well: the action
         // is part of the last segment.
         .route("/users/{user}", get(get_user).post(user_action))
+        .route("/users/{user}/claims", put(replace_user_claims))
         .route("/users/{user}/sessions", get(list_user_sessions))
         .route("/users/{user}/consents", get(list_user_consents))
         .route(
@@ -1386,6 +1389,7 @@ struct UserBody {
     display_name: Option<String>,
     locale: Option<String>,
     identifiers: Vec<IdentifierBody>,
+    claims: ClaimsBody,
     created_at: String,
     updated_at: String,
 }
@@ -1411,6 +1415,7 @@ impl From<&User> for UserBody {
                     primary: identifier.primary,
                 })
                 .collect(),
+            claims: ClaimsBody::of(&state.claims, state.kind == UserKind::Human),
             created_at: written(state.created_at),
             updated_at: written(state.updated_at),
         }
@@ -1489,6 +1494,7 @@ impl<T> From<Page<T>> for PageBody<T> {
 #[derive(Deserialize)]
 struct NewUserBody {
     email: String,
+    username: Option<String>,
     display_name: Option<String>,
     locale: Option<String>,
 }
@@ -1563,9 +1569,14 @@ async fn create_user(
         async {
             let caller = authorize(&state, &tenant, &headers, "POST", "/users").await?;
             let new: NewUserBody = body(&bytes)?;
+            let mut identifiers = vec![(IdentifierKind::Email, new.email)];
+            identifiers.extend(
+                new.username
+                    .map(|username| (IdentifierKind::Username, username)),
+            );
             let command = CreateUser {
                 kind: UserKind::Human,
-                identifiers: vec![(IdentifierKind::Email, new.email)],
+                identifiers,
                 profile: Profile {
                     display_name: new.display_name,
                     locale: new.locale,
@@ -1615,6 +1626,31 @@ async fn get_user(
             authorize(&state, &tenant, &headers, "GET", "/users/{user_id}").await?;
             let id: UserId = parameter(&parameters, "user").ok_or_else(user_not_found)?;
             let user = state.identity.get(&tenant, id).await.map_err(failed)?;
+            Ok(Json(UserBody::from(&user)).into_response())
+        }
+        .await,
+    )
+}
+
+/// `PUT /users/{user_id}/claims`: replaces a person's standard claims.
+async fn replace_user_claims(
+    State(state): State<Shared>,
+    Extension(tenant): Extension<TenantContext>,
+    headers: HeaderMap,
+    parameters: RawPathParams,
+    bytes: Bytes,
+) -> Response {
+    respond(
+        async {
+            let caller =
+                authorize(&state, &tenant, &headers, "PUT", "/users/{user_id}/claims").await?;
+            let id: UserId = parameter(&parameters, "user").ok_or_else(user_not_found)?;
+            let claims: ClaimsBody = body(&bytes)?;
+            let user = state
+                .identity
+                .change_claims(&tenant, id, claims.into_claims(), caller)
+                .await
+                .map_err(failed)?;
             Ok(Json(UserBody::from(&user)).into_response())
         }
         .await,
@@ -1880,12 +1916,14 @@ fn provider_body(provider: &IdentityProvider, public_url: &str, slug: &str) -> P
                 subject_attribute: directory.subject_attribute.clone(),
                 email_attribute: directory.email_attribute.clone(),
                 name_attribute: directory.name_attribute.clone(),
+                claim_attributes: directory.claim_attributes.clone(),
             }),
         saml: state.settings.saml.as_ref().map(|saml| SamlBody {
             single_sign_on_address: saml.single_sign_on_address.clone(),
             certificate: saml.certificate.clone(),
             email_attribute: saml.email_attribute.clone(),
             name_attribute: saml.name_attribute.clone(),
+            claim_attributes: saml.claim_attributes.clone(),
         }),
         metadata_address: (state.kind == ProviderKind::Saml)
             .then(|| saml_metadata_address(public_url, slug, state.alias.as_str())),
@@ -1902,6 +1940,7 @@ struct DirectoryBody {
     subject_attribute: String,
     email_attribute: String,
     name_attribute: String,
+    claim_attributes: ClaimAttributes,
 }
 
 /// A directory's settings as given: what is left out is the usual, or,
@@ -1914,6 +1953,7 @@ struct DirectoryInput {
     subject_attribute: Option<String>,
     email_attribute: Option<String>,
     name_attribute: Option<String>,
+    claim_attributes: Option<ClaimAttributes>,
 }
 
 impl DirectoryInput {
@@ -1925,6 +1965,7 @@ impl DirectoryInput {
             subject_attribute: self.subject_attribute.unwrap_or(on.subject_attribute),
             email_attribute: self.email_attribute.unwrap_or(on.email_attribute),
             name_attribute: self.name_attribute.unwrap_or(on.name_attribute),
+            claim_attributes: self.claim_attributes.unwrap_or(on.claim_attributes),
         }
     }
 }
@@ -1936,6 +1977,7 @@ struct SamlBody {
     certificate: String,
     email_attribute: String,
     name_attribute: String,
+    claim_attributes: ClaimAttributes,
 }
 
 /// A SAML identity provider's settings as given: what is left out is the
@@ -1947,6 +1989,7 @@ struct SamlInput {
     certificate: Option<String>,
     email_attribute: Option<String>,
     name_attribute: Option<String>,
+    claim_attributes: Option<ClaimAttributes>,
 }
 
 impl SamlInput {
@@ -1959,6 +2002,7 @@ impl SamlInput {
             certificate: self.certificate.unwrap_or(on.certificate),
             email_attribute: self.email_attribute.unwrap_or(on.email_attribute),
             name_attribute: self.name_attribute.unwrap_or(on.name_attribute),
+            claim_attributes: self.claim_attributes.unwrap_or(on.claim_attributes),
         }
     }
 }

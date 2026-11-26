@@ -25,9 +25,11 @@ secret, and every token and answer naming the person as the client's
 sector knows them; Issue-106: a client of a service account bound to
 one SPIFFE identifier, proving who it is with a JWT-SVID (`spiffe_jwt`,
 draft-ietf-oauth-spiffe-client-auth-03) checked against its trust domain's
-bundle, read from the keys context; and Issue-120: request objects by
+bundle, read from the keys context; Issue-120: request objects by
 value at the authorization endpoint, checked with the client's keys or,
-for a client that chose `none`, unsigned. Storage,
+for a client that chose `none`, unsigned; and Issue-123: a person's
+standard claims at UserInfo, under the scopes `profile`, `address` and
+`phone`, and as attributes a claim mapper reads, their names reserved. Storage,
 randomness, hashing, signature checking and time are reached through ports
 and kernel traits.
 

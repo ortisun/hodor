@@ -22,7 +22,7 @@ tenant and records its events in it.
 | `AuthorizationCodeStore` | `insert` (`oauth.grant_not_found`), `find` (by hash), `redeem` (only if not redeemed; answers whether this call redeemed it) |
 | `ClientAssertionStore` | `remember(client, jti, expires_at)` (`oauth.client_not_found`; answers whether this call was the first) |
 | `ClaimMapperStore` | `lock_client` (locks the client's row in the unit of work; answers whether there is one), `insert` (`oauth.client_not_found`, `oauth.claim_mapper_name_taken`), `update` (version checked, `oauth.claim_mapper_modified_concurrently`), `delete` (answers whether there was one), `get(client, id)`, `list_for_client` (by claim name) |
-| `PersonClaimSources` | `attributes(tenant, user)` (none for an unknown user), `organization_name(tenant, organization)` |
+| `PersonClaimSources` | `attributes(tenant, user)` (none for an unknown user; the person's standard claims among them), `organization_name(tenant, organization)` |
 
 ### Service (`service.rs`)
 
@@ -341,7 +341,8 @@ verifier, identity, register, memberships, mapping, digest, clock })`:
   person is the one of the token's grant, through
   `AccessTokenRegister::person_in_force`, never read from its `sub`.
   Answers `userinfo_claims` for the token's scopes, with the token's own
-  `sub`, and the claims of the client's mappers, as
+  `sub` and the person's standard claims from the snapshot, and the claims
+  of the client's mappers, as
   `UserInfoAnswer::Json`; when the token's client, read through
   `ClientStore::get` in the token's tenant, has a
   `ClientSettings::userinfo_algorithm`, as `UserInfoAnswer::Signed`: the

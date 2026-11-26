@@ -201,6 +201,7 @@ impl PersonClaimSources for ServerClaimSources {
                     )
                 }),
             locale: profile.locale.clone(),
+            claims: user.snapshot().claims.clone(),
         })
     }
 

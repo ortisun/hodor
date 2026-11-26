@@ -14,7 +14,8 @@ use crate::domain::verification::{
 };
 use hodor_credential::api::{CredentialService, NewPassword, PasswordRules, check_acceptable};
 use hodor_identity::api::{
-    CreateUser, IdentifierKind, IdentityService, NormalizedIdentifier, Profile, UserKind,
+    CreateUser, IdentifierKind, IdentityService, NormalizedIdentifier, Profile, StandardClaims,
+    User, UserKind,
 };
 use hodor_kernel::{
     Caller, Clock, Digest, DomainError, ErrorKind, EventEnvelope, EventMetadata, RandomSource,
@@ -309,6 +310,41 @@ impl AccountService {
         )?;
         uow.commit().await?;
         Ok(user.id())
+    }
+
+    /// The signed-in person, for the account page to show their profile.
+    ///
+    /// # Errors
+    ///
+    /// Returns `NotFound` if the tenant has no such user.
+    pub async fn own_profile(
+        &self,
+        tenant: &TenantContext,
+        user: UserId,
+    ) -> Result<User, DomainError> {
+        self.identity.get(tenant, user).await
+    }
+
+    /// Replaces the signed-in person's display name and standard claims,
+    /// as the person gives them on the account page. See
+    /// `docs/api/interaction-api.md`, "The person's profile".
+    ///
+    /// # Errors
+    ///
+    /// What the identity context refuses: `Invalid` with
+    /// `identity.display_name_invalid` or `identity.claim_invalid`, and
+    /// `Conflict` when the person was changed at the same moment.
+    pub async fn change_own_profile(
+        &self,
+        tenant: &TenantContext,
+        user: UserId,
+        display_name: Option<String>,
+        claims: StandardClaims,
+        caller: Caller,
+    ) -> Result<User, DomainError> {
+        self.identity
+            .change_own_profile(tenant, user, display_name, claims, caller)
+            .await
     }
 
     /// Asks to choose a new password. If the address belongs to a user who

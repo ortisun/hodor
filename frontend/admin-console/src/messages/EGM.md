@@ -36,7 +36,10 @@ read it from a `Messages` object.
   `trustDomainSources`, `trustDomainSourceHints`, `bundleFailures`,
   `valueInvalid` and the list
   `levelFriction`; text-building functions such as `noAccess`, `sessionUntil`,
-  `userCreated`, `typeToConfirm` and `requestIdentifier`.
+  `userCreated`, `typeToConfirm` and `requestIdentifier`. The page of a user has
+  `standardClaims`, `noStandardClaims` and `claimLabel(claim)`, the label of
+  a standard claim or of a part of the address (`address.locality` and the
+  others), the claim's own name when unknown.
 - `pt-BR.ts:ptBR` - the Brazilian Portuguese copy, `locale: "pt-BR"`, declared
   as `Messages`.
 

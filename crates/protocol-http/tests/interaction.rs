@@ -1379,6 +1379,71 @@ async fn changing_requests_need_the_session_csrf_token_and_the_same_origin() {
 }
 
 #[tokio::test]
+async fn a_person_reads_and_replaces_their_own_profile() {
+    let world = world().await;
+    let mut browser = signed_in_browser(&world).await;
+    let read = browser
+        .send(&world, Method::GET, "/t/acme/interaction/profile", None)
+        .await;
+    assert_eq!(read.status, StatusCode::OK);
+    assert_eq!(read.body["claims"]["phone_number_verified"], false);
+
+    let replaced = browser
+        .send(
+            &world,
+            Method::PUT,
+            "/t/acme/interaction/profile",
+            Some(serde_json::json!({
+            "display_name": "Ana Lima",
+            "claims": {
+                "given_name": "Ana",
+                "phone_number": "+351 912 345 678",
+                "phone_number_verified": true,
+                "address": { "locality": "Lisboa", "country": "PT" },
+            },
+            })),
+        )
+        .await;
+    assert_eq!(replaced.status, StatusCode::OK, "{}", replaced.body);
+    assert_eq!(replaced.body["display_name"], "Ana Lima");
+    assert_eq!(replaced.body["claims"]["phone_number"], "+351912345678");
+    assert_eq!(
+        replaced.body["claims"]["phone_number_verified"], false,
+        "a person cannot vouch for their own number"
+    );
+    assert_eq!(replaced.body["claims"]["address"]["locality"], "Lisboa");
+    let again = browser
+        .send(&world, Method::GET, "/t/acme/interaction/profile", None)
+        .await;
+    assert_eq!(again.body, replaced.body);
+
+    let broken = browser
+        .send(
+            &world,
+            Method::PUT,
+            "/t/acme/interaction/profile",
+            Some(serde_json::json!({ "claims": { "website": "not an address" } })),
+        )
+        .await;
+    assert_eq!(broken.status, StatusCode::UNPROCESSABLE_ENTITY);
+    assert_eq!(broken.code(), "identity.claim_invalid");
+
+    // A change needs the session's CSRF token.
+    let mut forged = browser.clone();
+    forged.csrf_token = None;
+    let refused = forged
+        .send(
+            &world,
+            Method::PUT,
+            "/t/acme/interaction/profile",
+            Some(serde_json::json!({ "display_name": "Mallory" })),
+        )
+        .await;
+    assert_eq!(refused.status, StatusCode::FORBIDDEN);
+    assert_eq!(refused.code(), "request.csrf_token_invalid");
+}
+
+#[tokio::test]
 async fn the_routes_of_a_signed_in_person_refuse_everyone_else_in_one_way() {
     let world = world().await;
     let mut nobody = Browser::default();
@@ -1387,6 +1452,8 @@ async fn the_routes_of_a_signed_in_person_refuse_everyone_else_in_one_way() {
         (Method::DELETE, "session"),
         (Method::GET, "sessions"),
         (Method::DELETE, "sessions"),
+        (Method::GET, "profile"),
+        (Method::PUT, "profile"),
         (
             Method::DELETE,
             "sessions/0193f1c9-0000-7000-8000-000000000000",

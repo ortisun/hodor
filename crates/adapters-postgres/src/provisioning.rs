@@ -83,8 +83,8 @@ impl Column for UserAttribute {
             Self::ExternalId => "p.external_id",
             Self::UserName => USER_NAME,
             Self::DisplayName => "u.display_name",
-            Self::GivenName => "p.given_name",
-            Self::FamilyName => "p.family_name",
+            Self::GivenName => "u.given_name",
+            Self::FamilyName => "u.family_name",
             Self::Active => "(u.status = 'active')",
             Self::Created => "u.created_at",
             Self::LastModified => "GREATEST(u.updated_at, p.updated_at)",
@@ -364,7 +364,7 @@ impl ProvisionedUserRepository for PgProvisionedUserRepository {
     ) -> Result<Option<StoredUserSupplement>, DomainError> {
         let tenant = uow.tenant().tenant_id();
         let row = sqlx::query(
-            "SELECT external_id, name_formatted, given_name, family_name, employee_number,
+            "SELECT external_id, name_formatted, employee_number,
                     cost_center, organization, division, department, manager_id,
                     email_types, created_at, updated_at, removed_at
              FROM provisioning.user_attribute WHERE tenant_id = $1 AND user_id = $2",
@@ -381,8 +381,6 @@ impl ProvisionedUserRepository for PgProvisionedUserRepository {
                 supplement: UserSupplement {
                     external_id: text("external_id")?,
                     formatted_name: text("name_formatted")?,
-                    given_name: text("given_name")?,
-                    family_name: text("family_name")?,
                     employee_number: text("employee_number")?,
                     cost_center: text("cost_center")?,
                     organization: text("organization")?,
@@ -411,15 +409,13 @@ impl ProvisionedUserRepository for PgProvisionedUserRepository {
         let supplement = &stored.supplement;
         sqlx::query(
             "INSERT INTO provisioning.user_attribute
-                 (tenant_id, user_id, external_id, name_formatted, given_name, family_name,
+                 (tenant_id, user_id, external_id, name_formatted,
                   employee_number, cost_center, organization, division, department, manager_id,
                   created_at, updated_at, email_types, removed_at)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
              ON CONFLICT (tenant_id, user_id) DO UPDATE SET
                  external_id = EXCLUDED.external_id,
                  name_formatted = EXCLUDED.name_formatted,
-                 given_name = EXCLUDED.given_name,
-                 family_name = EXCLUDED.family_name,
                  employee_number = EXCLUDED.employee_number,
                  cost_center = EXCLUDED.cost_center,
                  organization = EXCLUDED.organization,
@@ -435,8 +431,6 @@ impl ProvisionedUserRepository for PgProvisionedUserRepository {
         .bind(stored.user_id.as_uuid())
         .bind(supplement.external_id.as_deref())
         .bind(supplement.formatted_name.as_deref())
-        .bind(supplement.given_name.as_deref())
-        .bind(supplement.family_name.as_deref())
         .bind(supplement.employee_number.as_deref())
         .bind(supplement.cost_center.as_deref())
         .bind(supplement.organization.as_deref())

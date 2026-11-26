@@ -3,6 +3,7 @@
 use crate::application::groups::leave_every_group;
 use crate::application::organizations::leave_every_organization;
 use crate::application::ports::{GroupRepository, OrganizationRepository, UserRepository};
+use crate::domain::claims::StandardClaims;
 use crate::domain::event::UserEvent;
 use crate::domain::identifier::{IdentifierId, IdentifierKind, NormalizedIdentifier};
 use crate::domain::user::{Profile, User, UserKind};
@@ -109,6 +110,27 @@ impl IdentityService {
         verified: bool,
         caller: Caller,
     ) -> Result<User, DomainError> {
+        self.create_with_claims_in(uow, command, StandardClaims::default(), verified, caller)
+            .await
+    }
+
+    /// As [`IdentityService::create_in`], and gives the person `claims`, in
+    /// the same unit of work: for an identity provider at a first sign-in,
+    /// and for SCIM. No claims give the same events as
+    /// [`IdentityService::create_in`]; some add `identity.profile_changed`.
+    ///
+    /// # Errors
+    ///
+    /// As [`IdentityService::create_in`], and `Invalid` with
+    /// `identity.claim_invalid` if a claim breaks its rule.
+    pub async fn create_with_claims_in(
+        &self,
+        uow: &mut dyn UnitOfWork,
+        command: CreateUser,
+        claims: StandardClaims,
+        verified: bool,
+        caller: Caller,
+    ) -> Result<User, DomainError> {
         let identifiers = command
             .identifiers
             .iter()
@@ -133,6 +155,9 @@ impl IdentityService {
             for id in verifiable {
                 events.extend(user.verify_identifier(id, now)?);
             }
+        }
+        if !claims.is_empty() {
+            events.extend(user.change_claims(claims, now)?);
         }
         self.users.insert(uow, &user).await?;
         self.record(uow, caller, &events)?;
@@ -479,6 +504,69 @@ impl IdentityService {
         let now = self.clock.now();
         self.change(tenant, id, caller, |user| {
             Ok(vec![user.change_profile(profile, now)?])
+        })
+        .await
+    }
+
+    /// Replaces a person's standard claims. Claims that are what the person
+    /// already has change nothing and record nothing.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Invalid` with `identity.claim_invalid` if a claim breaks its
+    /// rule, or with `identity.workload_claims_refused` for a service
+    /// account or an agent; `Conflict` if the user is deleted or was
+    /// changed at the same moment.
+    pub async fn change_claims(
+        &self,
+        tenant: &TenantContext,
+        id: UserId,
+        claims: StandardClaims,
+        caller: Caller,
+    ) -> Result<User, DomainError> {
+        let now = self.clock.now();
+        self.change(tenant, id, caller, |user| {
+            Ok(user.change_claims(claims, now)?.into_iter().collect())
+        })
+        .await
+    }
+
+    /// Replaces a person's display name and standard claims together, as
+    /// the person does on the account page: one unit of work, one event at
+    /// most. The locale is kept, and the person cannot vouch for a
+    /// telephone number ([`User::change_own_claims`]).
+    ///
+    /// # Errors
+    ///
+    /// As [`IdentityService::change_profile`] and
+    /// [`IdentityService::change_claims`].
+    pub async fn change_own_profile(
+        &self,
+        tenant: &TenantContext,
+        id: UserId,
+        display_name: Option<String>,
+        claims: StandardClaims,
+        caller: Caller,
+    ) -> Result<User, DomainError> {
+        let now = self.clock.now();
+        self.change(tenant, id, caller, |user| {
+            let before = user.snapshot().profile.clone();
+            let wanted = display_name
+                .as_deref()
+                .map(str::trim)
+                .filter(|name| !name.is_empty());
+            let mut changed = user.change_own_claims(claims, now)?;
+            if before.display_name.as_deref() != wanted {
+                let event = user.change_profile(
+                    Profile {
+                        display_name,
+                        locale: before.locale,
+                    },
+                    now,
+                )?;
+                changed.get_or_insert(event);
+            }
+            Ok(changed.into_iter().collect())
         })
         .await
     }

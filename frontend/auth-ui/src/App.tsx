@@ -7,6 +7,7 @@ import { ComingBackPage } from "./pages/ComingBackPage";
 import { AcceptInvitationPage } from "./pages/AcceptInvitationPage";
 import { ConsentPage } from "./pages/ConsentPage";
 import { FinishPage } from "./pages/FinishPage";
+import { ProfilePage } from "./pages/ProfilePage";
 import { SecurityPage } from "./pages/SecurityPage";
 import { SignInLinkPage } from "./pages/SignInLinkPage";
 import { SignInPage } from "./pages/SignInPage";
@@ -83,6 +84,8 @@ export function App({
       return <SignOutPage {...page} />;
     case "security":
       return <SecurityPage {...page} reauthenticate={reauthenticate} />;
+    case "profile":
+      return <ProfilePage {...page} />;
     case "consent":
       return <ConsentPage {...page} />;
     case "accept-invitation":

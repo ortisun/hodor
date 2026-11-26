@@ -10,6 +10,7 @@ mod mesh;
 mod policies;
 mod roles;
 mod trust_domains;
+mod users;
 mod webhooks;
 mod workloads;
 
@@ -194,6 +195,20 @@ enum Command {
         database_url: Option<String>,
         #[command(subcommand)]
         command: memberships::GroupCommand,
+    },
+
+    /// Manage a person's standard claims.
+    User {
+        /// Connection URL of the application role.
+        #[arg(
+            long,
+            env = "HODOR_DATABASE_URL",
+            hide_env_values = true,
+            global = true
+        )]
+        database_url: Option<String>,
+        #[command(subcommand)]
+        command: users::UserCommand,
     },
 
     /// Manage a tenant's organizations, their units and members, and invite
@@ -680,6 +695,12 @@ enum ProviderCommand {
         /// addresses the organization itself hands out.
         #[arg(long)]
         trust_email: bool,
+        /// For a directory or a SAML provider: the attribute that gives a
+        /// standard claim of a person it creates, as `claim=attribute`,
+        /// such as `given_name=givenName` or `address.locality=l`. May be
+        /// given once per claim.
+        #[arg(long = "claim-attribute")]
+        claim_attributes: Vec<String>,
     },
     /// List a tenant's providers.
     List {
@@ -1447,8 +1468,19 @@ async fn run_provider(
             name_attribute,
             sign_on_address,
             certificate,
+            claim_attributes,
             ..
         } => {
+            let mut claims = hodor_federation::api::ClaimAttributes::new();
+            for pair in claim_attributes {
+                let Some((claim, attribute)) = pair.split_once('=') else {
+                    return Err(DomainError::invalid(
+                        "federation.claim_attribute_invalid",
+                        "a claim attribute is written claim=attribute",
+                    ));
+                };
+                claims.insert(claim.trim().to_owned(), attribute.trim().to_owned());
+            }
             let kind = match kind {
                 ProviderKindArg::OpenidConnect => ProviderKind::OpenIdConnect,
                 ProviderKindArg::Github => ProviderKind::GitHub,
@@ -1465,6 +1497,7 @@ async fn run_provider(
                     subject_attribute,
                     email_attribute: email_attribute.clone().unwrap_or_else(|| "mail".to_owned()),
                     name_attribute: name_attribute.clone().unwrap_or_else(|| "cn".to_owned()),
+                    claim_attributes: claims.clone(),
                 }),
             };
             // The same for a SAML identity provider's settings.
@@ -1481,9 +1514,16 @@ async fn run_provider(
                     if let Some(name) = name_attribute {
                         settings.name_attribute = name;
                     }
+                    settings.claim_attributes = claims.clone();
                     Some(settings)
                 }
             };
+            if !claims.is_empty() && directory.is_none() && saml.is_none() {
+                return Err(DomainError::invalid(
+                    "federation.claim_attribute_invalid",
+                    "claim attributes are for a directory or a SAML provider",
+                ));
+            }
             // A SAML identity provider is not proved anything with a secret.
             let client_secret = if kind == ProviderKind::Saml {
                 String::new()
@@ -2222,6 +2262,13 @@ async fn main() -> Result<(), Box<dyn Error>> {
         } => {
             let database = connect(database_url).await?;
             print(memberships::run_group(&database, command).await)?;
+        }
+        Command::User {
+            database_url,
+            command,
+        } => {
+            let database = connect(database_url).await?;
+            print(users::run(&database, command).await)?;
         }
         Command::ServiceAccount {
             database_url,

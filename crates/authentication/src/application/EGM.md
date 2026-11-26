@@ -93,6 +93,17 @@ the tenant the unit of work is bound to.
     user who may sign in.
   - `reset_password -> UserId`: sets the password, ends every session of the
     user and tells the owner of the address.
+  - `own_profile(tenant, user) -> User`: the signed-in person, for the
+    account page to show their display name and standard claims; `NotFound`
+    when the tenant has no such user.
+  - `change_own_profile(tenant, user, display_name, claims: StandardClaims,
+    caller) -> User`: replaces the person's display name and standard claims
+    through `IdentityService::change_own_profile`, which keeps
+    `phone_number_verified` for an unchanged number and makes it false for a
+    new one, and records one `identity.profile_changed` when anything
+    changed. Refusals are the identity context's: `Invalid`
+    `identity.display_name_invalid` or `identity.claim_invalid`, and
+    `Conflict` when the person was changed at the same moment.
 
 ### Attempt counting (`guard.rs`)
 
@@ -323,8 +334,8 @@ Both implement the `Authenticator` trait from [`../domain/EGM.md`](../domain/EGM
   `PasswordAuthenticator` calls `TenantService::get` (lockout policy),
   `IdentityService::get` and `hodor_credential::api::CredentialService::verify_password`
   (`authenticators.rs`).
-- `AccountService` reads tenant settings, looks up and creates users and
-  verifies identifiers through `IdentityService`, sets passwords through
+- `AccountService` reads tenant settings, looks up, creates and changes users
+  and verifies identifiers through `IdentityService`, sets passwords through
   `CredentialService`, ends sessions with `SessionService::revoke_all_for_user`
   (reason `"password_reset"`), issues and uses up tokens through
   `VerificationTokenStore`, enqueues messages with

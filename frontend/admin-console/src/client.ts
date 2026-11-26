@@ -135,9 +135,38 @@ export interface User {
   displayName: string | null;
   locale: string | null;
   identifiers: Identifier[];
+  /**
+   * The person's standard claims that have a value, in the order of
+   * `CLAIMS`: `given_name` and the others, and the parts of the address as
+   * `address.locality` and so on. None for a workload.
+   */
+  claims: [string, string][];
+  /** Whether someone vouched for the telephone number. */
+  phoneNumberVerified: boolean;
   createdAt: string;
   updatedAt: string;
 }
+
+/** The standard claims of a person, in the order the console shows them. */
+export const CLAIMS = [
+  "given_name",
+  "middle_name",
+  "family_name",
+  "nickname",
+  "gender",
+  "birthdate",
+  "zoneinfo",
+  "profile",
+  "picture",
+  "website",
+  "phone_number",
+  "address.formatted",
+  "address.street_address",
+  "address.locality",
+  "address.region",
+  "address.postal_code",
+  "address.country",
+] as const;
 
 /** Who is using the console, and what they may do. */
 export interface Me {
@@ -579,9 +608,23 @@ function user(body: Fields): User {
       verified: identifier["verified"] === true,
       primary: identifier["primary"] === true,
     })),
+    ...claimsOf(body["claims"]),
     createdAt: required(body["created_at"]),
     updatedAt: required(body["updated_at"]),
   };
+}
+
+function claimsOf(value: unknown): Pick<User, "claims" | "phoneNumberVerified"> {
+  const given = typeof value === "object" && value !== null ? (value as Fields) : {};
+  const address = typeof given["address"] === "object" && given["address"] !== null ? (given["address"] as Fields) : {};
+  const claims: [string, string][] = [];
+  for (const name of CLAIMS) {
+    const found = text(name.startsWith("address.") ? address[name.slice("address.".length)] : given[name]);
+    if (found !== null) {
+      claims.push([name, found]);
+    }
+  }
+  return { claims, phoneNumberVerified: given["phone_number_verified"] === true };
 }
 
 function personFactors(body: Fields): PersonFactors {

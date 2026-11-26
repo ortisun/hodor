@@ -627,6 +627,7 @@ async fn a_service_account_or_an_agent_never_signs_in_whatever_its_steps_say() {
             status: UserStatus::Active,
             status_reason: None,
             profile: Profile::default(),
+            claims: Default::default(),
             identifiers: vec![LoginIdentifier {
                 id: IdentifierId::generate(),
                 value: NormalizedIdentifier::parse(IdentifierKind::Username, name)

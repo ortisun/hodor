@@ -1,5 +1,6 @@
 //! Domain model of the identity context.
 
+pub(crate) mod claims;
 pub(crate) mod event;
 pub(crate) mod group;
 pub(crate) mod identifier;

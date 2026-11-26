@@ -69,6 +69,7 @@ It needs `HODOR_DATABASE_URL`, like the tenant commands.
 | `GET /users` | `users:read` | List users |
 | `GET /users/{user_id}` | `users:read` | Read one user |
 | `POST /users/{user_id}:suspend` | `users:write` | Suspend a user |
+| `PUT /users/{user_id}/claims` | `users:write` | Replace a person's standard claims |
 | `GET /users/{user_id}/sessions` | `sessions:read` | List a user's active sessions |
 | `GET /users/{user_id}/factors` | `credentials:read` | List a user's second factors and how many recovery codes are left |
 | `DELETE /users/{user_id}/factors/authenticator-application` | `credentials:write` | Remove a user's authenticator application |
@@ -233,24 +234,61 @@ It needs `HODOR_DATABASE_URL`, like the tenant commands.
   "identifiers": [
     { "id": "0193f1c3-…", "kind": "email", "value": "ana@example.com", "verified": true, "primary": true }
   ],
+  "claims": {
+    "given_name": "Ana",
+    "family_name": "Silva",
+    "zoneinfo": "America/Sao_Paulo",
+    "phone_number": "+5511912345678",
+    "phone_number_verified": false,
+    "address": { "locality": "São Paulo", "country": "BR" }
+  },
   "created_at": "2026-11-20T14:03:11Z",
   "updated_at": "2026-11-20T14:03:11Z"
 }
 ```
+
+`claims` holds the person's [standard claims](../architecture/contexts/identity.md#standard-claims) that have a value, and `phone_number_verified` always; `address` only the parts there are. A service account or an agent has `{}`.
 
 ### Creating a user
 
 `POST /users` with:
 
 ```json
-{ "email": "ana@example.com", "display_name": "Ana Silva", "locale": "pt-BR" }
+{ "email": "ana@example.com", "username": "ana.silva", "display_name": "Ana Silva", "locale": "pt-BR" }
 ```
 
-`display_name` and `locale` are optional. The answer is `201` with the user.
+`username`, `display_name` and `locale` are optional. A username is a second login identifier, primary of its kind, with the [rules of usernames](../architecture/contexts/identity.md#normalization), and what UserInfo answers as `preferred_username`. The answer is `201` with the user.
 
 The user is created active, with the address not yet verified and without a password. The person chooses a password by [recovering it](interaction-api.md#registering-and-recovering-a-password), which also verifies the address. An administrator never knows or sets anyone's password.
 
-An address that already has an account is refused with `409` and `identity.identifier_taken`. This interface may say so: its caller is allowed to see the tenant's users.
+An address or a username that already has an account is refused with `409` and `identity.identifier_taken`. This interface may say so: its caller is allowed to see the tenant's users.
+
+### A user's standard claims
+
+`PUT /users/{user_id}/claims` replaces the person's [standard claims](../architecture/contexts/identity.md#standard-claims) with those of the body, written as an answer writes `claims`:
+
+```json
+{
+  "given_name": "Ana",
+  "family_name": "Silva",
+  "birthdate": "1990-04-12",
+  "phone_number": "+55 11 91234-5678",
+  "phone_number_verified": true,
+  "address": { "street_address": "Rua Augusta, 100", "locality": "São Paulo", "postal_code": "01304-000", "country": "BR" }
+}
+```
+
+Every member is optional, and one left out, `null` or empty removes the claim; `phone_number_verified` is false unless given. A member that is not a claim is refused with `422` and `request.body_invalid`, as everywhere in this interface. The answer is `200` with the user, the number written as it is kept, `+5511912345678`.
+
+| Situation | Status | Code |
+|---|---|---|
+| A claim breaks its rule; the message names the claim, never the value | `422` | `identity.claim_invalid` |
+| The user is a service account or an agent | `422` | `identity.workload_claims_refused` |
+| The user is marked Deleted | `409` | `identity.invalid_transition` |
+| No such user | `404` | `identity.user_not_found` |
+| Someone else changed the user at the same moment | `409` | `identity.user_modified_concurrently` |
+
+The audit log records `identity.profile_changed`, with the user and never a value.
 
 ### Listing users
 
@@ -368,7 +406,8 @@ A provider of the kind `ldap`, a [directory](../architecture/contexts/federation
   "filter": "(uid={identifier})",
   "subject_attribute": "entryUUID",
   "email_attribute": "mail",
-  "name_attribute": "cn"
+  "name_attribute": "cn",
+  "claim_attributes": { "given_name": "givenName", "family_name": "sn", "phone_number": "telephoneNumber" }
 }
 ```
 
@@ -381,7 +420,8 @@ A provider of the kind `saml`, a [SAML identity provider](../architecture/contex
   "single_sign_on_address": "https://login.example.com/sso/saml",
   "certificate": "-----BEGIN CERTIFICATE-----\n…\n-----END CERTIFICATE-----",
   "email_attribute": "email",
-  "name_attribute": "name"
+  "name_attribute": "name",
+  "claim_attributes": { "given_name": "firstName", "family_name": "lastName" }
 },
 "metadata_address": "https://auth.example.com/t/acme/interaction/sign-in/providers/corp/saml/metadata"
 ```
@@ -404,7 +444,7 @@ For a SAML provider, `issuer` is the identity provider's entity identifier, `cli
 }
 ```
 
-`kind` is `openid_connect` unless given; the others are `github`, for which `issuer` may be left out, `ldap`, which needs `directory` with at least `base` and `filter`, and `saml`, which needs `saml` with at least `single_sign_on_address` and `certificate` and takes neither `client_id` nor `client_secret`. The attribute names are `entryUUID`, `mail` and `cn` for a directory, `email` and `name` for a SAML provider, unless given. A certificate that cannot be used is refused with `422` and `federation.saml_invalid`; the problem's `detail` names the reason, such as `key_too_short`. A directory whose host and port are not on the installation's list is refused with `403` and `federation.directory_not_allowed`. `scopes`, `creates_users` and `trusts_email` are optional. The answer is `201` with the provider, enabled.
+`kind` is `openid_connect` unless given; the others are `github`, for which `issuer` may be left out, `ldap`, which needs `directory` with at least `base` and `filter`, and `saml`, which needs `saml` with at least `single_sign_on_address` and `certificate` and takes neither `client_id` nor `client_secret`. The attribute names are `entryUUID`, `mail` and `cn` for a directory, `email` and `name` for a SAML provider, unless given. `claim_attributes` names which attribute gives which [standard claim](../architecture/contexts/federation.md#claim-attributes) of a person the provider creates, and is `{}` unless given; a `PATCH` that gives it replaces it whole. A certificate that cannot be used is refused with `422` and `federation.saml_invalid`; the problem's `detail` names the reason, such as `key_too_short`. A directory whose host and port are not on the installation's list is refused with `403` and `federation.directory_not_allowed`. `scopes`, `creates_users` and `trusts_email` are optional. The answer is `201` with the provider, enabled.
 
 `trusts_email` is a statement about the provider that is easy to get wrong; read [what it means](../architecture/contexts/federation.md#when-a-provider-does-not-say-whether-it-vouches) before setting it.
 

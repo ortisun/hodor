@@ -716,7 +716,7 @@ fn the_document_and_the_routes_list_the_same_operations_and_permissions() {
         })
         .collect();
     assert_eq!(documented, served);
-    assert_eq!(served.len(), 154);
+    assert_eq!(served.len(), 155);
 
     // Every operation says how it refuses.
     let document: serde_json::Value = serde_json::from_str(ADMIN_OPENAPI).expect("valid JSON");
@@ -1087,6 +1087,116 @@ async fn an_administrator_creates_reads_and_suspends_a_user() {
         )
         .await;
     assert_eq!(twice.status, StatusCode::CONFLICT);
+}
+
+#[tokio::test]
+async fn an_administrator_replaces_a_persons_standard_claims() {
+    let world = world().await;
+    let created = world
+        .as_administrator(
+            Method::POST,
+            "/users",
+            Some(serde_json::json!({ "email": "ana@example.com", "username": "Ana.Silva" })),
+        )
+        .await;
+    assert_eq!(created.status, StatusCode::CREATED);
+    let kinds: Vec<&str> = created.body["identifiers"]
+        .as_array()
+        .expect("identifiers")
+        .iter()
+        .filter_map(|identifier| identifier["kind"].as_str())
+        .collect();
+    assert_eq!(kinds, ["email", "username"]);
+    assert_eq!(
+        created.body["claims"],
+        serde_json::json!({ "phone_number_verified": false }),
+        "a new person has no claims"
+    );
+    let id = created.body["id"].as_str().expect("identifier").to_owned();
+
+    let replaced = world
+        .as_administrator(
+            Method::PUT,
+            &format!("/users/{id}/claims"),
+            Some(serde_json::json!({
+                "given_name": " Ana ",
+                "family_name": "Silva",
+                "birthdate": "1960-04-12",
+                "zoneinfo": "America/Sao_Paulo",
+                "phone_number": "+55 11 91234-5678",
+                "phone_number_verified": true,
+                "address": { "locality": "São Paulo", "country": "BR", "region": "" },
+            })),
+        )
+        .await;
+    assert_eq!(replaced.status, StatusCode::OK, "{}", replaced.body);
+    assert_eq!(
+        replaced.body["claims"],
+        serde_json::json!({
+            "given_name": "Ana",
+            "family_name": "Silva",
+            "birthdate": "1960-04-12",
+            "zoneinfo": "America/Sao_Paulo",
+            "phone_number": "+5511912345678",
+            "phone_number_verified": true,
+            "address": { "locality": "São Paulo", "country": "BR" },
+        })
+    );
+    let read = world
+        .as_administrator(Method::GET, &format!("/users/{id}"), None)
+        .await;
+    assert_eq!(read.body["claims"], replaced.body["claims"]);
+
+    // What is left out is removed.
+    let fewer = world
+        .as_administrator(
+            Method::PUT,
+            &format!("/users/{id}/claims"),
+            Some(serde_json::json!({ "nickname": "Aninha" })),
+        )
+        .await;
+    assert_eq!(
+        fewer.body["claims"],
+        serde_json::json!({ "nickname": "Aninha", "phone_number_verified": false })
+    );
+
+    let broken = world
+        .as_administrator(
+            Method::PUT,
+            &format!("/users/{id}/claims"),
+            Some(serde_json::json!({ "birthdate": "31/12/1999" })),
+        )
+        .await;
+    assert_eq!(broken.status, StatusCode::UNPROCESSABLE_ENTITY);
+    assert_eq!(broken.code(), "identity.claim_invalid");
+    assert!(!broken.body.to_string().contains("1999"), "{}", broken.body);
+    let unknown = world
+        .as_administrator(
+            Method::PUT,
+            &format!("/users/{id}/claims"),
+            Some(serde_json::json!({ "shoe_size": "42" })),
+        )
+        .await;
+    assert_eq!(unknown.status, StatusCode::UNPROCESSABLE_ENTITY);
+    let missing = world
+        .as_administrator(
+            Method::PUT,
+            &format!("/users/{}/claims", UserId::generate()),
+            Some(serde_json::json!({})),
+        )
+        .await;
+    assert_eq!(missing.status, StatusCode::NOT_FOUND);
+    assert_eq!(missing.code(), "identity.user_not_found");
+
+    world.record_audit().await;
+    let records = world
+        .as_administrator(Method::GET, "/audit-records?limit=200", None)
+        .await;
+    let everything = records.body.to_string();
+    assert!(everything.contains("identity.profile_changed"));
+    for value in ["Silva", "5511912345678", "Aninha", "Sao_Paulo"] {
+        assert!(!everything.contains(value), "{value} is in the audit log");
+    }
 }
 
 #[tokio::test]
@@ -1789,6 +1899,7 @@ async fn an_administrator_adds_and_changes_a_directory() {
         serde_json::json!({
             "base": "ou=people,dc=example,dc=com", "filter": "(uid={identifier})",
             "subject_attribute": "entryUUID", "email_attribute": "mail", "name_attribute": "cn",
+            "claim_attributes": {},
         })
     );
     assert!(!created.body.to_string().contains(CLIENT_SECRET));
@@ -1814,6 +1925,28 @@ async fn an_administrator_adds_and_changes_a_directory() {
         changed.body["directory"]["base"],
         "ou=people,dc=example,dc=com"
     );
+
+    // The claim attributes are replaced whole, and a claim that is not one
+    // is refused.
+    let claims = serde_json::json!({ "given_name": "givenName", "address.locality": "l" });
+    let mapped = world
+        .as_administrator(
+            Method::PATCH,
+            &format!("/identity-providers/{id}"),
+            Some(serde_json::json!({ "directory": { "claim_attributes": claims } })),
+        )
+        .await;
+    assert_eq!(mapped.status, StatusCode::OK, "{:?}", mapped.body);
+    assert_eq!(mapped.body["directory"]["claim_attributes"], claims);
+    assert_eq!(mapped.body["directory"]["subject_attribute"], "objectGUID");
+    let unknown = world
+        .as_administrator(
+            Method::PATCH,
+            &format!("/identity-providers/{id}"),
+            Some(serde_json::json!({ "directory": { "claim_attributes": { "shoe_size": "x" } } })),
+        )
+        .await;
+    assert_eq!(unknown.code(), "federation.directory_invalid");
 
     // A filter that would match without what is typed is refused.
     let broken = world

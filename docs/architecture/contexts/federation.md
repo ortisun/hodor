@@ -137,6 +137,8 @@ A token refused by any check signs nobody in, and the reason is recorded for the
 | `sub` | The subject of the external identity. The only thing a link is found by |
 | `email`, and `email_verified` when it is exactly `true` | An email address, and whether the provider vouches for it. Anything but the JSON value `true` means it does not |
 | `name`, `locale` | Suggestions for the profile of a user created on first sign-in |
+| `given_name`, `family_name`, `middle_name`, `nickname`, `profile`, `picture`, `website`, `gender`, `birthdate`, `zoneinfo`, `phone_number`, `address` | The [standard claims](identity.md#standard-claims) of a user created on first sign-in. Each is text, and `address` an object of text parts; any other type, or a value that breaks the claim's rule, is left out, and the others are kept |
+| `phone_number_verified`, when it is exactly `true` | Whether the provider vouches for the telephone number. Anything else means it does not |
 
 Nothing else in the token is used. In particular no group, role or permission is ever taken from it (Threat-Federation-07).
 
@@ -158,6 +160,7 @@ GitHub is not an OpenID Connect provider: it issues no ID token. A provider of t
 | Exchanging the code | At `{issuer}/login/oauth/access_token`, with the client secret. GitHub answers `200` even when it refuses; the answer's `error` is what says so |
 | Asking who it is | `GET /user`: the numeric `id` is the subject, and never the login name, which a person can change and another can take afterwards (Threat-Federation-11) |
 | Asking for the address | `GET /user/emails`: the address marked both primary and verified, or none |
+| The person's claims | From the answer of `GET /user`: `name` is the name, `avatar_url` the [standard claim](identity.md#standard-claims) `picture` and `blog` the claim `website`, each left out when it breaks the claim's rule. GitHub says nothing of the person's telephone number |
 
 The issuer is `https://github.com` unless another is given, for an installation of GitHub Enterprise Server. The interface is at `https://api.github.com` for the first and at `{issuer}/api/v3` for any other.
 
@@ -179,6 +182,7 @@ A directory uses the parts of a provider this way, and adds its own:
 | Filter | How a person is found, with `{identifier}` where what they typed goes: `(uid={identifier})`, or `(sAMAccountName={identifier})` for Active Directory. It must contain `{identifier}` exactly once and be a filter in parentheses |
 | Subject attribute | The attribute that never changes for a person: `entryUUID` unless said otherwise; `objectGUID` for Active Directory. A value that is not text is written in hexadecimal |
 | Email attribute, name attribute | `mail` and `cn` unless said otherwise |
+| Claim attributes | Which attribute gives which [standard claim](#claim-attributes) of a person the directory creates. None unless said |
 
 ### Which directories may be used
 
@@ -216,6 +220,7 @@ A SAML provider uses the parts of a provider this way, and adds its own:
 | Single sign-on address | Where the person is sent with the request: the identity provider's `SingleSignOnService` for the HTTP-Redirect binding. HTTPS; plain HTTP only at a [development host](../../security/outbound-http.md#the-exception-for-development) |
 | Certificate | The identity provider's signing certificate, in PEM, from its metadata. Its key is the only key a response is checked with. An RSA key of 2048 bits at least, or an elliptic curve key on P-256. The certificate's dates and issuer are not checked: it is a way of writing down a key, as SAML uses it |
 | Email attribute, name attribute | The names of the attributes that carry the person's address and name. `email` and `name` unless said otherwise; the [recipes](#recipes) give the names each identity provider uses |
+| Claim attributes | Which attribute gives which [standard claim](#claim-attributes) of a person the provider creates. None unless said |
 
 Hodor, for each SAML provider, has:
 
@@ -285,8 +290,32 @@ Everything Hodor uses afterwards is read from the assertion found in step 5, whi
 | `NameID` | The subject of the external identity. An identity provider should be set to send a persistent identifier: an email address changes, a `transient` one changes every time |
 | The email attribute | The address, taken as vouched for only if the provider is set to [trust email](#when-a-provider-does-not-say-whether-it-vouches): SAML has no way of saying |
 | The name attribute | The name |
+| The [claim attributes](#claim-attributes) | The standard claims of a person created on first sign-in |
 
 From there everything is [as for any provider](#who-the-person-is).
+
+## Claim attributes
+
+A directory and a SAML identity provider have no standard names for a person's [standard claims](identity.md#standard-claims). An administrator names, for each claim the provider should give, the attribute that carries it: the provider's **claim attributes**, a JSON object from a claim to an attribute name ([Decision 0065](../../decisions/0065-where-the-standard-claims-come-from.md)).
+
+```json
+"claim_attributes": {
+  "given_name": "givenName",
+  "family_name": "sn",
+  "phone_number": "telephoneNumber",
+  "address.street_address": "street",
+  "address.locality": "l",
+  "address.postal_code": "postalCode"
+}
+```
+
+- **The claims it may name** are `given_name`, `family_name`, `middle_name`, `nickname`, `profile`, `picture`, `website`, `gender`, `birthdate`, `zoneinfo`, `phone_number`, and the parts of the address, `address.formatted`, `address.street_address`, `address.locality`, `address.region`, `address.postal_code` and `address.country`. Each once.
+- **An attribute name** follows the rule of the provider's other attribute names: for a directory a letter followed by letters, digits and hyphens, at most 64; for a SAML provider 1 to 255 characters without spaces. Two claims may name the same attribute.
+- **A claim is the attribute's first value**, read as text and trimmed. A value that is not text, or breaks the claim's rule, is left out and the others are kept.
+- **A telephone number from them is never verified**: neither says whether anyone checked it.
+- Anything else refuses the provider with `federation.directory_invalid` or `federation.saml_invalid`, naming the rule.
+
+A directory is asked for the attributes the claim attributes name, beside its subject, email and name attributes. A SAML response's claims are read when the response is checked, and kept with its answer until the sign-in finishes.
 
 A request is answered once. A pending authorization is claimed by one response only, and is taken once when the sign-in is finished; a response that answers another sign-in's request is refused against this one's (`request`). The same response presented again, in the same browser or another, finds no request to answer (Threat-SAML-03).
 
@@ -373,7 +402,7 @@ The link is looked up by the provider and the token's subject, and by nothing el
 | The external identity is linked to a user who may sign in | That user is signed in |
 | It is linked to a user who may not sign in: suspended, deactivated, pending | Refused |
 | It is not linked, and the provider does not create users | Refused |
-| It is not linked, the provider creates users, and the provider vouches for an email address that no user of the tenant has (or gives one and the provider is set to trust email) | A user is created with that address, already verified, and the name and language the provider gave; the external identity is linked to it. Both in one unit of work: a user without its link, or a link without its user, is never stored |
+| It is not linked, the provider creates users, and the provider vouches for an email address that no user of the tenant has (or gives one and the provider is set to trust email) | A user is created with that address, already verified, and the name, language and [standard claims](identity.md#standard-claims) the provider gave; the external identity is linked to it. Both in one unit of work: a user without its link, or a link without its user, is never stored. A later sign-in changes none of them |
 | It is not linked, and the provider gives no email address or does not vouch for it | Refused. A user needs a login identifier, and an address nobody vouches for is not one |
 | It is not linked, and a user of the tenant already has the email address | **Refused. The external identity is never let into an existing account because of an email address** (Threat-Federation-01). The existing account stays exactly as it was |
 
@@ -453,6 +482,7 @@ All tables are under [forced row-level security](../multi-tenancy.md#isolation-b
 | `version` | `integer` | For optimistic locking |
 | `directory_base`, `directory_filter`, `directory_subject_attribute`, `directory_email_attribute`, `directory_name_attribute` | `text` | All present for `ldap`, all absent otherwise |
 | `saml_single_sign_on_address`, `saml_certificate`, `saml_email_attribute`, `saml_name_attribute` | `text` | All present for `saml`, all absent otherwise. The certificate in PEM |
+| `claim_attributes` | `jsonb` | The [claim attributes](#claim-attributes) of a directory or a SAML provider, an object of at most 17 members; an empty object for every other kind. Added by migration 0099 |
 
 ### `federation.external_identity`
 
@@ -473,7 +503,8 @@ All tables are under [forced row-level security](../multi-tenancy.md#isolation-b
 | `code_verifier` | `bytea` | The sealed PKCE verifier. For SAML, which has none, an empty secret sealed |
 | `expires_at` | `timestamptz` | |
 | `saml_subject`, `saml_email`, `saml_name` | `text` | The answer of a SAML response that passed every check: who the person is. Set once |
-| `saml_refusal` | `text` | Or the reason the response was refused, such as `signature`. Set once, in place of the three above |
+| `saml_claims` | `jsonb` | The standard claims the response gave through the provider's claim attributes, an object of at most 17 members of text. Set with the subject, absent otherwise. Added by migration 0099 |
+| `saml_refusal` | `text` | Or the reason the response was refused, such as `signature`. Set once, in place of the four above |
 | `saml_receipt_hash` | `bytea` | SHA-256 of the receipt given to the browser that posted the response. Set when that response claims the pending authorization; the answer follows once it is checked |
 
 ## Not built yet
@@ -491,9 +522,9 @@ All tables are under [forced row-level security](../multi-tenancy.md#isolation-b
 | Signature algorithms beyond `RS256`, `PS256` and `ES256`; encrypted ID tokens; the UserInfo endpoint | When a provider that needs them is to be supported |
 | A cache of provider descriptions and keys shared between server instances. Each instance keeps its own | With Redis, when instances are many |
 | What happens to the sessions of a provider's users when it is disabled (Threat-Federation-10). Today disabling stops new sign-ins only | With the consoles |
-| Mapping what a provider says about a person to the user's profile, groups or roles | Issue-40 for the profile; groups and roles are not in Milestone 2 |
+| Mapping what a provider says about a person to the user's groups or roles | Not scheduled |
 | Linking and unlinking by the person themself, routing by email domain | The account console |
 | Letting a person who already has an account connect an external identity to it, with proof of both | The account console |
 | Starting a sign-in is not limited. Each sign-in started can make Hodor check one SAML response, about two milliseconds for the largest | Limits on starting sign-ins, with the other limits per address of the interaction interface |
-| Bringing the name and the language up to date on later sign-ins | With claim mapping |
+| Bringing the name, the language and the standard claims up to date on later sign-ins, as a setting of the provider | When a tenant asks ([Decision 0065](../../decisions/0065-where-the-standard-claims-come-from.md)) |
 | Protection against a local account made in advance with someone else's address (Threat-Federation-02). Such an account keeps the person's external identity out; it is not taken over | With linking, in the account console |

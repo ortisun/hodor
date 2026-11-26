@@ -261,6 +261,7 @@ nav:
       - decisions/0059-linkerd-policies-from-roles.md
       - decisions/0061-gateway-identities.md
       - decisions/0062-the-certificate-authority-of-a-tenant.md
+      - decisions/0065-where-the-standard-claims-come-from.md
       - decisions/0071-signing-intermediates.md
       - decisions/0074-hodor-cert-manager-issuer.md
   - Contributing:

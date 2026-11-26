@@ -19,7 +19,8 @@ contexts, which this crate calls through their services. The specification is
   `crates/adapters-postgres/src/authentication.rs`).
 - Service entry points: `AuthenticationService` (`start`, `describe`,
   `submit`, `cancel`), `AccountService` (`request_registration`,
-  `complete_registration`, `request_recovery`, `reset_password`),
+  `complete_registration`, `request_recovery`, `reset_password`,
+  `own_profile`, `change_own_profile`),
   `AttemptGuard` (`admit`, `succeeded`).
 - Domain events: `AuthenticationEvent` (`authentication.succeeded`,
   `authentication.failed`, `authentication.locked_out`,

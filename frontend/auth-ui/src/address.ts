@@ -11,6 +11,7 @@ export const PAGES = [
   "account",
   "sign-out",
   "security",
+  "profile",
   "accept-invitation",
   "sign-in-link",
 ] as const;

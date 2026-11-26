@@ -14,8 +14,8 @@ use crate::domain::evaluate::{Fact, Facts};
 use crate::domain::patch::Shape;
 use crate::domain::version::version_of;
 use hodor_identity::api::{
-    Group, GroupMember, IdentifierKind, LoginIdentifier, NormalizedIdentifier, User, UserKind,
-    UserStatus,
+    ClaimField, Group, GroupMember, IdentifierKind, LoginIdentifier, NormalizedIdentifier,
+    PostalAddress, StandardClaims, User, UserKind, UserStatus,
 };
 use hodor_kernel::{DomainError, GroupId, Timestamp, UserId};
 use serde_json::{Map, Value, json};
@@ -61,10 +61,6 @@ pub struct UserSupplement {
     pub external_id: Option<String>,
     /// `name.formatted`.
     pub formatted_name: Option<String>,
-    /// `name.givenName`.
-    pub given_name: Option<String>,
-    /// `name.familyName`.
-    pub family_name: Option<String>,
     /// `employeeNumber`, of the enterprise extension.
     pub employee_number: Option<String>,
     /// `costCenter`, of the enterprise extension.
@@ -149,8 +145,41 @@ pub struct UserRequest {
     pub display_name: Option<String>,
     /// `active`; `true` when the request leaves it out.
     pub active: bool,
+    /// The standard claims SCIM names, as given: checked by the identity
+    /// context when they are stored. The others are left out.
+    pub claims: StandardClaims,
     /// What this context keeps.
     pub supplement: UserSupplement,
+}
+
+/// The standard claims SCIM names. A request replaces these and leaves the
+/// person's other claims as they are.
+pub(crate) const SCIM_CLAIMS: [ClaimField; 13] = [
+    ClaimField::GivenName,
+    ClaimField::FamilyName,
+    ClaimField::MiddleName,
+    ClaimField::Nickname,
+    ClaimField::Profile,
+    ClaimField::Zoneinfo,
+    ClaimField::PhoneNumber,
+    ClaimField::AddressFormatted,
+    ClaimField::AddressStreetAddress,
+    ClaimField::AddressLocality,
+    ClaimField::AddressRegion,
+    ClaimField::AddressPostalCode,
+    ClaimField::AddressCountry,
+];
+
+/// `current` with the claims SCIM names taken from `scim`, and the others
+/// kept. A telephone number SCIM sets is verified.
+#[must_use]
+pub(crate) fn with_scim_claims(current: &StandardClaims, scim: &StandardClaims) -> StandardClaims {
+    let mut merged = current.clone();
+    for field in SCIM_CLAIMS {
+        merged.set(field, scim.get(field).map(str::to_owned));
+    }
+    merged.phone_number_verified = scim.phone_number.is_some();
+    merged
 }
 
 impl UserRequest {
@@ -254,6 +283,53 @@ fn boolean(value: &Value, called: &str) -> Result<bool, DomainError> {
     }
 }
 
+/// A standard claim as SCIM writes it: a string, or no value when it is
+/// missing, `null` or empty. Its rule is the identity context's, checked
+/// when it is stored.
+fn claim_text(
+    object: &Map<String, Value>,
+    name: &str,
+    called: &str,
+) -> Result<Option<String>, DomainError> {
+    let Some(value) = field(object, name) else {
+        return Ok(None);
+    };
+    let text = text_of(value, called)?.trim();
+    Ok((!text.is_empty()).then(|| text.to_owned()))
+}
+
+/// The value of a multi-valued attribute the person has one of: the one
+/// marked `primary`, or with none marked the first.
+fn primary_value<'a>(
+    object: &'a Map<String, Value>,
+    name: &str,
+    called: &str,
+) -> Result<Option<&'a Map<String, Value>>, DomainError> {
+    let Some(values) = field(object, name) else {
+        return Ok(None);
+    };
+    let values = values
+        .as_array()
+        .ok_or_else(|| invalid_value(format!("{name} is a list")))?;
+    let mut first = None;
+    let mut marked = None;
+    for value in values {
+        let value = object_of(value, called)?;
+        first.get_or_insert(value);
+        let primary = field(value, "primary")
+            .map(|primary| boolean(primary, "primary"))
+            .transpose()?
+            .unwrap_or(false);
+        if primary {
+            if marked.is_some() {
+                return Err(invalid_value(format!("at most one of {name} is primary")));
+            }
+            marked = Some(value);
+        }
+    }
+    Ok(marked.or(first))
+}
+
 fn body_object(body: &Value) -> Result<&Map<String, Value>, DomainError> {
     body.as_object()
         .ok_or_else(|| invalid_syntax("the body is not a JSON object"))
@@ -339,11 +415,49 @@ pub fn read_user(body: &Value) -> Result<UserRequest, DomainError> {
         .map(|value| object_of(value, "manager"))
         .transpose()?
         .unwrap_or(&empty);
+    let mut claims = StandardClaims::default();
+    for (from, key, called, field) in [
+        (name, "givenName", "name.givenName", ClaimField::GivenName),
+        (
+            name,
+            "familyName",
+            "name.familyName",
+            ClaimField::FamilyName,
+        ),
+        (
+            name,
+            "middleName",
+            "name.middleName",
+            ClaimField::MiddleName,
+        ),
+        (object, "nickName", "nickName", ClaimField::Nickname),
+        (object, "profileUrl", "profileUrl", ClaimField::Profile),
+        (object, "timezone", "timezone", ClaimField::Zoneinfo),
+    ] {
+        claims.set(field, claim_text(from, key, called)?);
+    }
+    if let Some(number) = primary_value(object, "phoneNumbers", "a telephone number")? {
+        claims.set(
+            ClaimField::PhoneNumber,
+            claim_text(number, "value", "a telephone number's value")?,
+        );
+        claims.phone_number_verified = claims.phone_number.is_some();
+    }
+    if let Some(address) = primary_value(object, "addresses", "an address")? {
+        for (key, field) in [
+            ("formatted", ClaimField::AddressFormatted),
+            ("streetAddress", ClaimField::AddressStreetAddress),
+            ("locality", ClaimField::AddressLocality),
+            ("region", ClaimField::AddressRegion),
+            ("postalCode", ClaimField::AddressPostalCode),
+            ("country", ClaimField::AddressCountry),
+        ] {
+            claims.set(field, claim_text(address, key, key)?);
+        }
+    }
     let supplement = UserSupplement {
         external_id: kept(object, "externalId", "externalId")?,
         formatted_name: kept(name, "formatted", "name.formatted")?,
-        given_name: kept(name, "givenName", "name.givenName")?,
-        family_name: kept(name, "familyName", "name.familyName")?,
         employee_number: kept(enterprise, "employeeNumber", "employeeNumber")?,
         cost_center: kept(enterprise, "costCenter", "costCenter")?,
         organization: kept(enterprise, "organization", "organization")?,
@@ -416,6 +530,7 @@ pub fn read_user(body: &Value) -> Result<UserRequest, DomainError> {
         emails,
         display_name,
         active,
+        claims,
         supplement,
     })
 }
@@ -599,11 +714,13 @@ impl UserResource {
             "userName".into(),
             json!(user_name_of(&self.user).map_or("", |name| name.value.display())),
         );
+        let claims = &state.claims;
         let mut name = Map::new();
         for (key, value) in [
             ("formatted", &supplement.formatted_name),
-            ("givenName", &supplement.given_name),
-            ("familyName", &supplement.family_name),
+            ("givenName", &claims.given_name),
+            ("familyName", &claims.family_name),
+            ("middleName", &claims.middle_name),
         ] {
             if let Some(value) = value {
                 name.insert(key.into(), json!(value));
@@ -614,6 +731,24 @@ impl UserResource {
         }
         if let Some(display_name) = &state.profile.display_name {
             document.insert("displayName".into(), json!(display_name));
+        }
+        for (key, value) in [
+            ("nickName", &claims.nickname),
+            ("profileUrl", &claims.profile),
+            ("timezone", &claims.zoneinfo),
+        ] {
+            if let Some(value) = value {
+                document.insert(key.into(), json!(value));
+            }
+        }
+        if let Some(number) = &claims.phone_number {
+            document.insert(
+                "phoneNumbers".into(),
+                json!([{ "value": number, "primary": true }]),
+            );
+        }
+        if let Some(address) = &claims.address {
+            document.insert("addresses".into(), json!([scim_address(address)]));
         }
         let emails: Vec<Value> = state
             .identifiers
@@ -676,6 +811,26 @@ impl UserResource {
         );
         Value::Object(document)
     }
+}
+
+/// A postal address as SCIM writes it: the parts the person has, marked
+/// primary.
+fn scim_address(address: &PostalAddress) -> Value {
+    let mut written = Map::new();
+    for (key, value) in [
+        ("formatted", &address.formatted),
+        ("streetAddress", &address.street_address),
+        ("locality", &address.locality),
+        ("region", &address.region),
+        ("postalCode", &address.postal_code),
+        ("country", &address.country),
+    ] {
+        if let Some(value) = value {
+            written.insert(key.into(), json!(value));
+        }
+    }
+    written.insert("primary".into(), json!(true));
+    Value::Object(written)
 }
 
 /// A member of a group, with what it reads as.
@@ -791,8 +946,8 @@ impl Facts<UserAttribute> for UserFacts<'_> {
                 user_name_of(self.user).map(|name| Fact::Text(name.value.normalized().to_owned()))
             }
             UserAttribute::DisplayName => state.profile.display_name.clone().map(Fact::Text),
-            UserAttribute::GivenName => kept(|supplement| &supplement.given_name),
-            UserAttribute::FamilyName => kept(|supplement| &supplement.family_name),
+            UserAttribute::GivenName => state.claims.given_name.clone().map(Fact::Text),
+            UserAttribute::FamilyName => state.claims.family_name.clone().map(Fact::Text),
             UserAttribute::Active => Some(Fact::Boolean(state.status == UserStatus::Active)),
             UserAttribute::Created => Some(Fact::DateTime(state.created_at)),
             UserAttribute::LastModified => {
@@ -895,7 +1050,71 @@ mod tests {
         assert_eq!(emails, ["bjensen@example.com", "babs@jensen.org"]);
         assert_eq!(read.display_name.as_deref(), Some("Barbara Jensen"));
         assert!(read.active);
-        assert_eq!(read.supplement.given_name.as_deref(), Some("Barbara"));
+        assert_eq!(read.claims.given_name.as_deref(), Some("Barbara"));
+    }
+
+    #[test]
+    fn the_standard_claims_scim_names_are_read_and_the_primary_value_kept() {
+        let read = read_user(&user_body(json!({
+            "name": { "givenName": " Barbara ", "familyName": "Jensen", "middleName": "" },
+            "nickName": "Babs",
+            "profileUrl": "https://login.example.com/bjensen",
+            "timezone": "America/Los_Angeles",
+            "phoneNumbers": [
+                { "value": "+1 555 555 0100", "type": "home" },
+                { "value": "+1 555 555 0123", "type": "work", "primary": "true" }
+            ],
+            "addresses": [
+                { "streetAddress": "100 Universal City Plaza", "locality": "Hollywood", "country": "US" },
+                { "locality": "Elsewhere" }
+            ],
+        })))
+        .expect("read");
+        let claims = &read.claims;
+        assert_eq!(claims.given_name.as_deref(), Some("Barbara"));
+        assert_eq!(claims.middle_name, None);
+        assert_eq!(claims.nickname.as_deref(), Some("Babs"));
+        assert_eq!(claims.zoneinfo.as_deref(), Some("America/Los_Angeles"));
+        assert_eq!(claims.phone_number.as_deref(), Some("+1 555 555 0123"));
+        assert!(claims.phone_number_verified);
+        assert_eq!(claims.get(ClaimField::AddressLocality), Some("Hollywood"));
+        assert_eq!(claims.get(ClaimField::AddressCountry), Some("US"));
+
+        let code = |body: Value| read_user(&body).expect_err("refused").code().to_owned();
+        assert_eq!(
+            code(user_body(json!({ "phoneNumbers": [
+                { "value": "+15555550100", "primary": true },
+                { "value": "+15555550123", "primary": true }
+            ] }))),
+            "provisioning.invalid_value"
+        );
+        assert_eq!(
+            code(user_body(json!({ "nickName": 7 }))),
+            "provisioning.invalid_value"
+        );
+    }
+
+    #[test]
+    fn a_request_replaces_only_the_claims_scim_names() {
+        let current = StandardClaims {
+            given_name: Some("Old".to_owned()),
+            gender: Some("female".to_owned()),
+            birthdate: Some("1990".to_owned()),
+            website: Some("https://example.com".to_owned()),
+            phone_number: Some("+15555550100".to_owned()),
+            ..StandardClaims::default()
+        };
+        let scim = StandardClaims {
+            family_name: Some("Jensen".to_owned()),
+            ..StandardClaims::default()
+        };
+        let merged = with_scim_claims(&current, &scim);
+        assert_eq!(merged.given_name, None, "a name SCIM leaves out is removed");
+        assert_eq!(merged.family_name.as_deref(), Some("Jensen"));
+        assert_eq!(merged.phone_number, None);
+        assert_eq!(merged.gender.as_deref(), Some("female"));
+        assert_eq!(merged.birthdate.as_deref(), Some("1990"));
+        assert_eq!(merged.website.as_deref(), Some("https://example.com"));
     }
 
     #[test]

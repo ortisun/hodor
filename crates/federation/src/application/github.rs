@@ -6,7 +6,8 @@
 
 use crate::application::openid::{AuthorizationRequest, VerifiedIdentity};
 use crate::domain::link::Subject;
-use crate::domain::provider::IdentityProvider;
+use crate::domain::provider::{IdentityProvider, LONGEST_CLAIM_VALUE};
+use hodor_identity::api::{ClaimField, StandardClaims};
 use hodor_kernel::{
     DomainError, ErrorKind, HttpClient, HttpRequest, HttpResponse, RandomSource, Secret,
 };
@@ -215,12 +216,29 @@ impl GitHubClient {
             Ok(_) | Err(_) => None,
         };
 
+        // The picture and the site of the profile. GitHub says nothing of a
+        // telephone number.
+        let mut claims = StandardClaims::default();
+        for (field, member) in [
+            (ClaimField::Picture, "avatar_url"),
+            (ClaimField::Website, "blog"),
+        ] {
+            claims.set(
+                field,
+                user.get(member)
+                    .and_then(Value::as_str)
+                    .filter(|value| value.chars().count() <= LONGEST_CLAIM_VALUE)
+                    .map(str::to_owned),
+            );
+        }
+
         Ok(VerifiedIdentity {
             subject,
             email_verified: email.is_some(),
             email,
             name,
             locale: None,
+            claims,
         })
     }
 }

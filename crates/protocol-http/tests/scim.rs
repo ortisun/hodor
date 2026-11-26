@@ -118,6 +118,8 @@ struct Tenant {
 
 struct World {
     router: Router,
+    /// The identity context behind SCIM, to see a person as Hodor keeps it.
+    identity: IdentityService,
     tokens: TokenService,
     revoked: RecordingAccessRevoker,
     acme: Tenant,
@@ -326,14 +328,15 @@ async fn world() -> World {
     let users = InMemoryUsers::default();
     let groups = InMemoryGroups::default();
     let revoked = RecordingAccessRevoker::default();
+    let identity = IdentityService::new(
+        Arc::new(units.clone()),
+        Arc::new(users.clone()),
+        clock.clone(),
+    )
+    .with_groups(Arc::new(groups.clone()));
     let provisioning = ProvisioningService::new(ProvisioningPorts {
         units_of_work: Arc::new(units.clone()),
-        identity: IdentityService::new(
-            Arc::new(units.clone()),
-            Arc::new(users.clone()),
-            clock.clone(),
-        )
-        .with_groups(Arc::new(groups.clone())),
+        identity: identity.clone(),
         groups: GroupService::new(
             Arc::new(units.clone()),
             Arc::new(groups.clone()),
@@ -367,6 +370,7 @@ async fn world() -> World {
     );
     World {
         router,
+        identity,
         tokens,
         revoked,
         acme,
@@ -785,6 +789,134 @@ async fn users_are_created_read_replaced_and_listed() {
         .await;
     assert_eq!(counted.body["totalResults"], 3);
     assert_eq!(counted.body["Resources"], json!([]));
+}
+
+#[tokio::test]
+async fn the_standard_claims_scim_names_are_the_persons_and_the_others_are_kept() {
+    let world = world().await;
+    let token = world.scim_token(&world.acme).await;
+    let base = "/t/acme/scim/v2";
+    let created = world
+        .scim(
+            Method::POST,
+            &format!("{base}/Users"),
+            &token,
+            Some(json!({
+                "schemas": [USER],
+                "userName": "bjensen",
+                "name": { "givenName": "Barbara", "familyName": "Jensen", "middleName": "Jane" },
+                "nickName": "Babs",
+                "profileUrl": "https://login.example.com/bjensen",
+                "timezone": "America/Los_Angeles",
+                "phoneNumbers": [
+                    { "value": "+1 555 555 0100", "type": "home" },
+                    { "value": "+1 555 555 0123", "type": "work", "primary": true }
+                ],
+                "addresses": [{
+                    "streetAddress": "100 Universal City Plaza", "locality": "Hollywood",
+                    "region": "CA", "postalCode": "91608", "country": "US", "type": "work"
+                }],
+            })),
+        )
+        .await;
+    assert_eq!(created.status, StatusCode::CREATED, "{}", created.body);
+    let body = &created.body;
+    assert_eq!(
+        body["name"],
+        json!({ "givenName": "Barbara", "familyName": "Jensen", "middleName": "Jane" })
+    );
+    assert_eq!(body["nickName"], "Babs");
+    assert_eq!(body["timezone"], "America/Los_Angeles");
+    assert_eq!(
+        body["phoneNumbers"],
+        json!([{ "value": "+15555550123", "primary": true }])
+    );
+    assert_eq!(
+        body["addresses"],
+        json!([{
+            "streetAddress": "100 Universal City Plaza", "locality": "Hollywood",
+            "region": "CA", "postalCode": "91608", "country": "US", "primary": true
+        }])
+    );
+    let id = body["id"].as_str().expect("an id").to_owned();
+
+    // They are the person's: an administrator sees them, the number
+    // verified, and gives a birth date SCIM does not name.
+    let person = world
+        .identity
+        .get(&world.acme.context, id.parse().expect("an identifier"))
+        .await
+        .expect("the person");
+    let claims = &person.snapshot().claims;
+    assert_eq!(claims.given_name.as_deref(), Some("Barbara"));
+    assert_eq!(
+        claims.profile.as_deref(),
+        Some("https://login.example.com/bjensen")
+    );
+    assert!(claims.phone_number_verified);
+    let mut more = claims.clone();
+    more.birthdate = Some("1960".to_owned());
+    world
+        .identity
+        .change_claims(
+            &world.acme.context,
+            person.id(),
+            more,
+            hodor_kernel::Caller::system(),
+        )
+        .await
+        .expect("a birth date");
+
+    // A PUT without them removes them, and keeps what SCIM does not name.
+    let replaced = world
+        .scim(
+            Method::PUT,
+            &format!("{base}/Users/{id}"),
+            &token,
+            Some(json!({ "schemas": [USER], "userName": "bjensen", "name": { "givenName": "Babs" } })),
+        )
+        .await;
+    assert_eq!(replaced.status, StatusCode::OK, "{}", replaced.body);
+    assert_eq!(replaced.body["name"], json!({ "givenName": "Babs" }));
+    for gone in [
+        "nickName",
+        "timezone",
+        "phoneNumbers",
+        "addresses",
+        "profileUrl",
+    ] {
+        assert!(replaced.body.get(gone).is_none(), "{gone}");
+    }
+    let person = world
+        .identity
+        .get(&world.acme.context, person.id())
+        .await
+        .expect("the person");
+    assert_eq!(person.snapshot().claims.birthdate.as_deref(), Some("1960"));
+    assert_eq!(person.snapshot().claims.phone_number, None);
+
+    // A value that breaks the claim's rule is refused, and nothing changes.
+    let refused = world
+        .scim(
+            Method::PUT,
+            &format!("{base}/Users/{id}"),
+            &token,
+            Some(json!({ "schemas": [USER], "userName": "bjensen", "timezone": "Not a zone!" })),
+        )
+        .await;
+    assert_eq!(refused.status, StatusCode::BAD_REQUEST, "{}", refused.body);
+    assert_eq!(refused.body["scimType"], "invalidValue");
+
+    // The filter on the given name reads the person's claim.
+    let found = world
+        .scim(
+            Method::GET,
+            &format!("{base}/Users?filter=name.givenName%20eq%20%22babs%22"),
+            &token,
+            None,
+        )
+        .await;
+    assert_eq!(found.body["totalResults"], 1, "{}", found.body);
 }
 
 #[tokio::test]

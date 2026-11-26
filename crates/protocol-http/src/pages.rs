@@ -31,6 +31,7 @@ pub const PAGE_PATHS: &[&str] = &[
     "/account/reset-password",
     "/account/sign-out",
     "/account/security",
+    "/account/profile",
     "/account/consent",
     "/account/accept-invitation",
     "/account/sign-in-link",

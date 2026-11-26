@@ -44,6 +44,9 @@ pub enum SamlAnswer {
         email: Option<String>,
         /// The name, if the identity provider gave one.
         name: Option<String>,
+        /// The standard claims the provider's claim attributes gave, by the
+        /// claim's name, as given.
+        claims: std::collections::BTreeMap<String, String>,
     },
     /// It was refused, for this reason.
     Refused {

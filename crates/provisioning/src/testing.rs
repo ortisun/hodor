@@ -15,7 +15,7 @@ use crate::api::{
 };
 use hodor_identity::api::{
     Group, GroupMember, GroupName, GroupRepository, IdentifierKind, NormalizedIdentifier, Profile,
-    User, UserKind, UserRepository,
+    StandardClaims, User, UserKind, UserRepository,
 };
 use hodor_kernel::{
     DomainError, GroupId, TenantContext, TenantId, Timestamp, UnitOfWork, UnitOfWorkFactory, UserId,
@@ -791,16 +791,27 @@ impl Population {
 
 #[allow(clippy::too_many_lines, reason = "the population, written out")]
 async fn populate(ports: ContractPorts<'_>, home: &TenantContext) -> Population {
-    let bjensen = person(
+    let names = |user: &mut User, given: Option<&str>, family: &str, moment: Timestamp| {
+        let claims = StandardClaims {
+            given_name: given.map(str::to_owned),
+            family_name: Some(family.to_owned()),
+            ..StandardClaims::default()
+        };
+        user.change_claims(claims, moment).expect("names");
+    };
+    let mut bjensen = person(
         Some("bjensen"),
         &["bjensen@example.com", "babs@jensen.org"],
         Some("Babs Jensen"),
         at(1),
     );
+    names(&mut bjensen, Some("Barbara"), "Jensen", at(1));
     let mut jsmith = person(Some("JSmith"), &["john.smith@example.org"], None, at(2));
     jsmith.suspend("on leave", at(2)).expect("suspended");
-    let ana = person(None, &["Ana.Silva@Example.com"], Some("Ana Silva"), at(3));
-    let (omalley, _) = User::create(
+    names(&mut jsmith, Some("John"), "Smith", at(2));
+    let mut ana = person(None, &["Ana.Silva@Example.com"], Some("Ana Silva"), at(3));
+    names(&mut ana, None, "Silva", at(3));
+    let (mut omalley, _) = User::create(
         UserKind::Human,
         vec![identifier(IdentifierKind::Username, "omalley")],
         Profile {
@@ -811,6 +822,7 @@ async fn populate(ports: ContractPorts<'_>, home: &TenantContext) -> Population 
         at(4),
     )
     .expect("a pending user");
+    names(&mut omalley, None, "O'Malley", at(4));
     let (robot, _) = User::create(
         UserKind::ServiceAccount,
         vec![],
@@ -839,8 +851,6 @@ async fn populate(ports: ContractPorts<'_>, home: &TenantContext) -> Population 
             UserSupplement {
                 external_id: kept("701984"),
                 formatted_name: kept("Barbara Jensen"),
-                given_name: kept("Barbara"),
-                family_name: kept("Jensen"),
                 department: kept("Tour Operations"),
                 email_types: BTreeMap::from([(
                     "bjensen@example.com".to_owned(),
@@ -850,32 +860,16 @@ async fn populate(ports: ContractPorts<'_>, home: &TenantContext) -> Population 
             },
             at(1),
         ),
-        (
-            jsmith.id(),
-            UserSupplement {
-                given_name: kept("John"),
-                family_name: kept("Smith"),
-                ..UserSupplement::default()
-            },
-            at(10),
-        ),
+        (jsmith.id(), UserSupplement::default(), at(10)),
         (
             ana.id(),
             UserSupplement {
                 external_id: kept("A-1"),
-                family_name: kept("Silva"),
                 ..UserSupplement::default()
             },
             at(3),
         ),
-        (
-            omalley.id(),
-            UserSupplement {
-                family_name: kept("O'Malley"),
-                ..UserSupplement::default()
-            },
-            at(4),
-        ),
+        (omalley.id(), UserSupplement::default(), at(4)),
         (
             robot.id(),
             UserSupplement {

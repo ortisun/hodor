@@ -1,6 +1,8 @@
 //! Identity providers: who a tenant trusts to vouch for people.
 
+use hodor_identity::api::{ClaimField, StandardClaims};
 use hodor_kernel::{DomainError, SealedSecret, Timestamp};
+use std::collections::BTreeMap;
 
 hodor_kernel::define_id!(
     /// Identifies an identity provider of a tenant.
@@ -130,6 +132,47 @@ fn stored_data_invalid() -> DomainError {
     )
 }
 
+/// Which attribute gives which standard claim of a person a directory or a
+/// SAML identity provider creates: a claim's name, such as `given_name` or
+/// `address.locality`, to an attribute's name. See
+/// `docs/architecture/contexts/federation.md`, "Claim attributes".
+pub type ClaimAttributes = BTreeMap<String, String>;
+
+/// Each claim `attributes` names, with its attribute, or the name that is
+/// not a claim.
+fn claim_fields(attributes: &ClaimAttributes) -> Result<Vec<(ClaimField, &str)>, &str> {
+    attributes
+        .iter()
+        .map(|(claim, attribute)| {
+            ClaimField::parse(claim)
+                .map(|field| (field, attribute.as_str()))
+                .ok_or(claim.as_str())
+        })
+        .collect()
+}
+
+/// The standard claims of what an identity provider said: each claim
+/// named, read from the attribute's first value by `read`, as given. They
+/// are checked, leniently, when the person is created. A telephone number
+/// from them is never verified.
+#[must_use]
+pub fn claims_from(
+    attributes: &ClaimAttributes,
+    read: impl Fn(&str) -> Option<String>,
+) -> StandardClaims {
+    let mut claims = StandardClaims::default();
+    for (field, attribute) in claim_fields(attributes).unwrap_or_default() {
+        if let Some(value) = read(attribute) {
+            claims.set(field, Some(value));
+        }
+    }
+    claims
+}
+
+/// The longest value of a claim kept from what a provider said, in
+/// characters: past it, no rule of a claim could hold.
+pub const LONGEST_CLAIM_VALUE: usize = 1024;
+
 /// What only a directory has: where its people are and how one is found.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DirectorySettings {
@@ -144,6 +187,9 @@ pub struct DirectorySettings {
     pub email_attribute: String,
     /// The attribute holding the person's name.
     pub name_attribute: String,
+    /// The attributes that give the standard claims of a person it
+    /// creates.
+    pub claim_attributes: ClaimAttributes,
 }
 
 /// Where what a person typed goes in a directory's filter.
@@ -160,6 +206,7 @@ impl DirectorySettings {
             subject_attribute: "entryUUID".to_owned(),
             email_attribute: "mail".to_owned(),
             name_attribute: "cn".to_owned(),
+            claim_attributes: ClaimAttributes::new(),
         }
     }
 
@@ -185,11 +232,20 @@ impl DirectorySettings {
                 "a directory's filter is in parentheses and contains `{identifier}` exactly once",
             ));
         }
+        if let Err(claim) = claim_fields(&self.claim_attributes) {
+            return Err(DomainError::invalid(
+                "federation.directory_invalid",
+                format!("`{claim}` is not a standard claim an attribute can give"),
+            ));
+        }
         for attribute in [
             &self.subject_attribute,
             &self.email_attribute,
             &self.name_attribute,
-        ] {
+        ]
+        .into_iter()
+        .chain(self.claim_attributes.values())
+        {
             let bytes = attribute.as_bytes();
             let named = (1..=64).contains(&bytes.len())
                 && bytes[0].is_ascii_alphabetic()
@@ -219,6 +275,9 @@ pub struct SamlSettings {
     pub email_attribute: String,
     /// The attribute that carries the person's name.
     pub name_attribute: String,
+    /// The attributes that give the standard claims of a person it
+    /// creates.
+    pub claim_attributes: ClaimAttributes,
 }
 
 impl SamlSettings {
@@ -231,6 +290,7 @@ impl SamlSettings {
             certificate: certificate.to_owned(),
             email_attribute: "email".to_owned(),
             name_attribute: "name".to_owned(),
+            claim_attributes: ClaimAttributes::new(),
         }
     }
 
@@ -264,7 +324,16 @@ impl SamlSettings {
             return Err(invalid("a certificate is at most 16 kibibytes"));
         }
         self.key()?;
-        for attribute in [&self.email_attribute, &self.name_attribute] {
+        if let Err(claim) = claim_fields(&self.claim_attributes) {
+            return Err(DomainError::invalid(
+                "federation.saml_invalid",
+                format!("`{claim}` is not a standard claim an attribute can give"),
+            ));
+        }
+        for attribute in [&self.email_attribute, &self.name_attribute]
+            .into_iter()
+            .chain(self.claim_attributes.values())
+        {
             let named = (1..=255).contains(&attribute.chars().count())
                 && !attribute
                     .chars()
@@ -962,9 +1031,26 @@ mod tests {
             |d| d.subject_attribute = "entry UUID".to_owned(),
             |d| d.email_attribute = "1mail".to_owned(),
             |d| d.name_attribute = String::new(),
+            |d| {
+                d.claim_attributes
+                    .insert("shoe_size".to_owned(), "shoeSize".to_owned());
+            },
+            |d| {
+                d.claim_attributes
+                    .insert("given_name".to_owned(), "given name".to_owned());
+            },
+            |d| {
+                d.claim_attributes
+                    .insert("address".to_owned(), "postalAddress".to_owned());
+            },
         ] {
             assert_eq!(broken(change), "federation.directory_invalid");
         }
+        let mut named = good.clone();
+        named
+            .claim_attributes
+            .insert("address.postal_code".to_owned(), "postalCode".to_owned());
+        assert!(directory("ldaps://ldap.example.com", named).is_ok());
         // Scopes are for other kinds; a directory's settings are for a directory.
         let mut with_scopes = directory("ldaps://ldap.example.com", good.clone()).expect("valid");
         with_scopes.scopes = vec!["openid".to_owned()];
@@ -1046,6 +1132,15 @@ mod tests {
             "federation.scopes_invalid"
         );
         assert_eq!(broken(|s| s.saml = None), "federation.saml_invalid");
+        assert_eq!(
+            broken(|s| {
+                if let Some(saml) = s.saml.as_mut() {
+                    saml.claim_attributes
+                        .insert("phone".to_owned(), "phone".to_owned());
+                }
+            }),
+            "federation.saml_invalid"
+        );
         for address in [
             "http://idp.example.com/sso",
             "https://idp.example.com/sso#x",

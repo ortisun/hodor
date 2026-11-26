@@ -12,6 +12,7 @@ use crate::domain::response::{ResponseMode, ResponseType};
 use crate::domain::token::decode_json;
 use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+use hodor_identity::api::{PostalAddress, StandardClaims};
 use hodor_kernel::{
     Digest, GroupId, OrganizationId, PublicKey, SignatureAlgorithm, SignatureVerifier, Timestamp,
 };
@@ -462,9 +463,24 @@ pub struct PersonClaims {
     /// The primary email address, and whether the person proved it is
     /// theirs.
     pub email: Option<(String, bool)>,
+    /// The person's standard claims: names, addresses of pages, birth
+    /// date, time zone, telephone number and postal address.
+    pub claims: StandardClaims,
     /// The person's effective groups, read only when the scopes hold
     /// `groups`.
     pub groups: Vec<GroupId>,
+}
+
+/// The postal address as OpenID Connect writes it: an object of the parts
+/// the person has.
+#[must_use]
+pub(crate) fn address_claim(address: &PostalAddress) -> Value {
+    let parts: Map<String, Value> = address
+        .parts()
+        .into_iter()
+        .filter_map(|(name, value)| value.map(|value| (name.to_owned(), json!(value))))
+        .collect();
+    Value::Object(parts)
 }
 
 /// The answer of UserInfo for the person the client knows as `subject`,
@@ -474,12 +490,29 @@ pub fn userinfo_claims(subject: &str, scopes: &[String], person: &PersonClaims) 
     let has = |scope: &str| scopes.iter().any(|given| given == scope);
     let mut claims = Map::new();
     claims.insert("sub".to_owned(), json!(subject));
+    let standard = &person.claims;
     if has("profile") {
         if let Some(name) = &person.name {
             claims.insert("name".to_owned(), json!(name));
         }
         if let Some(username) = &person.preferred_username {
             claims.insert("preferred_username".to_owned(), json!(username));
+        }
+        for (name, value) in [
+            ("given_name", &standard.given_name),
+            ("family_name", &standard.family_name),
+            ("middle_name", &standard.middle_name),
+            ("nickname", &standard.nickname),
+            ("profile", &standard.profile),
+            ("picture", &standard.picture),
+            ("website", &standard.website),
+            ("gender", &standard.gender),
+            ("birthdate", &standard.birthdate),
+            ("zoneinfo", &standard.zoneinfo),
+        ] {
+            if let Some(value) = value {
+                claims.insert(name.to_owned(), json!(value));
+            }
         }
         if let Some(locale) = &person.locale {
             claims.insert("locale".to_owned(), json!(locale));
@@ -493,6 +526,20 @@ pub fn userinfo_claims(subject: &str, scopes: &[String], person: &PersonClaims) 
     {
         claims.insert("email".to_owned(), json!(email));
         claims.insert("email_verified".to_owned(), json!(verified));
+    }
+    if has("address")
+        && let Some(address) = &standard.address
+    {
+        claims.insert("address".to_owned(), address_claim(address));
+    }
+    if has("phone")
+        && let Some(number) = &standard.phone_number
+    {
+        claims.insert("phone_number".to_owned(), json!(number));
+        claims.insert(
+            "phone_number_verified".to_owned(),
+            json!(standard.phone_number_verified),
+        );
     }
     // Every group, however many: a token holds at most a hundred, and a
     // client reads the rest here.
@@ -586,11 +633,13 @@ pub fn discovery_document(issuer: &str, acr_values: &[&str]) -> Value {
         "userinfo_signing_alg_values_supported":
             IdTokenAlgorithm::ALL.map(IdTokenAlgorithm::as_str),
         "subject_types_supported": ["public", "pairwise"],
-        "scopes_supported": ["openid", "profile", "email", "groups"],
+        "scopes_supported": ["openid", "profile", "email", "address", "phone", "groups"],
         "claims_supported": [
             "iss", "sub", "aud", "exp", "iat", "auth_time", "nonce", "acr", "amr", "at_hash", "sid",
-            "org_id", "name", "preferred_username", "locale", "updated_at", "email",
-            "email_verified", "groups"
+            "org_id", "name", "given_name", "family_name", "middle_name", "nickname",
+            "preferred_username", "profile", "picture", "website", "gender", "birthdate",
+            "zoneinfo", "locale", "updated_at", "email", "email_verified", "address",
+            "phone_number", "phone_number_verified", "groups"
         ],
         "acr_values_supported": acr_values,
         "prompt_values_supported": prompt_values_supported(false),
@@ -612,7 +661,7 @@ pub fn discovery_document(issuer: &str, acr_values: &[&str]) -> Value {
 }
 
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;
 
 #[cfg(test)]
 mod registration_tests {

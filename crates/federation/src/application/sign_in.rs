@@ -16,12 +16,16 @@ use crate::application::service::FederationService;
 use crate::domain::event::FederationEvent;
 use crate::domain::link::Subject;
 use crate::domain::pending_authorization::{PendingAuthorization, SamlAnswer};
-use crate::domain::provider::{IDENTIFIER_PLACE, IdentityProvider, ProviderId, ProviderKind};
+use crate::domain::provider::{
+    IDENTIFIER_PLACE, IdentityProvider, LONGEST_CLAIM_VALUE, ProviderId, ProviderKind, claims_from,
+};
 use hodor_authentication::api::{
     AttemptGuard, AuthTransaction, Authenticator, AuthenticatorTraits, ExternalInput, Factor,
     StepInput, StepOutcome, TransactionId,
 };
-use hodor_identity::api::{CreateUser, IdentifierKind, IdentityService, Profile, UserKind};
+use hodor_identity::api::{
+    ClaimField, CreateUser, IdentifierKind, IdentityService, Profile, StandardClaims, UserKind,
+};
 use hodor_kernel::{
     Caller, Clock, Digest, DomainError, ErrorKind, EventEnvelope, EventMetadata, Secret, SecretBox,
     TenantContext, UnitOfWorkFactory, UserId,
@@ -379,6 +383,15 @@ impl ExternalSignIn {
                     subject: identity.subject,
                     email: identity.email,
                     name: identity.name,
+                    claims: ClaimField::ALL
+                        .into_iter()
+                        .filter_map(|field| {
+                            identity
+                                .claims
+                                .get(field)
+                                .map(|value| (field.as_str().to_owned(), value.to_owned()))
+                        })
+                        .collect(),
                 },
                 Err(reason) => SamlAnswer::Refused { reason },
             },
@@ -529,7 +542,14 @@ impl ExternalSignIn {
                 subject,
                 email,
                 name,
+                claims,
             } => {
+                let mut kept = StandardClaims::default();
+                for (claim, value) in claims {
+                    if let Some(field) = ClaimField::parse(claim) {
+                        kept.set(field, Some(value.clone()));
+                    }
+                }
                 let identity = VerifiedIdentity {
                     subject: subject.clone(),
                     email: email.clone(),
@@ -538,6 +558,7 @@ impl ExternalSignIn {
                     email_verified: false,
                     name: name.clone(),
                     locale: None,
+                    claims: kept,
                 };
                 self.resolve(tenant, provider, identity).await
             }
@@ -607,11 +628,17 @@ impl ExternalSignIn {
             filter: directory
                 .filter
                 .replace(IDENTIFIER_PLACE, &escaped_for_filter(typed)),
-            attributes: vec![
-                directory.subject_attribute.clone(),
-                directory.email_attribute.clone(),
-                directory.name_attribute.clone(),
-            ],
+            attributes: [
+                &directory.subject_attribute,
+                &directory.email_attribute,
+                &directory.name_attribute,
+            ]
+            .into_iter()
+            .chain(directory.claim_attributes.values())
+            .cloned()
+            .collect::<std::collections::BTreeSet<_>>()
+            .into_iter()
+            .collect(),
         };
         let entry = match directories.client.verify(&query, password).await? {
             DirectoryAnswer::Verified(entry) => entry,
@@ -646,6 +673,9 @@ impl ExternalSignIn {
             email_verified: false,
             name: text(&directory.name_attribute, 200),
             locale: None,
+            claims: claims_from(&directory.claim_attributes, |attribute| {
+                text(attribute, LONGEST_CLAIM_VALUE)
+            }),
         };
 
         let resolved = self.resolve(tenant, &provider, identity).await?;
@@ -708,10 +738,14 @@ impl ExternalSignIn {
             },
             confirmed: true,
         };
+        // What the provider said of the person that breaks a rule of a
+        // claim is left out: the person cannot correct it before they are
+        // in.
+        let claims = identity.claims.lenient(self.clock.now());
         let caller = Caller::system();
         let user = match self
             .identity
-            .create_in(uow.as_mut(), command, true, caller)
+            .create_with_claims_in(uow.as_mut(), command, claims, true, caller)
             .await
         {
             Ok(user) => user,

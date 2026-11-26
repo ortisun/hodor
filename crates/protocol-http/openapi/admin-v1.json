@@ -351,6 +351,103 @@
         }
       }
     },
+    "/users/{user_id}/claims": {
+      "put": {
+        "operationId": "replaceUserClaims",
+        "summary": "Replace a person's standard claims",
+        "x-hodor-permission": "users:write",
+        "parameters": [
+          {
+            "name": "user_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/StandardClaims"
+              }
+            }
+          }
+        },
+        "responses": {
+          "401": {
+            "description": "No access token, or one that is not good in this tenant. The same in every case.",
+            "headers": {
+              "WWW-Authenticate": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The token is good and its user may not do this.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "200": {
+            "description": "The user, with the claims as they are kept.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/User"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such user.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The user is marked Deleted, or someone else changed it at the same moment.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "A claim breaks its rule (`identity.claim_invalid`), or the user is a service account or an agent (`identity.workload_claims_refused`).",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/users/{user_id}/sessions": {
       "get": {
         "operationId": "listUserSessions",
@@ -12323,6 +12420,10 @@
             "type": "string",
             "format": "email"
           },
+          "username": {
+            "type": "string",
+            "description": "A second login identifier: 3 to 64 letters, digits, `.`, `_` and `-`."
+          },
           "display_name": {
             "type": "string",
             "maxLength": 200
@@ -12353,6 +12454,7 @@
           "kind",
           "status",
           "identifiers",
+          "claims",
           "created_at",
           "updated_at"
         ],
@@ -12402,6 +12504,9 @@
             "items": {
               "$ref": "#/components/schemas/Identifier"
             }
+          },
+          "claims": {
+            "$ref": "#/components/schemas/StandardClaims"
           },
           "created_at": {
             "type": "string",
@@ -12896,7 +13001,8 @@
           "filter",
           "subject_attribute",
           "email_attribute",
-          "name_attribute"
+          "name_attribute",
+          "claim_attributes"
         ],
         "properties": {
           "base": {
@@ -12913,13 +13019,27 @@
           },
           "name_attribute": {
             "type": "string"
+          },
+          "claim_attributes": {
+            "type": "object",
+            "description": "Which attribute gives which standard claim of a person the provider creates: `given_name`, `family_name`, `middle_name`, `nickname`, `profile`, `picture`, `website`, `gender`, `birthdate`, `zoneinfo`, `phone_number` and `address.formatted`, `address.street_address`, `address.locality`, `address.region`, `address.postal_code`, `address.country`.",
+            "additionalProperties": {
+              "type": "string"
+            },
+            "maxProperties": 17,
+            "examples": [
+              {
+                "given_name": "givenName",
+                "family_name": "sn"
+              }
+            ]
           }
         }
       },
       "DirectoryInput": {
         "type": "object",
         "additionalProperties": false,
-        "description": "What is left out is `entryUUID`, `mail` and `cn` for the attribute names, or, in a change, what it was.",
+        "description": "What is left out is `entryUUID`, `mail` and `cn` for the attribute names, or, in a change, what it was. `claim_attributes` is `{}` when left out of a new provider; a change that gives it replaces it whole.",
         "properties": {
           "base": {
             "type": "string"
@@ -12935,6 +13055,20 @@
           },
           "name_attribute": {
             "type": "string"
+          },
+          "claim_attributes": {
+            "type": "object",
+            "description": "Which attribute gives which standard claim of a person the provider creates: `given_name`, `family_name`, `middle_name`, `nickname`, `profile`, `picture`, `website`, `gender`, `birthdate`, `zoneinfo`, `phone_number` and `address.formatted`, `address.street_address`, `address.locality`, `address.region`, `address.postal_code`, `address.country`.",
+            "additionalProperties": {
+              "type": "string"
+            },
+            "maxProperties": 17,
+            "examples": [
+              {
+                "given_name": "givenName",
+                "family_name": "sn"
+              }
+            ]
           }
         }
       },
@@ -12944,7 +13078,8 @@
           "single_sign_on_address",
           "certificate",
           "email_attribute",
-          "name_attribute"
+          "name_attribute",
+          "claim_attributes"
         ],
         "properties": {
           "single_sign_on_address": {
@@ -12960,13 +13095,27 @@
           },
           "name_attribute": {
             "type": "string"
+          },
+          "claim_attributes": {
+            "type": "object",
+            "description": "Which attribute gives which standard claim of a person the provider creates: `given_name`, `family_name`, `middle_name`, `nickname`, `profile`, `picture`, `website`, `gender`, `birthdate`, `zoneinfo`, `phone_number` and `address.formatted`, `address.street_address`, `address.locality`, `address.region`, `address.postal_code`, `address.country`.",
+            "additionalProperties": {
+              "type": "string"
+            },
+            "maxProperties": 17,
+            "examples": [
+              {
+                "given_name": "givenName",
+                "family_name": "sn"
+              }
+            ]
           }
         }
       },
       "SamlInput": {
         "type": "object",
         "additionalProperties": false,
-        "description": "What is left out is `email` and `name` for the attribute names, or, in a change, what it was. A new provider needs the single sign-on address and the certificate.",
+        "description": "What is left out is `email` and `name` for the attribute names, or, in a change, what it was. A new provider needs the single sign-on address and the certificate. `claim_attributes` is `{}` when left out of a new provider; a change that gives it replaces it whole.",
         "properties": {
           "single_sign_on_address": {
             "type": "string",
@@ -12980,6 +13129,20 @@
           },
           "name_attribute": {
             "type": "string"
+          },
+          "claim_attributes": {
+            "type": "object",
+            "description": "Which attribute gives which standard claim of a person the provider creates: `given_name`, `family_name`, `middle_name`, `nickname`, `profile`, `picture`, `website`, `gender`, `birthdate`, `zoneinfo`, `phone_number` and `address.formatted`, `address.street_address`, `address.locality`, `address.region`, `address.postal_code`, `address.country`.",
+            "additionalProperties": {
+              "type": "string"
+            },
+            "maxProperties": 17,
+            "examples": [
+              {
+                "given_name": "givenName",
+                "family_name": "sn"
+              }
+            ]
           }
         }
       },
@@ -16669,6 +16832,167 @@
             "type": "string",
             "minLength": 1,
             "maxLength": 200
+          }
+        }
+      },
+      "PostalAddress": {
+        "type": "object",
+        "additionalProperties": false,
+        "description": "The parts of a postal address. One left out, `null` or empty is no part.",
+        "properties": {
+          "formatted": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "maxLength": 300,
+            "description": "May hold line breaks."
+          },
+          "street_address": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "maxLength": 200,
+            "description": "May hold line breaks."
+          },
+          "locality": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "maxLength": 100
+          },
+          "region": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "maxLength": 100
+          },
+          "postal_code": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "maxLength": 20
+          },
+          "country": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "maxLength": 100
+          }
+        }
+      },
+      "StandardClaims": {
+        "type": "object",
+        "additionalProperties": false,
+        "description": "A person's standard claims of OpenID Connect, as docs/architecture/contexts/identity.md says. In an answer only those with a value, and `phone_number_verified` always; in a request one left out, `null` or empty is removed.",
+        "properties": {
+          "given_name": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "maxLength": 200
+          },
+          "family_name": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "maxLength": 200
+          },
+          "middle_name": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "maxLength": 200
+          },
+          "nickname": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "maxLength": 200
+          },
+          "profile": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "maxLength": 1024,
+            "description": "An absolute `https` or `http` address."
+          },
+          "picture": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "maxLength": 1024,
+            "description": "An absolute `https` or `http` address. Never fetched by Hodor."
+          },
+          "website": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "maxLength": 1024,
+            "description": "An absolute `https` or `http` address."
+          },
+          "gender": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "maxLength": 50
+          },
+          "birthdate": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "examples": [
+              "1990-04-12",
+              "0000-04-12",
+              "1990"
+            ]
+          },
+          "zoneinfo": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "maxLength": 64,
+            "examples": [
+              "America/Sao_Paulo"
+            ]
+          },
+          "phone_number": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "E.164, with an optional `;ext=` extension. Spaces, hyphens, dots and parentheses are taken out.",
+            "examples": [
+              "+5511912345678"
+            ]
+          },
+          "phone_number_verified": {
+            "type": "boolean"
+          },
+          "address": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/PostalAddress"
+              },
+              {
+                "type": "null"
+              }
+            ]
           }
         }
       }

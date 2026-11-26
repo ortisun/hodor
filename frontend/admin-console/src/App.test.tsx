@@ -192,6 +192,38 @@ describe("the page of a user", () => {
     expect(screen.queryByRole("button", { name: en.suspendUser })).toBeNull();
   });
 
+  it("shows the standard claims the person has, the telephone number with whether it is verified", async () => {
+    show(`/t/acme/console/users/${BIA}`, {
+      ...script(),
+      [`GET /console/api/users/${BIA}`]: [
+        json(
+          200,
+          userBody(BIA, "bia@example.com", {
+            display_name: "Bia Souza",
+            claims: {
+              given_name: "Bia",
+              phone_number: "+5581999999999",
+              phone_number_verified: true,
+              address: { locality: "Recife", country: "BR" },
+            },
+          }),
+        ),
+      ],
+    });
+    expect(await screen.findByText(en.standardClaims)).toBeTruthy();
+    expect(screen.getByText(en.claimLabel("given_name"))).toBeTruthy();
+    expect(screen.getByText("Bia")).toBeTruthy();
+    expect(screen.getByText("+5581999999999")).toBeTruthy();
+    expect(screen.getByText(en.claimLabel("address.locality"))).toBeTruthy();
+    expect(screen.getByText("Recife")).toBeTruthy();
+    expect(screen.queryByText(en.claimLabel("birthdate"))).toBeNull();
+  });
+
+  it("says when the person has no standard claims", async () => {
+    show(`/t/acme/console/users/${BIA}`, script());
+    expect(await screen.findByText(en.noStandardClaims)).toBeTruthy();
+  });
+
   it("ends a session after a confirmation that names the consequence", async () => {
     const { sent, user } = show(`/t/acme/console/users/${BIA}`, {
       ...script(),
