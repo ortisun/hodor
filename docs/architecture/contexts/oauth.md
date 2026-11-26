@@ -4,7 +4,7 @@ The `oauth` context makes Hodor an OAuth 2.x authorization server and an OpenID 
 
 It does not sign anyone in. When a request needs a person, it hands the request to the `authentication` context and takes the session that comes back. The two contexts do not depend on each other: the HTTP layer joins them ([crates.md](../crates.md)).
 
-This page specifies what Issue-53 builds: applications, clients and resource servers, and the rules they keep; what Issue-55 builds: the authorization endpoint, grants and authorization codes; what Issue-56 builds: the token endpoint, client authentication and access tokens; what Issue-59 builds: the OpenID Provider; what Issue-60 builds: logout initiated by the relying party; what Issue-62 builds: [consent](#consent); what Issue-93 builds: [clients that act as a workload](#clients-that-act-as-a-workload); what Issue-106 builds: [a JWT-SVID as a client's proof](#checking-a-jwt-svid); what Issue-107 builds: [an identity forwarded by a proxy](#an-identity-forwarded-by-a-proxy) as a client's proof; what Issue-95 builds: [token exchange](#token-exchange); what Issue-100 builds: [back-channel logout](#back-channel-logout); what Issue-98 builds: [pairwise subject identifiers](#pairwise-subject-identifiers); and what Issue-99 builds: [claim mappers](#claim-mappers); what Issue-120 builds: [request objects](#request-objects); and what Issue-125 builds: the parameters of a request that were still ignored, `id_token_hint`, `display` and `prompt=create`, a client's [defaults for a sign-in](#defaults-for-a-sign-in), and the access token in a form body at [UserInfo](#userinfo). The other endpoints and tokens are added by Issue-57 and Issue-58, under the headings at the end of this page.
+This page specifies what Issue-53 builds: applications, clients and resource servers, and the rules they keep; what Issue-55 builds: the authorization endpoint, grants and authorization codes; what Issue-56 builds: the token endpoint, client authentication and access tokens; what Issue-59 builds: the OpenID Provider; what Issue-60 builds: logout initiated by the relying party; what Issue-62 builds: [consent](#consent); what Issue-93 builds: [clients that act as a workload](#clients-that-act-as-a-workload); what Issue-106 builds: [a JWT-SVID as a client's proof](#checking-a-jwt-svid); what Issue-107 builds: [an identity forwarded by a proxy](#an-identity-forwarded-by-a-proxy) as a client's proof; what Issue-95 builds: [token exchange](#token-exchange); what Issue-100 builds: [back-channel logout](#back-channel-logout); what Issue-98 builds: [pairwise subject identifiers](#pairwise-subject-identifiers); and what Issue-99 builds: [claim mappers](#claim-mappers); what Issue-120 builds: [request objects](#request-objects); and what Issue-125 builds: the parameters of a request that were still ignored, `id_token_hint`, `display` and `prompt=create`, a client's [defaults for a sign-in](#defaults-for-a-sign-in), the access token in a form body at [UserInfo](#userinfo); and what Issue-132 builds: [the settings of client registration](#client-registration) and initial access tokens. The other endpoints and tokens are added by Issue-57 and Issue-58, under the headings at the end of this page.
 
 ## Applications
 
@@ -1849,6 +1849,144 @@ Administrators reach them through [the administration interface](../../api/admin
 
 `oauth.claim_mapper` holds `tenant_id`, `id` (the key, with the tenant), `client_id`, referenced with the tenant so that mappers go with their client, `claim`, `claim_normalized` (its lowercase form, unique per client), `targets` (`text[]`), `scope`, `source` (`jsonb`), `created_at`, `updated_at` and `version`. Check constraints keep the claim's length, the targets to the three, the source an object with a known `kind`, and a constant to 2048 bytes as PostgreSQL writes it, which holds every constant of 1024 bytes as Hodor writes it. It is a tenant table under row-level security (migration 0072). The lock of a client is a `SELECT … FOR UPDATE` of its row of `oauth.client`.
 
+## Client registration
+
+Issue-132. A tenant may let clients register themselves ([Decision 0049](../../decisions/0049-dynamic-client-registration.md)), and it chooses who may and what they may become ([Decision 0075](../../decisions/0075-the-registration-settings-of-a-tenant.md)). This section specifies what an administrator sets: whether registration is on, the application registered clients belong to, the ways a registration may be allowed, the registration policy that bounds every registration, and initial access tokens. The registration endpoint that reads all of it, `{issuer}/oauth2/register`, is Issue-133; reading, changing and removing a registration with its registration access token, Issue-134; software statements and the issuers a tenant trusts, Issue-135.
+
+### The settings of a tenant
+
+| Setting | Meaning | Unless set |
+|---|---|---|
+| On | Whether clients may register themselves in the tenant | Off |
+| Application | The application every registered client belongs to: one of the tenant's, never first party. Required while registration is on | None |
+| Ways | Which ways may allow a registration, one or more of `initial_access_token`, `software_statement` and `open`; see [the ways](#the-ways-a-registration-is-allowed). At least one while registration is on | `initial_access_token` |
+| Most clients | How many clients the application of registered clients may hold, from 1 to 1000, whoever made them. Every other application keeps its bound of 20 | 100 |
+| Policy | What a registration may ask for; see [the registration policy](#the-registration-policy) | The defaults below |
+
+**Off unless the tenant turns it on.** A tenant that never set them reads the settings above, off. While registration is off:
+
+- the discovery document names no `registration_endpoint`, and the registration address answers `404`, as an address that does not exist does (Issue-133);
+- no initial access token can be made, and every one already made is refused when presented, without being spent;
+- nothing else changes: the tokens are kept, so that turning registration on again makes each token that has not expired, been revoked or been used up work again, and so are the other settings when the change that turns registration off keeps them, as `hodor-cli client-registration off` does.
+
+**Every setting is checked at once**, and a change that breaks one changes nothing: an application that is not one of the tenant's, or is first party, or none while registration is on, is refused with `oauth.client_registration_application_invalid`; no way while registration is on with `oauth.client_registration_ways_invalid`; most clients outside 1 to 1000 with `oauth.client_registration_most_clients_invalid`; a policy that breaks a rule of its own with `oauth.client_registration_policy_invalid`, which says the rule. Settings are replaced as a whole, with optimistic locking: a change made from a copy someone else has changed since is refused with `oauth.client_registration_modified_concurrently`.
+
+**The application of registered clients is third party**, so that the person a registered client signs in is always asked for [consent](#consent). It stays an ordinary application: its administrator sees its clients with every other, and disables it to stop them all. Making it first party afterwards does not make a registered client first party: the registration endpoint records on each client that it registered itself, and asks consent for it whatever its application says (Issue-133). The bound of most clients is the registration endpoint's; a client made by hand is held to the bound of 20 of every application, counting every client the application holds, so an administrator who wants clients of their own makes them in another application.
+
+### The ways a registration is allowed
+
+| Way | What the request carries | Accepted when |
+|---|---|---|
+| `initial_access_token` | `Authorization: Bearer` with an [initial access token](#initial-access-tokens) of the tenant ([RFC 7591, section 3](https://www.rfc-editor.org/rfc/rfc7591#section-3)) | The token is accepted by [the rules below](#when-an-initial-access-token-is-accepted) |
+| `software_statement` | `software_statement` in the body, a JSON Web Token signed by an issuer the tenant trusts ([RFC 7591, section 2.3](https://www.rfc-editor.org/rfc/rfc7591#section-2.3)) | Issue-135. Until it is built a tenant may choose the way, and no statement is accepted, since the tenant trusts no issuer |
+| `open` | Nothing | Always. Anyone who can reach the tenant may register, within the policy. A tenant that serves real people should prefer the other two |
+
+A request that carries an initial access token is allowed by that token or by nothing: it is never taken for an open registration, even where open registration is allowed. Whichever way allows a registration, [the registration policy](#the-registration-policy) applies in full: one policy for the tenant, the same for every way.
+
+### The registration policy
+
+A policy is a set of limits an administrator writes. Every registration and every change of one is checked against all of them, whichever way allowed it.
+
+| Limit | What a registration may name | Unless set |
+|---|---|---|
+| Grants | Its `grant_types`, among `authorization_code` and `refresh_token`. `client_credentials` and the token exchange grant are never registered, so a registered client never acts as a workload. One or both; `refresh_token` only with `authorization_code` | `authorization_code` |
+| Response types | Its `response_types`, among the types Hodor answers, `ResponseType` of [response modes](#response-modes): `code` today, and the response types of [Decision 0046](../../decisions/0046-responses-through-the-browser.md) as Milestone 14 adds them. One or more, each once. When the types that return an access token through the browser are added (Issue-128), allowing one allows the mark of that decision with it, for that client alone | `code` |
+| Scopes | The scopes it may ask for: 1 to 50, each written as [a scope](#scopes-a-client-may-ask-for) is, each once. `groups`, `offline_access` and the scopes of a resource server are allowed only when listed, as every other scope is | `openid`, `profile`, `email` |
+| Authentication methods | Its `token_endpoint_auth_method`, among `client_secret_basic`, `client_secret_post`, `private_key_jwt` and `none`, each once. `none` makes a public client, which only a policy that lists it allows. The methods of workloads, `spiffe_jwt`, `tls_client_auth`, `spiffe_x509` and `linkerd_identity`, are never registered | `client_secret_basic`, `private_key_jwt` |
+| Subject types | Its `subject_type`, `public`, `pairwise` or both | `public` |
+| Hosts | Any host, or a list of 1 to 50 hosts: every address the registration names, whatever its member, must have one of them as its host, compared exactly. A host is written in lowercase as an address writes it, without a port: a name of letters, digits, `.` and `-`, at most 253 characters, or an IP address, version 6 in brackets. An address without a host, such as one of a private-use scheme, is allowed only where any host is | Any host |
+
+The policy also decides what no administrator can change: a registered client is never first party, and its person is always asked for consent. What a registration may be beyond these limits is what [a client may be](#what-a-client-may-be): the policy narrows, it never widens.
+
+A registration that names something the policy does not allow is refused, and nothing is stored, with a code that names the limit: `oauth.registration_grant_not_allowed`, `oauth.registration_response_type_not_allowed`, `oauth.registration_scope_not_allowed`, `oauth.registration_method_not_allowed`, `oauth.registration_subject_type_not_allowed` or `oauth.registration_host_not_allowed`. The registration endpoint answers each as `invalid_client_metadata`, and a redirect address whose host is not allowed as `invalid_redirect_uri` (Issue-133). The check is the domain function `check_registration`, given what a registration names; changing the policy changes no client already registered, and applies from the next registration or change of one.
+
+### Initial access tokens
+
+An initial access token is what an administrator hands to a developer, who presents it to register a client.
+
+| Property | Rule |
+|---|---|
+| Shape | The text `hodor_iat_` followed by 64 lowercase hexadecimal characters: 32 random bytes from the operating system. Secret scanning tools recognize it by the pattern `hodor_iat_[0-9a-f]{64}` ([recognizing a key](credential.md#recognizing-a-key)) |
+| Storage | Only the SHA-256 of the token, unique in the tenant. The token is returned once, when it is made, and never again; its last four characters are kept as a **hint**, so that an administrator can tell tokens apart |
+| Name | 1 to 100 characters without control characters, for administrators: whom it was handed to |
+| Lifetime | 1 hour to 90 days; 7 days unless chosen. There is no token that does not expire |
+| Registrations | How many registrations it allows, 1 to 1000; 1 unless chosen |
+| Used | How many registrations it has allowed, and when it last allowed one |
+| Status | `active`, `expired`, `used_up` (it allowed every registration it may) or `revoked` |
+| How many | A tenant holds at most 100 tokens that are active |
+
+A token is made only while registration is on and allows `initial_access_token`; otherwise the request is refused with `oauth.client_registration_off` or `oauth.initial_access_tokens_not_allowed`, and a hundred and first active token with `oauth.too_many_initial_access_tokens`. **Revoking** a token ends it at once; revoking is final, and revoking a revoked token changes nothing. A token is never changed otherwise: one that should allow more registrations or live longer is replaced by a new one.
+
+A token allows a registration only. Changing or removing that registration takes its registration access token (Issue-134), never an initial access token.
+
+#### When an initial access token is accepted
+
+The registration endpoint asks before it registers anything, in the unit of work of the registration (Issue-133). A token is accepted only when all of these hold, and refused in one way otherwise, `oauth.initial_access_token_invalid`, whatever the reason:
+
+- registration is on in the tenant of the address, and allows `initial_access_token`;
+- the value has the shape of a token, and its hash is a token of this tenant. A token of another tenant is not known here, and a value without the shape matches nothing, and nothing is computed or looked up for it;
+- it is not revoked, it has not expired, and it has allowed fewer registrations than it may.
+
+Accepting it spends one registration and records when. The token's row is locked while it is spent, so that two registrations at the same moment cannot spend one registration twice, and a registration that is refused later in the same unit of work spends nothing. A request without a token is accepted only where registration is on and allows `open`; otherwise it is refused with `oauth.initial_access_token_required`, and where registration is off every request is refused with `oauth.client_registration_off`, which the endpoint answers as `404`.
+
+### Operations
+
+| Use case | What it does |
+|---|---|
+| Read the settings | The settings in force, the defaults when none were set |
+| Replace the settings | Checks them all at once against the rules above, and the application through the application store, then stores them |
+| Make an initial access token | Checks the name, the lifetime and the registrations, that registration is on and allows tokens, and that the tenant holds fewer than 100 active ones; returns the token once |
+| Revoke an initial access token | Ends it at once |
+| Read and list initial access tokens | One token, or every token of the tenant, newest first; never the token or its hash |
+| Admit a registration | For the registration endpoint: inside its unit of work, accepts the token presented or open registration, as [the rules above](#when-an-initial-access-token-is-accepted) say, and answers the settings and how the registration was allowed |
+
+Administrators reach them through [the administration interface](../../api/admin-api.md#client-registration), under `/client-registration`, with the permissions of applications, `applications:read` and `applications:write`: a token lets its holder make clients, so making one is as much as making a client. They reach them through `hodor-cli client-registration` too:
+
+| Command | What it does |
+|---|---|
+| `hodor-cli client-registration show --tenant acme` | One fact a line: `on` or `off`, the application, the ways, most clients, and each limit of the policy |
+| `hodor-cli client-registration on --tenant acme --application … [--way initial_access_token] [--most-clients 100] [--grant …] [--response-type …] [--scope …] [--method …] [--subject-type …] [--host …]` | Turns registration on with these settings. `--way`, `--grant`, `--response-type`, `--scope`, `--method`, `--subject-type` and `--host` are given once per value; one that is left out takes its default, and without `--host` any host is allowed. Prints what `show` prints |
+| `hodor-cli client-registration off --tenant acme` | Turns registration off, keeping the settings and the tokens |
+| `hodor-cli client-registration token add --tenant acme --name … [--hours 168] [--registrations 1]` | Makes an initial access token and prints `token <id>`, then `initial-access-token <token>`, once, and when it expires |
+| `hodor-cli client-registration token list --tenant acme` | One line per token: identifier, status, registrations used and allowed, when it expires, hint, name |
+| `hodor-cli client-registration token revoke --tenant acme --id …` | Revokes a token and prints `revoked <id>` |
+
+| Refusal | Code |
+|---|---|
+| The application is missing while registration is on, not one of the tenant's, or first party | `oauth.client_registration_application_invalid` |
+| No way while registration is on | `oauth.client_registration_ways_invalid` |
+| Most clients outside 1 to 1000 | `oauth.client_registration_most_clients_invalid` |
+| A limit of the policy breaks its rule | `oauth.client_registration_policy_invalid` |
+| Someone else changed the settings at the same moment | `oauth.client_registration_modified_concurrently` |
+| Making a token while registration is off, or does not allow tokens | `oauth.client_registration_off`, `oauth.initial_access_tokens_not_allowed` |
+| A token's name, lifetime or registrations break their rule | `oauth.initial_access_token_name_invalid`, `oauth.initial_access_token_lifetime_invalid`, `oauth.initial_access_token_registrations_invalid` |
+| A hundred and first active token | `oauth.too_many_initial_access_tokens` |
+| No such token in this tenant | `oauth.initial_access_token_not_found` |
+
+### Events
+
+| Event type | When |
+|---|---|
+| `oauth.client_registration_changed` | The settings were replaced. Carries whether registration is on, the application, the ways, most clients and the policy |
+| `oauth.initial_access_token_issued` | A token was made. Carries its identifier, its name, how many registrations it allows and when it expires; never the token or its hash |
+| `oauth.initial_access_token_revoked` | A token was revoked. Carries its identifier |
+| `oauth.initial_access_token_used` | A token allowed a registration. Carries its identifier and how many registrations it has allowed; recorded in the unit of work of the registration |
+
+### Ports
+
+| Port | Purpose |
+|---|---|
+| `ClientRegistrationStore` | Store and load the settings of the tenant, with optimistic locking |
+| `InitialAccessTokenStore` | Store, change and load initial access tokens; find one by its hash under a lock of its row, in the unit of work of a registration; count the active ones |
+| `ApplicationStore` | The application the settings name |
+| `Digest`, `RandomSource` | The hash and the random bytes of a token, from the kernel |
+
+### Storage
+
+`oauth.client_registration` holds one row per tenant that set its settings: `tenant_id` (the primary key), `enabled`, `application_id`, referenced with the tenant so that only an application of the tenant can be named, `ways` (`text[]`), `max_clients`, `policy` (`jsonb`, the limits as the administration interface writes them, `hosts` `null` for any host), `created_at`, `updated_at` and `version`. Check constraints keep the ways among the three, at most three of them, an application and at least one way while registration is on, most clients to 1 to 1000, and the policy an object. It is a tenant table under row-level security (migration 0118).
+
+`oauth.initial_access_token` holds `tenant_id`, `id` (the key, with the tenant), `token_hash` (32 bytes, unique in the tenant), `hint`, `name`, `max_registrations`, `registrations`, `created_at`, `expires_at`, `last_used_at` and `revoked_at`. Check constraints keep the hash to 32 bytes, the hint to four hexadecimal characters, the name to 1 to 100 characters, the registrations allowed to 1 to 1000 and those used between 0 and them, and a lifetime of one hour to 90 days. It is a tenant table under row-level security (migration 0118). A token is looked up by tenant and hash together, so a token presented to another tenant finds nothing.
+
 ## Not built yet
 
 | Item | Planned in |
@@ -1857,7 +1995,7 @@ Administrators reach them through [the administration interface](../../api/admin
 | A logout token when a session runs out by itself, idle or at its absolute end: only a session that is ended on purpose is told | When an application needs it ([Decision 0037](../../decisions/0037-back-channel-logout.md)) |
 | Listing logout deliveries and delivering a set-aside one again, from the administration interface | Not scheduled |
 | The back-channel logout address in the console's client screens: it is set through the administration interface and the command-line tool | Not scheduled |
-| Back-channel logout to a client that registers itself: there is no dynamic client registration | 0.5.0, [Milestone 15](../../product/epics.md#milestone-15-clients-that-register-themselves) |
+| Back-channel logout to a client that registers itself: a tenant can turn registration on ([client registration](#client-registration)), and the registration endpoint is not built yet | 0.5.0, [Milestone 15](../../product/epics.md#milestone-15-clients-that-register-themselves), Issue-133 |
 | Sending the person back to the application when they choose to stay signed in at the logout question | When an application asks for it |
 | `logout_hint`, which names who to sign out | Not used: a browser holds one session per tenant |
 | An `id_token_hint` signed by a key that has left the tenant's key set: it is refused, and the application can send `client_id` instead, which asks the person | When it matters |
@@ -1886,7 +2024,16 @@ Administrators reach them through [the administration interface](../../api/admin
 | Choosing a client's request object algorithm from the console | With the console pages of clients |
 | Fetching a sector identifier address again after the client was saved | Not planned: only its host is used ([Decision 0040](../../decisions/0040-pairwise-subjects.md)) |
 | Finding a person by a pairwise identifier outside a token's record, for the Authorization API or a resource server | Not planned: it would undo what the identifier hides ([Decision 0040](../../decisions/0040-pairwise-subjects.md)) |
-| A pairwise client that registers itself, and the suite's pairwise tests, which need it: there is no dynamic client registration | 0.5.0, [Milestone 15](../../product/epics.md#milestone-15-clients-that-register-themselves) ([Decision 0049](../../decisions/0049-dynamic-client-registration.md)) |
+| A pairwise client that registers itself, and the suite's pairwise tests, which need it: the registration endpoint is not built yet | 0.5.0, [Milestone 15](../../product/epics.md#milestone-15-clients-that-register-themselves), Issue-133 ([Decision 0049](../../decisions/0049-dynamic-client-registration.md)) |
+| The registration endpoint, `registration_endpoint` in discovery, and the bound of most clients and of 10 registrations a minute it checks | 0.5.0, Issue-133 |
+| Reading, changing and removing a registration with its registration access token | 0.5.0, Issue-134 |
+| Software statements and the issuers a tenant trusts: a tenant may allow the way, and accepts no statement until then | 0.5.0, Issue-135 |
+| The settings of client registration and initial access tokens in the admin console: they are set through the administration interface and the command-line tool | With the console pages of clients |
+| An initial access token with a policy of its own, narrower than the tenant's, and a policy of its own for open registration | When a tenant needs it ([Decision 0075](../../decisions/0075-the-registration-settings-of-a-tenant.md)) |
+| Limits of the policy per member of an address, such as hosts for redirect addresses apart from hosts for `jwks_uri` | When a tenant needs it ([Decision 0075](../../decisions/0075-the-registration-settings-of-a-tenant.md)) |
+| Refusing open registration in a tenant that holds a client of a security profile | 0.6.0, with [security profiles](../../decisions/0052-security-profiles.md) |
+| The cleanup job removing initial access tokens some time after they ended, as it removes API keys | When tenants hold many |
+| The worker removing a registered client that has not been used for a token in 90 days, when the tenant chooses so | Not scheduled ([Decision 0049](../../decisions/0049-dynamic-client-registration.md#bounds)) |
 | Claims mapped from custom attributes of a person, and from what SCIM keeps of them, such as the department | With custom attributes in the identity context |
 | Managing claim mappers from the admin console | With the console pages of clients |
 | Opaque access tokens chosen per client | Not planned for 0.2.0 |

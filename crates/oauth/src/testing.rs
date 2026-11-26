@@ -21,6 +21,7 @@ mod consent;
 mod pairwise;
 mod refresh;
 mod register;
+mod registration;
 mod token;
 pub use authorization::{
     AuthorizationStorePorts, InMemoryAuthorizationCodes, InMemoryAuthorizationRequests,
@@ -43,6 +44,10 @@ pub use refresh::{
 };
 pub use register::{
     AccessTokenRecordStorePorts, InMemoryAccessTokenRecords, run_access_token_record_contract,
+};
+pub use registration::{
+    ClientRegistrationStorePorts, InMemoryClientRegistrations, InMemoryInitialAccessTokens,
+    client_registration_service, run_client_registration_contract,
 };
 pub use token::{
     AssertionStorePorts, FakeVerifier, InMemoryClientAssertions, fake_signature,

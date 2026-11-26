@@ -103,6 +103,7 @@ The prefix tells anyone who finds a key in a repository, a log or a ticket what 
 | API key | `hodor_ak_[0-9a-f]{64}` |
 | Client secret | `hodor_cs_[0-9a-f]{64}` |
 | Access token of the administration interface | `hodor_at_[0-9a-f]{64}` |
+| [Initial access token](oauth.md#initial-access-tokens) of client registration | `hodor_iat_[0-9a-f]{64}` |
 
 A key found where it should not be is revoked by an administrator of its tenant. A value with the prefix but not the shape matches no key, and nothing is computed or looked up for it.
 

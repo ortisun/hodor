@@ -41,8 +41,13 @@ pub mod api {
     pub use crate::application::ports::{
         AccessTokenRecordStore, ApplicationStore, AuthorizationCodeStore,
         AuthorizationRequestStore, CertificateCheck, ClaimMapperStore, ClientAssertionStore,
-        ClientStore, ConsentStore, GrantStore, PairwiseSecretStore, PersonClaimSources,
-        PersonMemberships, PersonStanding, RefreshTokenStore, ResourceServerStore,
+        ClientRegistrationStore, ClientStore, ConsentStore, GrantStore, InitialAccessTokenStore,
+        PairwiseSecretStore, PersonClaimSources, PersonMemberships, PersonStanding,
+        RefreshTokenStore, ResourceServerStore,
+    };
+    pub use crate::application::registration::{
+        Admission, AllowedBy, ClientRegistrationPorts, ClientRegistrationService,
+        RegistrationInForce,
     };
     pub use crate::application::resource_access::{
         ResourceAccessPorts, ResourceAccessService, ResourceCaller,
@@ -99,6 +104,13 @@ pub mod api {
         advertise_certificate_bound_tokens, advertise_forwarded_methods, names_match,
         presented_thumbprint,
     };
+    pub use crate::domain::initial_access_token::{
+        DEFAULT_INITIAL_ACCESS_TOKEN_LIFETIME, INITIAL_ACCESS_TOKEN_PREFIX, InitialAccessToken,
+        InitialAccessTokenHash, InitialAccessTokenId, InitialAccessTokenSnapshot,
+        InitialAccessTokenStatus, InitialAccessTokenValue, LONGEST_INITIAL_ACCESS_TOKEN_LIFETIME,
+        MAX_ACTIVE_INITIAL_ACCESS_TOKENS, MOST_REGISTRATIONS_PER_TOKEN, NewInitialAccessToken,
+        SHORTEST_INITIAL_ACCESS_TOKEN_LIFETIME, looks_like_initial_access_token,
+    };
     pub use crate::domain::introspection::{
         AccessTokenRecord, ActiveRefreshToken, REVOKED_BY_CLIENT, TokenQuery, TokenTypeHint,
         active_access_token, active_refresh_token, inactive,
@@ -125,6 +137,12 @@ pub mod api {
         DEFAULT_RETRY_WINDOW, FAMILY_SECRET_PURPOSE, FamilySecret, FamilyStatus,
         LONGEST_RETRY_WINDOW, OFFLINE_ACCESS, RefreshAsk, RefreshDecision, RefreshFamily,
         RefreshFamilyId, RefreshRefusal, RefreshTokenHash, RefreshTokenRecord, RefreshTokenValue,
+    };
+    pub use crate::domain::registration::{
+        ClientRegistration, ClientRegistrationSnapshot, DEFAULT_MOST_REGISTERED_CLIENTS,
+        MAX_POLICY_HOSTS, MAX_POLICY_SCOPES, MOST_REGISTERED_CLIENTS, REGISTERABLE_METHODS,
+        RegistrationPolicy, RegistrationRequest, RegistrationSettings, RegistrationWay,
+        check_registration, is_policy_host, ways_from_stored,
     };
     pub use crate::domain::request_object::{
         MAX_REQUEST_OBJECT_BYTES, RequestObjectCheck, RequestObjectRefusal, check_request_object,

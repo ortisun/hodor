@@ -301,7 +301,7 @@ randomness and hashing are passed in. Every module is `pub(crate)` in
   `LONGEST_CONSENT_LIFETIME` (1 and 730 days). `TokenPolicy::consent` is
   the client's lifetime, checked against those bounds. Its cases are in
   `consent/tests.rs`.
-- `event.rs`: `OauthEvent`, twenty-nine variants, each named `oauth.*`.
+- `event.rs`: `OauthEvent`, thirty-four variants, each named `oauth.*`.
 - `claim_mapper.rs`: claim mappers (Decision 0041). `ClaimMapperSettings`
   (`checked`: the claim written as a scope and not `is_reserved`, compared
   without regard to case against the 46 `RESERVED_CLAIMS`, the thirteen
@@ -326,6 +326,24 @@ randomness and hashing are passed in. Every module is `pub(crate)` in
   the one hook the token endpoint and UserInfo call after Hodor's own
   claims, which never replaces one. Its cases, including one that every
   claim Hodor writes is reserved, are in `claim_mapper/tests.rs`.
+- `registration.rs`: the client registration settings of a tenant
+  (Decision 0075). `RegistrationWay` (`initial_access_token`,
+  `software_statement`, `open`); `RegistrationPolicy` (`checked`: grants
+  among `authorization_code` and `refresh_token`, response types among
+  the `ResponseType`s Hodor answers, 1 to 50 scopes, the methods of
+  `REGISTERABLE_METHODS`, subject types, any host or 1 to 50 hosts by
+  `is_policy_host`, each value once; `to_json`, `from_json`, left-out
+  members at their defaults; `allows_address` by `host_of`);
+  `check_registration`, the check of Issue-133, refusing with
+  `oauth.registration_*_not_allowed`; `RegistrationSettings` (`checked`,
+  `allows`, off by default); `ClientRegistration` (`create`, `replace`,
+  with `oauth.client_registration_changed`). Its cases are in
+  `registration/tests.rs`.
+- `initial_access_token.rs`: initial access tokens. `hodor_iat_` and 64
+  hexadecimal characters, kept as `InitialAccessTokenHash` with a hint of
+  four; `InitialAccessToken` (`create`, checking the name, a lifetime of 1
+  hour to 90 days and 1 to 1000 registrations; `status`, `revoke`,
+  `spend`, every refusal `oauth.initial_access_token_invalid`).
 - `text.rs`: the rules of names and of scopes (`is_scope`).
 - `exchange.rs`: token exchange. `MAX_ACTORS` (3), `chain_length` (counts
   `act` links as far as one past the bound), `actors` (the `sub` of each,

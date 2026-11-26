@@ -123,6 +123,12 @@ It needs `HODOR_DATABASE_URL`, like the tenant commands.
 | `GET /clients/{client_id}/claim-mappers/{claim_mapper_id}` | `applications:read` | Read one claim mapper |
 | `PUT /clients/{client_id}/claim-mappers/{claim_mapper_id}` | `applications:write` | Replace a claim mapper |
 | `DELETE /clients/{client_id}/claim-mappers/{claim_mapper_id}` | `applications:write` | Delete a claim mapper |
+| `GET /client-registration` | `applications:read` | Read whether clients may register themselves, and under which settings and policy |
+| `PUT /client-registration` | `applications:write` | Turn client registration on or off, and replace its settings and policy |
+| `GET /client-registration/initial-access-tokens` | `applications:read` | List the tenant's initial access tokens, never the tokens themselves |
+| `POST /client-registration/initial-access-tokens` | `applications:write` | Make an initial access token, shown once |
+| `GET /client-registration/initial-access-tokens/{token_id}` | `applications:read` | Read one initial access token |
+| `DELETE /client-registration/initial-access-tokens/{token_id}` | `applications:write` | Revoke an initial access token at once |
 | `GET /resource-servers` | `applications:read` | List the tenant's resource servers |
 | `POST /resource-servers` | `applications:write` | Register the resource server of an application |
 | `GET /resource-servers/{resource_server_id}` | `applications:read` | Read one resource server |
@@ -857,6 +863,65 @@ A claim mapper adds one claim to the tokens of one client. What it may read, the
 | Another mapper of the client has the claim, or the client has 20 | `409` | `oauth.claim_mapper_name_taken`, `oauth.claim_mappers_too_many` |
 | No such client or mapper in this tenant, or a mapper of another client | `404` | `oauth.client_not_found`, `oauth.claim_mapper_not_found` |
 | Someone else changed the mapper at the same moment | `409` | `oauth.claim_mapper_modified_concurrently` |
+
+### Client registration
+
+Whether clients may register themselves in the tenant, and what they may become: [client registration](../architecture/contexts/oauth.md#client-registration) in the OAuth context, which this interface translates. The registration endpoint itself is not built yet (Issue-133).
+
+The settings, as `GET /client-registration` answers them, here with their defaults and registration on:
+
+```json
+{
+  "enabled": true,
+  "application_id": "0193f1c2-…",
+  "ways": ["initial_access_token"],
+  "max_clients": 100,
+  "policy": {
+    "grant_types": ["authorization_code"],
+    "response_types": ["code"],
+    "scopes": ["openid", "profile", "email"],
+    "token_endpoint_auth_methods": ["client_secret_basic", "private_key_jwt"],
+    "subject_types": ["public"],
+    "hosts": null
+  },
+  "updated_at": "2026-11-25T14:03:11Z"
+}
+```
+
+`ways` holds one or more of `initial_access_token`, `software_statement` and `open`. `hosts` is `null` for any host, or a list of 1 to 50 hosts that every address of a registration must name. A tenant that never set them answers the defaults, with `enabled` `false`, `application_id` and `updated_at` `null`.
+
+`PUT /client-registration` takes the same document without `updated_at` and replaces the settings as a whole. `enabled` is required; `application_id` is required while `enabled` is `true`, and may be `null` otherwise; any other member left out, and any member of `policy` left out, takes its default. The answer is `200` with the settings as they are now. Turning registration off with `{ "enabled": false }` keeps nothing of the policy that was set: an administrator who means to turn it on again later sends the settings with `enabled` `false` instead.
+
+An initial access token, as every answer writes it:
+
+```json
+{
+  "id": "0193f3a0-…",
+  "name": "Partner portal team",
+  "hint": "…7c1e",
+  "status": "active",
+  "max_registrations": 1,
+  "registrations": 0,
+  "created_at": "2026-11-25T14:03:11Z",
+  "expires_at": "2026-12-02T14:03:11Z",
+  "last_used_at": null,
+  "revoked_at": null
+}
+```
+
+`status` is `active`, `expired`, `used_up` or `revoked`. `hint` is the last four characters of the token. `POST /client-registration/initial-access-tokens` takes `{ "name": "…", "lifetime_hours": 168, "max_registrations": 1 }`; `lifetime_hours`, 1 to 2160, is 168 unless given, and `max_registrations`, 1 to 1000, is 1. The answer is `201` with the token and, **once**, `initial_access_token`: the token itself, `hodor_iat_…`, which no other answer holds and which Hodor cannot show again. `GET /client-registration/initial-access-tokens` answers `{ "items": [ … ] }`, newest first; a tenant holds at most 100 active tokens, and the list holds every token not yet removed. `DELETE /client-registration/initial-access-tokens/{token_id}` revokes it and answers `204`.
+
+| Situation | Status | Code |
+|---|---|---|
+| The application is missing while registration is on, not one of the tenant's, or first party | `422` | `oauth.client_registration_application_invalid` |
+| No way while registration is on, most clients outside 1 to 1000, or a limit of the policy that breaks its rule | `422` | `oauth.client_registration_ways_invalid`, `oauth.client_registration_most_clients_invalid`, `oauth.client_registration_policy_invalid` |
+| A token's name, lifetime or registrations break their rule | `422` | `oauth.initial_access_token_name_invalid`, `oauth.initial_access_token_lifetime_invalid`, `oauth.initial_access_token_registrations_invalid` |
+| A token is made while registration is off, or does not allow tokens, or the tenant already holds 100 active ones | `409` | `oauth.client_registration_off`, `oauth.initial_access_tokens_not_allowed`, `oauth.too_many_initial_access_tokens` |
+| Someone else changed the settings at the same moment | `409` | `oauth.client_registration_modified_concurrently` |
+| No such token in this tenant | `404` | `oauth.initial_access_token_not_found` |
+| A body that is not that document, or a value of a list that is not a word Hodor knows | `422` | `request.body_invalid`, `oauth.client_registration_policy_invalid` |
+
+What an administrator does here is in the audit log, through the events `oauth.client_registration_changed`, `oauth.initial_access_token_issued` and `oauth.initial_access_token_revoked`, which never carry a token or its hash.
 
 ### Assurance levels
 

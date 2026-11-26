@@ -264,6 +264,7 @@ nav:
       - decisions/0065-where-the-standard-claims-come-from.md
       - decisions/0071-signing-intermediates.md
       - decisions/0074-hodor-cert-manager-issuer.md
+      - decisions/0075-the-registration-settings-of-a-tenant.md
   - Contributing:
       - development/conventions.md
       - development/documentation-site.md

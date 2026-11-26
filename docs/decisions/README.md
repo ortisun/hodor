@@ -69,3 +69,4 @@ All records below are **Proposed** unless marked otherwise: they become Accepted
 | [0065](0065-where-the-standard-claims-come-from.md) | The identity context keeps a person's standard claims, and each source writes only what it can vouch for |
 | [0071](0071-signing-intermediates.md) | An intermediate is signed from what its request asks, within the authority; withdrawing it stops Hodor trusting its key; signing has a permission, a role and a scope of its own (Accepted) |
 | [0074](0074-hodor-cert-manager-issuer.md) | `hodor-cert-manager-issuer` signs approved requests for an authority through the signing operation, which takes an access token for the audience of the certificate authority (Accepted) |
+| [0075](0075-the-registration-settings-of-a-tenant.md) | A tenant has one registration policy for every way and one list of hosts for every address; an initial access token is spent under a lock of its row (Accepted) |

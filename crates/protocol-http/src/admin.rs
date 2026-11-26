@@ -58,6 +58,7 @@ mod applications;
 mod authorization;
 mod certificate_authority;
 mod claim_mappers;
+mod client_registration;
 mod decisions;
 mod factors;
 mod groups;
@@ -304,6 +305,28 @@ pub const ADMIN_OPERATIONS: &[(&str, &str, Permission)] = &[
     (
         "DELETE",
         "/clients/{client_id}/claim-mappers/{claim_mapper_id}",
+        Permission::ApplicationsWrite,
+    ),
+    ("GET", "/client-registration", Permission::ApplicationsRead),
+    ("PUT", "/client-registration", Permission::ApplicationsWrite),
+    (
+        "GET",
+        "/client-registration/initial-access-tokens",
+        Permission::ApplicationsRead,
+    ),
+    (
+        "POST",
+        "/client-registration/initial-access-tokens",
+        Permission::ApplicationsWrite,
+    ),
+    (
+        "GET",
+        "/client-registration/initial-access-tokens/{token_id}",
+        Permission::ApplicationsRead,
+    ),
+    (
+        "DELETE",
+        "/client-registration/initial-access-tokens/{token_id}",
         Permission::ApplicationsWrite,
     ),
     ("GET", "/resource-servers", Permission::ApplicationsRead),
@@ -673,6 +696,9 @@ pub struct AdminState {
     pub applications: ApplicationService,
     /// The claim mappers of clients.
     pub claim_mappers: hodor_oauth::api::ClaimMapperService,
+    /// Client registration: the tenant's settings and initial access
+    /// tokens.
+    pub client_registration: hodor_oauth::api::ClientRegistrationService,
     /// The tenant, for its assurance levels.
     pub tenants: TenantService,
     /// The users' second factors, which an administrator sees and removes.
@@ -812,6 +838,7 @@ fn shared_routes() -> Router<Shared> {
         )
         .merge(applications::routes())
         .merge(claim_mappers::routes())
+        .merge(client_registration::routes())
         .merge(factors::routes())
         .merge(decisions::routes())
         .merge(authorization::routes())

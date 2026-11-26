@@ -9,10 +9,14 @@ use crate::domain::claim_mapper::{ClaimMapper, ClaimMapperId, PersonAttributes};
 use crate::domain::client::{Client, ClientId};
 use crate::domain::consent::{Consent, ConsentAnswer, ConsentHistoryEntry};
 use crate::domain::forwarded::WorkloadIdentity;
+use crate::domain::initial_access_token::{
+    InitialAccessToken, InitialAccessTokenHash, InitialAccessTokenId,
+};
 use crate::domain::introspection::AccessTokenRecord;
 use crate::domain::refresh::{
     RefreshAsk, RefreshFamily, RefreshFamilyId, RefreshTokenHash, RefreshTokenRecord,
 };
+use crate::domain::registration::ClientRegistration;
 use crate::domain::resource_server::{Audience, ResourceServer, ResourceServerId};
 use hodor_kernel::{
     DomainError, GroupId, OrganizationId, TenantContext, Timestamp, UnitOfWork, UserId,
@@ -780,4 +784,140 @@ pub trait CertificateCheck: Send + Sync {
         withdrawn: &[String],
         now: Timestamp,
     ) -> bool;
+}
+
+/// Stores the client registration settings of a tenant: none, or one.
+#[async_trait::async_trait]
+pub trait ClientRegistrationStore: Send + Sync {
+    /// The tenant's settings, if it set them.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if storage fails.
+    async fn get(
+        &self,
+        uow: &mut dyn UnitOfWork,
+    ) -> Result<Option<ClientRegistration>, DomainError>;
+
+    /// The tenant's settings, if it set them, with their row locked until
+    /// the unit of work ends, so that what is decided from them holds
+    /// until it is stored.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if storage fails.
+    async fn lock(
+        &self,
+        uow: &mut dyn UnitOfWork,
+    ) -> Result<Option<ClientRegistration>, DomainError>;
+
+    /// Stores the tenant's first settings.
+    ///
+    /// # Errors
+    ///
+    /// Returns `oauth.client_registration_modified_concurrently` if the
+    /// tenant has settings already, and `oauth.client_registration_application_invalid`
+    /// for an application that is not one of the tenant's.
+    async fn insert(
+        &self,
+        uow: &mut dyn UnitOfWork,
+        registration: &ClientRegistration,
+    ) -> Result<(), DomainError>;
+
+    /// Stores replaced settings, if their stored version is the one they
+    /// were read with. The stored version becomes one more.
+    ///
+    /// # Errors
+    ///
+    /// Returns `oauth.client_registration_modified_concurrently` otherwise,
+    /// and `oauth.client_registration_application_invalid` for an
+    /// application that is not one of the tenant's.
+    async fn update(
+        &self,
+        uow: &mut dyn UnitOfWork,
+        registration: &ClientRegistration,
+    ) -> Result<(), DomainError>;
+}
+
+/// Stores the initial access tokens of a tenant.
+#[async_trait::async_trait]
+pub trait InitialAccessTokenStore: Send + Sync {
+    /// Stores a new token.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if storage fails.
+    async fn insert(
+        &self,
+        uow: &mut dyn UnitOfWork,
+        token: &InitialAccessToken,
+    ) -> Result<(), DomainError>;
+
+    /// A token of the tenant.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if storage fails.
+    async fn get(
+        &self,
+        uow: &mut dyn UnitOfWork,
+        id: InitialAccessTokenId,
+    ) -> Result<Option<InitialAccessToken>, DomainError>;
+
+    /// The token of the tenant with this hash, with its row locked until
+    /// the unit of work ends, so that it is spent one registration at a
+    /// time.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if storage fails.
+    async fn lock_by_hash(
+        &self,
+        uow: &mut dyn UnitOfWork,
+        hash: &InitialAccessTokenHash,
+    ) -> Result<Option<InitialAccessToken>, DomainError>;
+
+    /// Every token of the tenant, newest first.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if storage fails.
+    async fn list(&self, uow: &mut dyn UnitOfWork) -> Result<Vec<InitialAccessToken>, DomainError>;
+
+    /// How many tokens of the tenant are active at `now`: neither revoked,
+    /// expired nor used up.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if storage fails.
+    async fn count_active(
+        &self,
+        uow: &mut dyn UnitOfWork,
+        now: Timestamp,
+    ) -> Result<usize, DomainError>;
+
+    /// Stores how many registrations a token has allowed and when it last
+    /// allowed one.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if storage fails.
+    async fn record_use(
+        &self,
+        uow: &mut dyn UnitOfWork,
+        token: &InitialAccessToken,
+    ) -> Result<(), DomainError>;
+
+    /// Stores that a token was revoked, unless it already was. Answers
+    /// whether it was revoked now.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if storage fails.
+    async fn revoke(
+        &self,
+        uow: &mut dyn UnitOfWork,
+        id: InitialAccessTokenId,
+        at: Timestamp,
+    ) -> Result<bool, DomainError>;
 }

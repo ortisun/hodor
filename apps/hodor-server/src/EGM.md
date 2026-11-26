@@ -165,7 +165,10 @@ Adapters implemented here:
   an unknown user) and `OrganizationService::get` (the name, or none).
   `claim_mapping` wires both with `PgClaimMapperStore` into the
   `ClaimMapping` of the token endpoint and of UserInfo; `administration`
-  gives `AdminState.claim_mappers` its `ClaimMapperService`.
+  gives `AdminState.claim_mappers` its `ClaimMapperService`, and
+  `AdminState.client_registration` its `ClientRegistrationService` on
+  `PgClientRegistrationStore`, `PgInitialAccessTokenStore` and
+  `PgApplicationStore`.
 
 Wiring functions: `interaction` (Argon2id hashing, identity, credential,
 WebAuthn with the relying party of `HODOR_PUBLIC_URL`, session, attempt

@@ -27,9 +27,12 @@ one SPIFFE identifier, proving who it is with a JWT-SVID (`spiffe_jwt`,
 draft-ietf-oauth-spiffe-client-auth-03) checked against its trust domain's
 bundle, read from the keys context; Issue-120: request objects by
 value at the authorization endpoint, checked with the client's keys or,
-for a client that chose `none`, unsigned; and Issue-123: a person's
+for a client that chose `none`, unsigned; Issue-123: a person's
 standard claims at UserInfo, under the scopes `profile`, `address` and
-`phone`, and as attributes a claim mapper reads, their names reserved. Storage,
+`phone`, and as attributes a claim mapper reads, their names reserved; and
+Issue-132: the client registration settings of a tenant, its registration
+policy and its initial access tokens, with the admission the registration
+endpoint asks for. Storage,
 randomness, hashing, signature checking and time are reached through ports
 and kernel traits.
 
@@ -51,6 +54,9 @@ and kernel traits.
   `crates/adapters-postgres/src/oauth_access_token.rs`;
   `ConsentStore`, by `PgConsentStore` in
   `crates/adapters-postgres/src/oauth_consent.rs`;
+  `ClientRegistrationStore` and `InitialAccessTokenStore`, by
+  `PgClientRegistrationStore` and `PgInitialAccessTokenStore` in
+  `crates/adapters-postgres/src/oauth_registration.rs`;
   `PersonStanding`, by `ServerStanding` in `apps/hodor-server/src/standing.rs`;
   `SessionClients`, `LogoutDeliveryStore` and `DueLogoutDeliveries`, by
   `PgSessionClients`, `PgLogoutDeliveryStore` and `PgDueLogoutDeliveries`

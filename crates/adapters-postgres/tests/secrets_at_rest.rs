@@ -344,6 +344,11 @@ const NOT_SEALED_SECRETS: &[(&str, &str, &str)] = &[
     ),
     ("credential.api_key", "key_hash", "a hash of a random key"),
     (
+        "oauth.initial_access_token",
+        "token_hash",
+        "the SHA-256 of a random initial access token, never the token",
+    ),
+    (
         "authentication.attempt_counter",
         "subject_key",
         "a hash of an identifier or an address",
