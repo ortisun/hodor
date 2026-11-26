@@ -703,6 +703,33 @@ describe("the page that asks for a link", () => {
     await user.click(screen.getByRole("button", { name: en.sendLink }));
     expect(sent).toEqual([]);
   });
+
+  it("says that a registration an application asked for goes back to it, and signs in for it", async () => {
+    const { props, user } = page({ "POST /registration": [json(202, { status: "accepted" })] });
+    render(<AskPage {...props} purpose="registration" forApplication />);
+    expect(screen.getByText(en.registerForApplication)).toBeTruthy();
+    const signIn = `${pathOf("acme", "sign-in")}?continue=authorization`;
+    expect(screen.getByRole("link", { name: en.signIn }).getAttribute("href")).toBe(signIn);
+    await user.type(screen.getByLabelText(en.emailLabel), "ana@example.com{Enter}");
+    await screen.findByRole("heading", { name: en.checkMailboxTitle });
+    expect(screen.getByRole("link", { name: en.backToSignIn }).getAttribute("href")).toBe(signIn);
+  });
+
+  it("says it in Brazilian Portuguese too", () => {
+    const { props } = page({});
+    render(<AskPage {...props} text={ptBR} purpose="registration" forApplication />);
+    expect(screen.getByText(ptBR.registerForApplication)).toBeTruthy();
+    expect(screen.getByRole("link", { name: ptBR.signIn }).getAttribute("href")).toBe(
+      `${pathOf("acme", "sign-in")}?continue=authorization`,
+    );
+  });
+
+  it("is the plain registration page without an application", () => {
+    const { props } = page({});
+    render(<AskPage {...props} purpose="registration" />);
+    expect(screen.queryByText(en.registerForApplication)).toBeNull();
+    expect(screen.getByRole("link", { name: en.signIn }).getAttribute("href")).toBe(pathOf("acme", "sign-in"));
+  });
 });
 
 describe("the page that finishes", () => {

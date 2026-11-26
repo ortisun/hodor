@@ -12,6 +12,7 @@ import { Theme } from "@astryxdesign/core/theme";
 import { createRoot } from "react-dom/client";
 import {
   continuationOf,
+  continuesAuthorization,
   loginHintOf,
   type NoticeName,
   noticeOf,
@@ -69,6 +70,7 @@ if (root !== null && place !== null) {
         leave={(url) => window.location.assign(url)}
         providerAnswer={providerAnswer}
         signInAgain={continuationOf(window.location.search) !== null}
+        forApplication={continuesAuthorization(window.location.search)}
         loginHint={loginHintOf(window.location.search)}
         afterSignIn={continuationOf(window.location.search) === "security" ? "security" : "account"}
         reauthenticate={() => window.location.assign(signInAgainPath(place.tenant))}

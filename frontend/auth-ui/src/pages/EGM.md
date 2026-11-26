@@ -100,11 +100,13 @@ address.
   - It shows the notices `registered`, `password-changed`, `signed-out`
     (success) and `provider-refused`, `provider-cancelled` (danger), and links
     to `recover` and `register`.
-- `AskPage.tsx:AskPage({ ...PageProps, purpose })` - `purpose`
+- `AskPage.tsx:AskPage({ ...PageProps, purpose, forApplication? })` - `purpose`
   `"registration" | "recovery"`; one email field that calls
   `client.askToRegister(email, text.locale)` or `client.askToRecover(email,
   text.locale)`, then shows `checkMailboxTitle` with "ask again" and a link
-  back to sign-in.
+  back to sign-in. With `forApplication` (an application's `prompt=create`,
+  Issue-125) a registration page also shows `registerForApplication`, and
+  both its links to sign in carry `?continue=authorization`.
 - `FinishPage.tsx:FinishPage({ ...PageProps, purpose, token })` - with no
   token, or after `authentication.verification_token_invalid`, shows
   `linkInvalidTitle` and a link to ask for a new one. Otherwise it shows a

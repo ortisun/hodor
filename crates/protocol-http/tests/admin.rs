@@ -2900,6 +2900,101 @@ async fn a_client_gets_a_back_channel_logout_address_checked_as_a_webhook_endpoi
 }
 
 #[tokio::test]
+async fn a_client_has_defaults_for_a_sign_in() {
+    let world = world().await;
+    let application = new_application(&world, "Billing", true).await;
+    let path = format!("/applications/{application}/clients");
+    let mut body = web_client();
+    body["default_max_age"] = 3600.into();
+    body["default_acr_values"] = serde_json::json!(["urn:hodor:acr:mfa", "urn:hodor:acr:mfa"]);
+    body["require_auth_time"] = true.into();
+    let created = world
+        .as_administrator(Method::POST, &path, Some(body))
+        .await;
+    assert_eq!(created.status, StatusCode::CREATED, "{}", created.body);
+    assert_eq!(created.body["default_max_age"], 3600);
+    assert_eq!(
+        created.body["default_acr_values"],
+        serde_json::json!(["urn:hodor:acr:mfa"])
+    );
+    assert_eq!(created.body["require_auth_time"], true);
+    let client = created.body["id"].as_str().expect("client").to_owned();
+
+    // Unless given, a client has none.
+    let plain = world
+        .as_administrator(Method::POST, &path, Some(web_client()))
+        .await;
+    assert_eq!(plain.body["default_max_age"], serde_json::Value::Null);
+    assert_eq!(plain.body["default_acr_values"], serde_json::json!([]));
+    assert_eq!(plain.body["require_auth_time"], false);
+
+    // Left out stays, `null` removes, a list replaces.
+    let renamed = world
+        .as_administrator(
+            Method::PATCH,
+            &format!("/clients/{client}"),
+            Some(serde_json::json!({ "name": "Billing" })),
+        )
+        .await;
+    assert_eq!(renamed.status, StatusCode::OK, "{}", renamed.body);
+    assert_eq!(renamed.body["default_max_age"], 3600);
+    let changed = world
+        .as_administrator(
+            Method::PATCH,
+            &format!("/clients/{client}"),
+            Some(serde_json::json!({
+                "default_max_age": null,
+                "default_acr_values": ["urn:example:gold"],
+                "require_auth_time": false,
+            })),
+        )
+        .await;
+    assert_eq!(changed.status, StatusCode::OK, "{}", changed.body);
+    assert_eq!(changed.body["default_max_age"], serde_json::Value::Null);
+    assert_eq!(
+        changed.body["default_acr_values"],
+        serde_json::json!(["urn:example:gold"])
+    );
+    assert_eq!(changed.body["require_auth_time"], false);
+
+    for (change, code) in [
+        (
+            serde_json::json!({ "default_max_age": 31_536_001 }),
+            "oauth.client_default_max_age_invalid",
+        ),
+        (
+            serde_json::json!({ "default_acr_values": ["two words"] }),
+            "oauth.client_default_acr_values_invalid",
+        ),
+    ] {
+        let refused = world
+            .as_administrator(Method::PATCH, &format!("/clients/{client}"), Some(change))
+            .await;
+        assert_eq!(
+            refused.status,
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "{}",
+            refused.body
+        );
+        assert_eq!(refused.code(), code);
+    }
+
+    // A client that signs nobody in has none of them.
+    let mut service = web_client();
+    service["grant_types"] = serde_json::json!(["client_credentials"]);
+    service
+        .as_object_mut()
+        .expect("object")
+        .remove("redirect_uris");
+    service["require_auth_time"] = true.into();
+    let refused = world
+        .as_administrator(Method::POST, &path, Some(service))
+        .await;
+    assert_eq!(refused.status, StatusCode::UNPROCESSABLE_ENTITY);
+    assert_eq!(refused.code(), "oauth.client_require_auth_time_invalid");
+}
+
+#[tokio::test]
 async fn a_client_is_made_pairwise_with_its_sector_checked_and_fetched() {
     let world = world().await;
     let application = new_application(&world, "Billing", true).await;
@@ -3444,6 +3539,8 @@ async fn agreed(world: &World, user: UserId, client: &str) {
         first_party: false,
         organization: None,
         response_mode: hodor_oauth::api::ResponseMode::Query,
+        id_token_hint: None,
+        given_hint: None,
     };
     let person = hodor_oauth::api::SignedInPerson {
         user_id: user,

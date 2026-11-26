@@ -13263,6 +13263,9 @@
           "backchannel_logout_session_required",
           "subject_type",
           "sector_identifier_uri",
+          "default_max_age",
+          "default_acr_values",
+          "require_auth_time",
           "token_policy",
           "secrets",
           "keys",
@@ -13390,6 +13393,29 @@
             ],
             "maxLength": 2000,
             "description": "For a pairwise client only: an HTTPS address of at most 2000 characters, fetched when it is set, that must answer a JSON array holding every redirect address of the client. Its host is the client's sector. Refused if it leads to a private network."
+          },
+          "default_max_age": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "minimum": 0,
+            "maximum": 31536000,
+            "description": "The `max_age`, in seconds, of a request of the client that names none: OpenID Connect Registration's `default_max_age`. Only for a client with `authorization_code`."
+          },
+          "default_acr_values": {
+            "type": "array",
+            "maxItems": 10,
+            "items": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128
+            },
+            "description": "The `acr_values` of a request of the client that names none, in the order given: OpenID Connect Registration's `default_acr_values`. At most 10 names without spaces, 255 characters together; names that are not levels of the tenant are ignored at the authorization endpoint. Only for a client with `authorization_code`."
+          },
+          "require_auth_time": {
+            "type": "boolean",
+            "description": "Whether the client needs `auth_time` in its ID tokens: OpenID Connect Registration's `require_auth_time`. Every ID token carries it. `true` only for a client with `authorization_code`."
           },
           "token_policy": {
             "$ref": "#/components/schemas/TokenPolicy"
@@ -13622,6 +13648,29 @@
             "maxLength": 2000,
             "description": "For a pairwise client only: an HTTPS address of at most 2000 characters, fetched when it is set, that must answer a JSON array holding every redirect address of the client. Its host is the client's sector. Refused if it leads to a private network."
           },
+          "default_max_age": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "minimum": 0,
+            "maximum": 31536000,
+            "description": "The `max_age`, in seconds, of a request of the client that names none: OpenID Connect Registration's `default_max_age`. Only for a client with `authorization_code`. `null` unless given."
+          },
+          "default_acr_values": {
+            "type": "array",
+            "maxItems": 10,
+            "items": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128
+            },
+            "description": "The `acr_values` of a request of the client that names none, in the order given: OpenID Connect Registration's `default_acr_values`. At most 10 names without spaces, 255 characters together; names that are not levels of the tenant are ignored at the authorization endpoint. Only for a client with `authorization_code`."
+          },
+          "require_auth_time": {
+            "type": "boolean",
+            "description": "Whether the client needs `auth_time` in its ID tokens: OpenID Connect Registration's `require_auth_time`. Every ID token carries it. `true` only for a client with `authorization_code`."
+          },
           "token_policy": {
             "$ref": "#/components/schemas/TokenPolicyInput"
           },
@@ -13763,6 +13812,29 @@
             ],
             "maxLength": 2000,
             "description": "For a pairwise client only: an HTTPS address of at most 2000 characters, fetched when it is set, that must answer a JSON array holding every redirect address of the client. Its host is the client's sector. Refused if it leads to a private network. `null` removes it."
+          },
+          "default_max_age": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "minimum": 0,
+            "maximum": 31536000,
+            "description": "The `max_age`, in seconds, of a request of the client that names none: OpenID Connect Registration's `default_max_age`. Only for a client with `authorization_code`. `null` removes it."
+          },
+          "default_acr_values": {
+            "type": "array",
+            "maxItems": 10,
+            "items": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128
+            },
+            "description": "The `acr_values` of a request of the client that names none, in the order given: OpenID Connect Registration's `default_acr_values`. At most 10 names without spaces, 255 characters together; names that are not levels of the tenant are ignored at the authorization endpoint. Only for a client with `authorization_code`."
+          },
+          "require_auth_time": {
+            "type": "boolean",
+            "description": "Whether the client needs `auth_time` in its ID tokens: OpenID Connect Registration's `require_auth_time`. Every ID token carries it. `true` only for a client with `authorization_code`."
           },
           "token_policy": {
             "$ref": "#/components/schemas/TokenPolicyInput"

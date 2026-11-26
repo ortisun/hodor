@@ -356,6 +356,8 @@ fn request_for(client_id: ClientId) -> AuthorizationRequest {
         organization: None,
         // Kept and read back: the mode the answer goes in.
         response_mode: crate::domain::response::ResponseMode::FormPost,
+        id_token_hint: None,
+        given_hint: None,
     }
 }
 

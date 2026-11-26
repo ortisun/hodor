@@ -22,9 +22,10 @@ its header); the pages see plain values.
   `client={new Client(place.tenant)}`, `go` (`window.location.assign(pathOf(...))`)
   and `leave` (`window.location.assign(url)`).
 - `App.tsx:App(AppProps)` - `AppProps` is `{ place, client, text, notice,
-  token, go, leave, providerAnswer, signInAgain?, loginHint?, afterSignIn?,
-  reauthenticate? }`; `signInAgain`, `loginHint` and `afterSignIn` go to
-  `SignInPage`; `main.tsx` sets `signInAgain`, `afterSignIn` and
+  token, go, leave, providerAnswer, signInAgain?, forApplication?,
+  loginHint?, afterSignIn?, reauthenticate? }`; `signInAgain`, `loginHint`
+  and `afterSignIn` go to `SignInPage`, `forApplication` (from
+  `continuesAuthorization`) to the registration `AskPage`; `main.tsx` sets `signInAgain`, `afterSignIn` and
   `reauthenticate` from `continuationOf(location.search)` and
   `signInAgainPath`. It renders `sign-in` as `SignInPage`,
   `register` / `recover` as `AskPage`, `complete-registration` /

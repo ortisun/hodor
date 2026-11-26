@@ -8,9 +8,10 @@
 use crate::bearer::{bearer, not_cached, refused};
 use crate::forwarded_identity::IdentityHeader;
 use crate::tenant::TenantSlug;
+use axum::body::Bytes;
 use axum::extract::State;
-use axum::http::StatusCode;
 use axum::http::header::{self, HeaderMap, HeaderValue};
+use axum::http::{Method, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::get;
 use axum::{Extension, Json, Router};
@@ -18,8 +19,9 @@ use hodor_kernel::TenantContext;
 use hodor_oauth::api::{
     BearerRefusal, ForwardedIdentity, OPENID_SCOPE, UserInfoService,
     advertise_certificate_bound_tokens, advertise_forwarded_methods, discovery_document,
+    with_registration,
 };
-use hodor_tenant::api::TenantService;
+use hodor_tenant::api::{RegistrationPolicy, TenantService};
 
 /// What UserInfo needs.
 #[derive(Clone)]
@@ -79,13 +81,14 @@ async fn discovery(
     Extension(tenant): Extension<TenantContext>,
     Extension(TenantSlug(slug)): Extension<TenantSlug>,
 ) -> Response {
-    let levels = match state.tenants.get(&tenant).await {
-        Ok(found) => found
-            .snapshot()
-            .settings
-            .authentication
-            .assurance_levels
-            .clone(),
+    let (levels, registration_open) = match state.tenants.get(&tenant).await {
+        Ok(found) => {
+            let settings = &found.snapshot().settings;
+            (
+                settings.authentication.assurance_levels.clone(),
+                settings.registration == RegistrationPolicy::Open,
+            )
+        }
         Err(error) => return crate::problem::Problem::from(error).into_response(),
     };
     let names: Vec<&str> = levels
@@ -93,7 +96,10 @@ async fn discovery(
         .iter()
         .map(|level| level.acr.as_str())
         .collect();
-    let mut document = discovery_document(&issuer(&state.public_url, &slug), &names);
+    let mut document = with_registration(
+        discovery_document(&issuer(&state.public_url, &slug), &names),
+        registration_open,
+    );
     if let Some(header) = state.identity_header {
         advertise_forwarded_methods(&mut document, header.methods());
         if header.forwards_certificates() {
@@ -113,14 +119,63 @@ async fn discovery(
     response
 }
 
+/// Why the token's place in a request cannot be read.
+#[derive(Debug, PartialEq, Eq)]
+enum TokenPlace {
+    /// `access_token` is given more than once in the form.
+    Repeated,
+}
+
+/// The `access_token` of a form body (RFC 6750, section 2.2): read only
+/// from a `POST` whose content is `application/x-www-form-urlencoded`.
+/// Other parameters are ignored.
+fn form_token(
+    method: &Method,
+    headers: &HeaderMap,
+    body: &[u8],
+) -> Result<Option<String>, TokenPlace> {
+    let is_form = headers
+        .get(header::CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.split(';').next())
+        .is_some_and(|kind| {
+            kind.trim()
+                .eq_ignore_ascii_case("application/x-www-form-urlencoded")
+        });
+    if method != Method::POST || !is_form {
+        return Ok(None);
+    }
+    let mut tokens = form_urlencoded::parse(body)
+        .filter(|(name, _)| name == "access_token")
+        .map(|(_, value)| value.into_owned());
+    match (tokens.next(), tokens.next()) {
+        (_, Some(_)) => Err(TokenPlace::Repeated),
+        (token, None) => Ok(token.filter(|token| !token.is_empty())),
+    }
+}
+
+/// `400` with the challenge `invalid_request`, for a request that sends
+/// its token more than one way (RFC 6750, sections 2 and 3.1).
+fn invalid_request(reason: &'static str) -> Response {
+    tracing::info!(reason, surface = "UserInfo", "a bearer request was refused");
+    let mut response = StatusCode::BAD_REQUEST.into_response();
+    response.headers_mut().insert(
+        header::WWW_AUTHENTICATE,
+        HeaderValue::from_static("Bearer error=\"invalid_request\""),
+    );
+    not_cached(response)
+}
+
 async fn userinfo(
     State(state): State<UserInfoState>,
     Extension(tenant): Extension<TenantContext>,
     Extension(TenantSlug(slug)): Extension<TenantSlug>,
     forwarded: Option<Extension<ForwardedIdentity>>,
+    method: Method,
     headers: HeaderMap,
+    body: Bytes,
 ) -> Response {
-    let Ok(token) = bearer(&headers) else {
+    let Ok(in_header) = bearer(&headers) else {
         return refused(
             BearerRefusal::InvalidToken("the Authorization header is not a bearer token"),
             OPENID_SCOPE,
@@ -128,6 +183,19 @@ async fn userinfo(
         );
     };
     let forwarded = forwarded.map(|Extension(found)| found);
+    let in_form = match form_token(&method, &headers, &body) {
+        Ok(token) => token,
+        Err(TokenPlace::Repeated) => {
+            return invalid_request("access_token is given more than once");
+        }
+    };
+    let token = match (in_header, in_form.as_deref()) {
+        (Some(_), Some(_)) => {
+            return invalid_request("the token is sent both in the header and in the form");
+        }
+        (Some(token), None) | (None, Some(token)) => Some(token),
+        (None, None) => None,
+    };
     match state
         .userinfo
         .claims(
@@ -144,5 +212,70 @@ async fn userinfo(
             tracing::error!(%error, "UserInfo could not answer");
             not_cached(StatusCode::INTERNAL_SERVER_ERROR.into_response())
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn form() -> HeaderMap {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            header::CONTENT_TYPE,
+            HeaderValue::from_static("application/x-www-form-urlencoded; charset=utf-8"),
+        );
+        headers
+    }
+
+    #[test]
+    fn a_token_is_read_from_a_form_posted_only() {
+        assert_eq!(
+            form_token(&Method::POST, &form(), b"access_token=abc.def&x=1"),
+            Ok(Some("abc.def".to_owned()))
+        );
+        assert_eq!(form_token(&Method::POST, &form(), b"x=1"), Ok(None));
+        assert_eq!(
+            form_token(&Method::POST, &form(), b"access_token="),
+            Ok(None)
+        );
+        // Not a form, or not posted: the body is not read.
+        assert_eq!(
+            form_token(&Method::POST, &HeaderMap::new(), b"access_token=abc"),
+            Ok(None)
+        );
+        let mut json = HeaderMap::new();
+        json.insert(
+            header::CONTENT_TYPE,
+            HeaderValue::from_static("application/json"),
+        );
+        assert_eq!(
+            form_token(&Method::POST, &json, b"access_token=abc"),
+            Ok(None)
+        );
+        assert_eq!(
+            form_token(&Method::GET, &form(), b"access_token=abc"),
+            Ok(None)
+        );
+        // Twice is refused, even with one value empty.
+        assert_eq!(
+            form_token(&Method::POST, &form(), b"access_token=a&access_token=b"),
+            Err(TokenPlace::Repeated)
+        );
+        assert_eq!(
+            form_token(&Method::POST, &form(), b"access_token=a&access_token="),
+            Err(TokenPlace::Repeated)
+        );
+    }
+
+    #[test]
+    fn a_token_sent_two_ways_is_an_invalid_request() {
+        let response = invalid_request("test");
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        assert_eq!(
+            response.headers()[header::WWW_AUTHENTICATE],
+            "Bearer error=\"invalid_request\""
+        );
+        assert_eq!(response.headers()[header::CACHE_CONTROL], "no-store");
     }
 }

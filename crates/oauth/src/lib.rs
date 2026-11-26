@@ -115,6 +115,7 @@ pub mod api {
         check_access_token, discovery_document, id_token_claims, is_multi_factor,
         read_access_token, userinfo_claims,
     };
+    pub use crate::domain::openid::{prompt_values_supported, with_registration};
     pub use crate::domain::pairwise::{
         HmacSha256, MAX_SECTOR_DOCUMENT_BYTES, MAX_SECTOR_IDENTIFIER_URI_LENGTH,
         PAIRWISE_SECRET_BYTES, PAIRWISE_SECRET_PURPOSE, PairwiseSecret, SECTOR_DOCUMENT_TIME_LIMIT,

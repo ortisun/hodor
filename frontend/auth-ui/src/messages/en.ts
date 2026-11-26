@@ -65,6 +65,8 @@ export const en = {
   emailLabel: "Email address",
   sendLink: "Send the link",
   alreadyRegistered: "Already have an account?",
+  registerForApplication:
+    "An application sent you here. Once you have chosen your password and signed in, you go back to it.",
   checkMailboxTitle: "Check your mailbox",
   checkMailbox: (email: string) =>
     `If ${email} can be used, a message is on its way to it. Follow the link in the message to go on.`,

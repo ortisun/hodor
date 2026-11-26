@@ -774,6 +774,13 @@ async fn a_client_change_replaces_its_secrets_and_keys(ports: Ports<'_>) {
     // one sector by its sector identifier address, both kept.
     settings.subject_type = crate::api::SubjectType::Pairwise;
     settings.sector_identifier_uri = Some("https://sector.example.org/uris.json".to_owned());
+    // And it has defaults for a sign-in, kept in order.
+    settings.default_max_age = Some(600);
+    settings.default_acr_values = vec![
+        "urn:hodor:acr:mfa".to_owned(),
+        "urn:hodor:acr:single-factor".to_owned(),
+    ];
+    settings.require_auth_time = true;
     keyed.change(settings, later).expect("changed");
     for kid in ["second", "first"] {
         let key = ClientKey::parse(
@@ -808,6 +815,12 @@ async fn a_client_change_replaces_its_secrets_and_keys(ports: Ports<'_>) {
     );
     assert_eq!(stored.subject_type(), crate::api::SubjectType::Pairwise);
     assert_eq!(stored.sector().as_deref(), Some("sector.example.org"));
+    assert_eq!(stored.default_max_age(), Some(600));
+    assert_eq!(
+        stored.default_acr_values().as_deref(),
+        Some("urn:hodor:acr:mfa urn:hodor:acr:single-factor")
+    );
+    assert!(stored.snapshot().settings.require_auth_time);
     assert_eq!(stored.snapshot().version, 2);
 
     // None chosen again is kept as none.

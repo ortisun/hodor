@@ -51,6 +51,10 @@ Routers, as assembled in `run`:
   `InteractionState` built by `interaction`, merged with
   `hodor_protocol_http::consent_routes`, whose `ConsentState` shares the
   `ConsentService` and `SessionService` of the authorization endpoint.
+  That endpoint's `AuthorizationCodeService` checks an `id_token_hint`
+  with `with_id_token_hints` when `keys` built a `KeyService`, and compares
+  a pairwise client's hint through `with_pairwise_subjects` when
+  `HODOR_SECRET_KEYS` is set; without keys a hint is refused (Issue-125).
 - `/api/v1/admin` nests `hodor_protocol_http::admin_routes` with the
   `AdminState` built by `administration`; its `trust_domains` is the
   `TrustDomainService` of `trust_domains`, over `PgTrustDomainStore`, whose

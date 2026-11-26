@@ -9,6 +9,7 @@ use crate::domain::application::Application;
 use crate::domain::client::{Client, ClientId, GrantType};
 use crate::domain::consent::ConsentWait;
 use crate::domain::event::OauthEvent;
+use crate::domain::logout::IdTokenHint;
 use crate::domain::request_object::{
     RequestObjectCheck, RequestObjectRefusal, check_request_object, unchecked_claims,
 };
@@ -140,6 +141,13 @@ impl AuthorizationParameters {
     pub fn client_id(&self) -> Option<ClientId> {
         self.named_client()?.parse().ok()
     }
+
+    /// The `id_token_hint`, if it was given once, to be checked with the
+    /// tenant's keys; see [`AuthorizationRequest::hinted`].
+    #[must_use]
+    pub fn id_token_hint(&self) -> Option<&str> {
+        self.once("id_token_hint")
+    }
 }
 
 /// A request that passed every check: what the code will be issued for.
@@ -183,6 +191,17 @@ pub struct AuthorizationRequest {
     /// reads as the query.
     #[serde(default)]
     pub response_mode: ResponseMode,
+    /// The `sub` of the request's `id_token_hint`, once checked: the person
+    /// as the client knows them. The browser's session answers the request
+    /// only when it is this person's.
+    #[serde(default)]
+    pub id_token_hint: Option<String>,
+    /// The `id_token_hint` as the request gave it, inside its request
+    /// object when it has one, until it is checked: see
+    /// [`AuthorizationRequest::hinted`]. Never stored, so a request kept
+    /// while the person signs in holds the hint's `sub` alone.
+    #[serde(skip)]
+    pub given_hint: Option<String>,
 }
 
 /// An error that may be sent back to the client at its redirect address.
@@ -236,7 +255,10 @@ fn is_absolute_without_fragment(value: &str) -> bool {
         && !value.contains(' ')
 }
 
-const PROMPTS: [&str; 4] = ["none", "login", "consent", "select_account"];
+const PROMPTS: [&str; 5] = ["none", "login", "consent", "select_account", "create"];
+/// The values of `display` the pages are made for: one layout fits a whole
+/// window, a popup and a touch screen. `wap` is not offered.
+pub(crate) const DISPLAYS: [&str; 3] = ["page", "popup", "touch"];
 
 /// The client and application a request names, if they may be answered
 /// at all: known in this tenant, enabled, and allowed the code.
@@ -485,8 +507,15 @@ fn check_parameters(
             "prompt holds an unknown value, or none with another",
         ));
     }
+    if parameters
+        .once("display")
+        .is_some_and(|value| !DISPLAYS.contains(&value))
+    {
+        return Err(invalid("display is page, popup or touch"));
+    }
+    // A request that names no `max_age` takes the client's default.
     let max_age = match parameters.once("max_age") {
-        None => None,
+        None => client.default_max_age(),
         Some(value) => match value.parse::<u32>() {
             Ok(seconds)
                 if seconds <= MAX_AGE_SECONDS && value.bytes().all(|b| b.is_ascii_digit()) =>
@@ -506,7 +535,8 @@ fn check_parameters(
     };
     let login_hint = hint("login_hint")?;
     let ui_locales = hint("ui_locales")?;
-    let acr_values = hint("acr_values")?;
+    // A request that names no `acr_values` takes the client's defaults.
+    let acr_values = hint("acr_values")?.or_else(|| client.default_acr_values());
     let organization = match parameters.once("organization") {
         None => None,
         Some(value) => match value.parse::<OrganizationId>() {
@@ -608,6 +638,8 @@ fn check_parameters(
         first_party: application.snapshot().settings.first_party,
         organization,
         response_mode,
+        id_token_hint: None,
+        given_hint: parameters.id_token_hint().map(str::to_owned),
     })
 }
 
@@ -660,9 +692,75 @@ impl AuthorizationRequest {
         self.prompt.iter().any(|given| given == value)
     }
 
-    /// Whether the request asks for a sign-in even when there is a session.
+    /// Whether the request asks for a sign-in even when there is a session:
+    /// `create` too, so that a session from before is not taken for the
+    /// account the person makes.
     fn asks_for_a_new_sign_in(&self) -> bool {
-        self.prompts("login") || self.prompts("select_account")
+        self.prompts("login") || self.prompts("select_account") || self.prompts("create")
+    }
+
+    /// Whether the person is sent to register rather than to sign in:
+    /// `prompt=create`.
+    #[must_use]
+    pub fn asks_to_register(&self) -> bool {
+        self.prompts("create")
+    }
+
+    /// The refusal of `prompt=create` by a tenant whose registration policy
+    /// is closed: it does not support the value, which Initiating User
+    /// Registration via OpenID Connect answers with `invalid_request`
+    /// (section 4.1). `None` when the request may go on.
+    #[must_use]
+    pub fn registration_refusal(&self, registration_open: bool) -> Option<AuthorizationError> {
+        (self.asks_to_register() && !registration_open).then(|| AuthorizationError {
+            redirect_uri: self.redirect_uri.clone(),
+            error: "invalid_request",
+            description: "prompt=create is not supported: this tenant does not accept \
+                          registrations",
+            state: self.state.clone(),
+            mode: self.response_mode,
+        })
+    }
+
+    /// The request with its `id_token_hint`, as checked against the
+    /// tenant's keys: an ID token of this tenant issued to the client of
+    /// the request. Its `sub` is kept.
+    ///
+    /// # Errors
+    ///
+    /// Returns the refusal, `invalid_request` at the redirect address, and
+    /// the reason for the logs.
+    pub fn hinted(
+        mut self,
+        checked: Result<IdTokenHint, &'static str>,
+    ) -> Result<Self, (AuthorizationRefusal, &'static str)> {
+        let reason = match checked {
+            Ok(hint) if hint.client_id == self.client_id => {
+                self.id_token_hint = Some(hint.subject);
+                return Ok(self);
+            }
+            Ok(_) => "the hint was issued to another client",
+            Err(reason) => reason,
+        };
+        Err((
+            AuthorizationRefusal::Redirect(AuthorizationError {
+                redirect_uri: self.redirect_uri,
+                error: "invalid_request",
+                description: "id_token_hint is not an ID token this tenant issued to this client",
+                state: self.state,
+                mode: self.response_mode,
+            }),
+            reason,
+        ))
+    }
+
+    /// Whether the person the client knows as `subject` is the one the
+    /// request's `id_token_hint` names. Without a hint, anyone is.
+    #[must_use]
+    pub fn names_person(&self, subject: &str) -> bool {
+        self.id_token_hint
+            .as_deref()
+            .is_none_or(|hinted| hinted == subject)
     }
 
     /// The proofs of a session that count for this request: all of them,
@@ -1159,3 +1257,6 @@ pub fn s256_challenge(verifier: &str, digest: &dyn Digest) -> String {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod parameter_tests;

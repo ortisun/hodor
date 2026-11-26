@@ -75,6 +75,17 @@ memberships, verifier, digest, random, clock })`:
   in this tenant, its application and the tenant's resource servers, and
   runs `check_request`, a request object checked against `issuer`, the
   clock and `verifier`, the kernel's `SignatureVerifier`. The outer `Result` is storage; the inner one the refusal.
+- `with_id_token_hints(keys)` and `with_pairwise_subjects(pairwise)`
+  (Issue-125). `check_hint(tenant, issuer, request)`: when the checked
+  request holds `given_hint`, the `id_token_hint` its parameters gave
+  (inside its request object when it has one), takes it and checks it with `check_id_token_hint`
+  against the tenant's published keys, `verifier` and `issuer` (expiry not checked)
+  and keeps its `sub` through `AuthorizationRequest::hinted`; the inner
+  error is `(AuthorizationRefusal, reason)`, `invalid_request` at the
+  redirect address, also when no keys were given. `hint_names(tenant,
+  request, user)`: true without a hint; otherwise whether `subject_for` the
+  request's client names `user` as the hint's `sub` (false for a client
+  gone or a pairwise client without `with_pairwise_subjects`).
 - `hold(tenant, request)`: stores a pending request for ten minutes;
   returns its identifier and the browser's secret.
 - `resume(tenant, id, secret)`: `None` unless the secret is the browser's;
