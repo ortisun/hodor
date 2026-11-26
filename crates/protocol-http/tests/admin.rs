@@ -1932,6 +1932,35 @@ async fn an_administrator_adds_and_changes_a_saml_provider() {
 }
 
 #[tokio::test]
+async fn an_administrator_rotates_a_signing_key_of_each_algorithm() {
+    let world = world().await;
+    for algorithm in ["ES256", "RS256", "PS256", "EdDSA"] {
+        let rotated = world
+            .as_administrator(
+                Method::POST,
+                "/keys/sig:rotate",
+                Some(serde_json::json!({ "algorithm": algorithm })),
+            )
+            .await;
+        assert_eq!(rotated.status, StatusCode::OK, "{:?}", rotated.body);
+        assert_eq!(rotated.body["algorithm"], algorithm);
+        assert_eq!(rotated.body["state"], "active");
+        assert_eq!(rotated.body["key_use"], "sig");
+    }
+    let listed = world.as_administrator(Method::GET, "/keys/sig", None).await;
+    assert_eq!(listed.body["items"].as_array().expect("items").len(), 4);
+    let refused = world
+        .as_administrator(
+            Method::POST,
+            "/keys/sig:rotate",
+            Some(serde_json::json!({ "algorithm": "Ed25519" })),
+        )
+        .await;
+    assert_eq!(refused.status, StatusCode::UNPROCESSABLE_ENTITY);
+    assert_eq!(refused.code(), "keys.algorithm_unsuitable");
+}
+
+#[tokio::test]
 async fn an_administrator_rotates_and_revokes_a_signing_key_and_it_is_audited() {
     let world = world().await;
     let empty = world.as_administrator(Method::GET, "/keys/sig", None).await;
@@ -2782,6 +2811,124 @@ async fn a_client_names_how_it_signs_its_request_objects() {
         .await;
     assert_eq!(
         read.body["request_object_signing_alg"],
+        serde_json::Value::Null
+    );
+}
+
+#[tokio::test]
+async fn a_client_names_how_its_id_tokens_and_userinfo_answers_are_signed() {
+    let world = world().await;
+    let application = new_application(&world, "Billing", true).await;
+    let path = format!("/applications/{application}/clients");
+
+    // ES256 and answers in JSON unless given.
+    let created = world
+        .as_administrator(Method::POST, &path, Some(web_client()))
+        .await;
+    assert_eq!(created.status, StatusCode::CREATED, "{}", created.body);
+    assert_eq!(created.body["id_token_signed_response_alg"], "ES256");
+    assert_eq!(
+        created.body["userinfo_signed_response_alg"],
+        serde_json::Value::Null
+    );
+    let client = created.body["id"].as_str().expect("id").to_owned();
+    let client_path = format!("/clients/{client}");
+
+    // Each of the four, when the client is made.
+    for algorithm in ["ES256", "RS256", "PS256", "EdDSA"] {
+        let mut body = web_client();
+        body["id_token_signed_response_alg"] = algorithm.into();
+        body["userinfo_signed_response_alg"] = algorithm.into();
+        let named = world
+            .as_administrator(Method::POST, &path, Some(body))
+            .await;
+        assert_eq!(named.status, StatusCode::CREATED, "{}", named.body);
+        assert_eq!(named.body["id_token_signed_response_alg"], algorithm);
+        assert_eq!(named.body["userinfo_signed_response_alg"], algorithm);
+    }
+
+    // Changed, kept through a change of something else, and removed with
+    // `null`, which leaves the ID token's as it is.
+    let changed = world
+        .as_administrator(
+            Method::PATCH,
+            &client_path,
+            Some(serde_json::json!({
+                "id_token_signed_response_alg": "EdDSA",
+                "userinfo_signed_response_alg": "PS256",
+            })),
+        )
+        .await;
+    assert_eq!(changed.status, StatusCode::OK, "{}", changed.body);
+    assert_eq!(changed.body["id_token_signed_response_alg"], "EdDSA");
+    assert_eq!(changed.body["userinfo_signed_response_alg"], "PS256");
+    let renamed = world
+        .as_administrator(
+            Method::PATCH,
+            &client_path,
+            Some(serde_json::json!({ "name": "Billing site" })),
+        )
+        .await;
+    assert_eq!(renamed.body["userinfo_signed_response_alg"], "PS256");
+    let removed = world
+        .as_administrator(
+            Method::PATCH,
+            &client_path,
+            Some(serde_json::json!({ "userinfo_signed_response_alg": null })),
+        )
+        .await;
+    assert_eq!(removed.status, StatusCode::OK, "{}", removed.body);
+    assert_eq!(
+        removed.body["userinfo_signed_response_alg"],
+        serde_json::Value::Null
+    );
+    assert_eq!(removed.body["id_token_signed_response_alg"], "EdDSA");
+
+    // An algorithm no tenant signs with is refused, when the client is made
+    // and when it is changed, and changes nothing.
+    for (field, code) in [
+        (
+            "id_token_signed_response_alg",
+            "oauth.client_id_token_algorithm_invalid",
+        ),
+        (
+            "userinfo_signed_response_alg",
+            "oauth.client_userinfo_algorithm_invalid",
+        ),
+    ] {
+        for refused in ["HS256", "none", "ES384", "Ed25519", "rs256"] {
+            let mut body = web_client();
+            body[field] = refused.into();
+            let reply = world
+                .as_administrator(Method::POST, &path, Some(body))
+                .await;
+            assert_eq!(
+                reply.status,
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "{field} {refused}"
+            );
+            assert_eq!(reply.code(), code);
+            let reply = world
+                .as_administrator(
+                    Method::PATCH,
+                    &client_path,
+                    Some(serde_json::json!({ field: refused })),
+                )
+                .await;
+            assert_eq!(
+                reply.status,
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "{field} {refused}"
+            );
+            assert_eq!(reply.code(), code);
+        }
+    }
+    let read = world
+        .as_administrator(Method::GET, &client_path, None)
+        .await;
+    assert_eq!(read.body["id_token_signed_response_alg"], "EdDSA");
+    assert_eq!(
+        read.body["userinfo_signed_response_alg"],
         serde_json::Value::Null
     );
 }

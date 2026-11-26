@@ -134,6 +134,7 @@ fn signed(algorithm: SignatureAlgorithm, kid: &str, key: &PublicKey, claims: &Va
         SignatureAlgorithm::Es256 => "ES256",
         SignatureAlgorithm::Rs256 => "RS256",
         SignatureAlgorithm::Ps256 => "PS256",
+        SignatureAlgorithm::EdDsa => "EdDSA",
     };
     let input = format!(
         "{}.{}",

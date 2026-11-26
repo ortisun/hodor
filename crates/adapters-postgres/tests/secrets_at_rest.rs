@@ -413,6 +413,7 @@ const NOT_SEALED_SECRETS: &[(&str, &str, &str)] = &[
     ("keys.key_version", "public_rsa_exponent", "a public key"),
     ("keys.key_version", "public_p256_x", "a public key"),
     ("keys.key_version", "public_p256_y", "a public key"),
+    ("keys.key_version", "public_ed25519", "a public key"),
     (
         "keys.certificate_authority",
         "key_material",

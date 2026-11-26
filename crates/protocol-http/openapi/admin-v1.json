@@ -13019,6 +13019,7 @@
               "ES256",
               "RS256",
               "PS256",
+              "EdDSA",
               "A256GCM"
             ]
           },
@@ -13091,7 +13092,8 @@
             "enum": [
               "ES256",
               "RS256",
-              "PS256"
+              "PS256",
+              "EdDSA"
             ],
             "default": "ES256"
           }
@@ -13258,6 +13260,7 @@
           "allowed_scopes",
           "require_pkce",
           "id_token_signed_response_alg",
+          "userinfo_signed_response_alg",
           "request_object_signing_alg",
           "backchannel_logout_uri",
           "backchannel_logout_session_required",
@@ -13348,9 +13351,25 @@
             "type": "string",
             "enum": [
               "ES256",
-              "RS256"
+              "RS256",
+              "PS256",
+              "EdDSA"
             ],
-            "description": "How the client's ID tokens are signed. ES256 unless given."
+            "description": "How the client's ID tokens are signed (`id_token_signed_response_alg` of OpenID Connect Registration). ES256 unless given; any other name is refused with oauth.client_id_token_algorithm_invalid."
+          },
+          "userinfo_signed_response_alg": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "enum": [
+              "ES256",
+              "RS256",
+              "PS256",
+              "EdDSA",
+              null
+            ],
+            "description": "How the client's UserInfo answers are signed (`userinfo_signed_response_alg` of OpenID Connect Registration): with one of the four, UserInfo answers a JSON Web Token signed with it, as application/jwt; with null, the default, it answers JSON. Any other name, none among them, is refused with oauth.client_userinfo_algorithm_invalid."
           },
           "request_object_signing_alg": {
             "type": [
@@ -13610,9 +13629,25 @@
             "type": "string",
             "enum": [
               "ES256",
-              "RS256"
+              "RS256",
+              "PS256",
+              "EdDSA"
             ],
-            "description": "How the client's ID tokens are signed. ES256 unless given."
+            "description": "How the client's ID tokens are signed (`id_token_signed_response_alg` of OpenID Connect Registration). ES256 unless given; any other name is refused with oauth.client_id_token_algorithm_invalid."
+          },
+          "userinfo_signed_response_alg": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "enum": [
+              "ES256",
+              "RS256",
+              "PS256",
+              "EdDSA",
+              null
+            ],
+            "description": "How the client's UserInfo answers are signed (`userinfo_signed_response_alg` of OpenID Connect Registration): with one of the four, UserInfo answers a JSON Web Token signed with it, as application/jwt; with null, the default, it answers JSON. Any other name, none among them, is refused with oauth.client_userinfo_algorithm_invalid."
           },
           "request_object_signing_alg": {
             "type": "string",
@@ -13767,9 +13802,25 @@
             "type": "string",
             "enum": [
               "ES256",
-              "RS256"
+              "RS256",
+              "PS256",
+              "EdDSA"
             ],
-            "description": "How the client's ID tokens are signed. ES256 unless given."
+            "description": "How the client's ID tokens are signed (`id_token_signed_response_alg` of OpenID Connect Registration). ES256 unless given; any other name is refused with oauth.client_id_token_algorithm_invalid."
+          },
+          "userinfo_signed_response_alg": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "enum": [
+              "ES256",
+              "RS256",
+              "PS256",
+              "EdDSA",
+              null
+            ],
+            "description": "How the client's UserInfo answers are signed (`userinfo_signed_response_alg` of OpenID Connect Registration): with one of the four, UserInfo answers a JSON Web Token signed with it, as application/jwt; with null, the default, it answers JSON. Any other name, none among them, is refused with oauth.client_userinfo_algorithm_invalid. `null` removes it."
           },
           "request_object_signing_alg": {
             "type": [

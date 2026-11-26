@@ -125,6 +125,7 @@ fn the_id_token_says_who_signed_in_for_which_client() {
         Duration::minutes(5),
         now(),
         "the-access-token",
+        IdTokenAlgorithm::Es256,
         &FakeDigest,
     );
     assert_eq!(claims["iss"], ISSUER);
@@ -141,7 +142,7 @@ fn the_id_token_says_who_signed_in_for_which_client() {
     assert_eq!(claims["amr"], json!(["pwd", "otp", "mfa"]));
     assert_eq!(
         claims["at_hash"],
-        access_token_hash("the-access-token", &FakeDigest)
+        access_token_hash("the-access-token", IdTokenAlgorithm::Es256, &FakeDigest)
     );
     assert_eq!(
         claims["at_hash"].as_str().map(str::len),
@@ -171,6 +172,7 @@ fn an_id_token_leaves_out_what_the_sign_in_did_not_have() {
         Duration::minutes(5),
         now(),
         "token",
+        IdTokenAlgorithm::Es256,
         &FakeDigest,
     );
     assert!(claims.get("nonce").is_none());
@@ -190,10 +192,26 @@ fn at_hash_is_the_left_half_of_the_digest() {
         fn sha256(&self, _data: &[u8]) -> [u8; 32] {
             std::array::from_fn(|index| u8::try_from(index).unwrap_or(u8::MAX))
         }
+        fn sha512(&self, _data: &[u8]) -> [u8; 64] {
+            std::array::from_fn(|index| u8::try_from(100 + index).unwrap_or(u8::MAX))
+        }
     }
+    // The hash of the ID token's algorithm: SHA-256 for the three named
+    // ...256, SHA-512 for EdDSA on Ed25519, and its left half each time.
     let left: Vec<u8> = (0_u8..16).collect();
+    for algorithm in [
+        IdTokenAlgorithm::Es256,
+        IdTokenAlgorithm::Rs256,
+        IdTokenAlgorithm::Ps256,
+    ] {
+        assert_eq!(
+            access_token_hash("any token", algorithm, &Positions),
+            URL_SAFE_NO_PAD.encode(&left)
+        );
+    }
+    let left: Vec<u8> = (100_u8..132).collect();
     assert_eq!(
-        access_token_hash("any token", &Positions),
+        access_token_hash("any token", IdTokenAlgorithm::EdDsa, &Positions),
         URL_SAFE_NO_PAD.encode(left)
     );
 }
@@ -510,6 +528,17 @@ fn discovery_names_only_what_is_built() {
         ]),
         "a public client may not introspect"
     );
+    // Every algorithm a client may choose for what Hodor signs for it.
+    for member in [
+        "id_token_signing_alg_values_supported",
+        "userinfo_signing_alg_values_supported",
+    ] {
+        assert_eq!(
+            document[member],
+            json!(["ES256", "RS256", "PS256", "EdDSA"]),
+            "{member}"
+        );
+    }
     assert_eq!(document["request_parameter_supported"], json!(true));
     assert_eq!(
         document["request_object_signing_alg_values_supported"],
@@ -541,6 +570,7 @@ fn the_id_token_names_the_organization_of_the_sign_in() {
         Duration::minutes(5),
         now(),
         "token",
+        IdTokenAlgorithm::Es256,
         &FakeDigest,
     );
     assert_eq!(claims["org_id"], organization.to_string());
@@ -591,5 +621,34 @@ fn the_metadata_page_names_the_version_of_the_spiffe_draft() {
             .as_array()
             .expect("a list")
             .contains(&json!("spiffe_jwt"))
+    );
+}
+
+#[test]
+fn a_signed_userinfo_answer_holds_the_claims_with_iss_and_aud_and_no_expiry() {
+    let claims = json!({"sub": "248289761001", "name": "Ana Lima", "email": "ana@example.com"});
+    let signed = signed_userinfo_claims(claims, "https://hodor.example.com/t/acme", "client-1");
+    assert_eq!(
+        signed,
+        json!({
+            "sub": "248289761001",
+            "name": "Ana Lima",
+            "email": "ana@example.com",
+            "iss": "https://hodor.example.com/t/acme",
+            "aud": "client-1",
+        })
+    );
+    for absent in ["exp", "iat", "nonce", "typ"] {
+        assert!(signed.get(absent).is_none(), "{absent}");
+    }
+    // The header names the algorithm and the key, and is no ID token's.
+    let header = userinfo_header("EdDSA", "0193a0b2-0000-7000-8000-000000000001");
+    assert_eq!(
+        header,
+        json!({"alg": "EdDSA", "kid": "0193a0b2-0000-7000-8000-000000000001"})
+    );
+    assert_ne!(
+        header,
+        id_token_header("EdDSA", "0193a0b2-0000-7000-8000-000000000001")
     );
 }

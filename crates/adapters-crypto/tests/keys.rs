@@ -70,6 +70,7 @@ async fn the_local_provider_passes_the_contract_of_a_key_provider() {
             KeyAlgorithm::Es256,
             KeyAlgorithm::Rs256,
             KeyAlgorithm::Ps256,
+            KeyAlgorithm::EdDsa,
         ],
         data: true,
     })
@@ -91,6 +92,17 @@ async fn keys_have_the_sizes_decision_0008_names() {
     };
     assert_eq!(modulus.len(), 256, "2048 bits");
     assert_eq!(exponent.as_slice(), [1, 0, 1]);
+    let pss = make(&provider, &tenant, KeyAlgorithm::Ps256).await;
+    assert_ne!(
+        pss.public_key(),
+        rsa.public_key(),
+        "PS256 has an RSA key of its own"
+    );
+    let ed25519 = make(&provider, &tenant, KeyAlgorithm::EdDsa).await;
+    let Some(PublicKey::Ed25519 { x }) = ed25519.public_key() else {
+        panic!("an Ed25519 key");
+    };
+    assert_eq!(x.len(), 32);
     let data = make(&provider, &tenant, KeyAlgorithm::A256Gcm).await;
     assert!(data.public_key().is_none());
     // Two keys are never the same.

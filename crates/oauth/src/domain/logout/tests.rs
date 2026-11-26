@@ -4,7 +4,7 @@ use crate::domain::client::{ClientSettings, ClientType, GrantType};
 use crate::domain::secret::ClientSecret;
 use crate::testing::{FakeVerifier, fake_signature};
 use hodor_kernel::random::testing::{CountingRandom, FakeDigest};
-use hodor_kernel::{PublicKey, Timestamp};
+use hodor_kernel::{PublicKey, SignatureAlgorithm, Timestamp};
 use serde_json::json;
 
 const ISSUER: &str = "https://hodor.example.com/t/acme";
@@ -430,4 +430,72 @@ fn a_kept_return_address_is_checked_again() {
     let mut disabled = client.clone();
     disabled.set_status(Status::Disabled, now());
     assert!(!still_returns(&kept, Some((&disabled, Some(&application)))));
+}
+
+#[test]
+fn a_hint_signed_with_any_algorithm_a_client_may_choose_is_accepted_and_no_other() {
+    let keys: Vec<(IdTokenAlgorithm, &str, PublicKey)> = vec![
+        (IdTokenAlgorithm::Es256, "es", key()),
+        (
+            IdTokenAlgorithm::Rs256,
+            "rs",
+            PublicKey::Rsa {
+                modulus: vec![5; 256],
+                exponent: vec![1, 0, 1],
+            },
+        ),
+        (
+            IdTokenAlgorithm::Ps256,
+            "ps",
+            PublicKey::Rsa {
+                modulus: vec![6; 256],
+                exponent: vec![1, 0, 1],
+            },
+        ),
+        (
+            IdTokenAlgorithm::EdDsa,
+            "ed",
+            PublicKey::Ed25519 { x: vec![7; 32] },
+        ),
+    ];
+    let published: Vec<PublishedKey> = keys
+        .iter()
+        .map(|(algorithm, kid, key)| PublishedKey {
+            key_id: (*kid).to_owned(),
+            algorithm: algorithm.signature(),
+            key: key.clone(),
+        })
+        .collect();
+    let signed_as = |name: &str, signature: SignatureAlgorithm, kid: &str, key: &PublicKey| {
+        let input = format!(
+            "{}.{}",
+            URL_SAFE_NO_PAD.encode(json!({"alg": name, "typ": "JWT", "kid": kid}).to_string()),
+            URL_SAFE_NO_PAD.encode(claims(&who()).to_string())
+        );
+        let made = fake_signature(signature, key, input.as_bytes());
+        format!("{input}.{}", URL_SAFE_NO_PAD.encode(made))
+    };
+    for (algorithm, kid, key) in &keys {
+        let hint = signed_as(algorithm.as_str(), algorithm.signature(), kid, key);
+        assert!(
+            check_id_token_hint(&hint, ISSUER, &published, &FakeVerifier).is_ok(),
+            "{}",
+            algorithm.as_str()
+        );
+    }
+    // A key of another algorithm than the header's is not used.
+    let (_, _, ed25519) = &keys[3];
+    let crossed = signed_as("ES256", SignatureAlgorithm::EdDsa, "ed", ed25519);
+    assert_eq!(
+        check_id_token_hint(&crossed, ISSUER, &published, &FakeVerifier),
+        Err("the hint's key is not published by this tenant")
+    );
+    for name in ["ES384", "HS256", "none", "Ed25519"] {
+        let hint = signed_as(name, SignatureAlgorithm::Es256, "es", &key());
+        assert_eq!(
+            check_id_token_hint(&hint, ISSUER, &published, &FakeVerifier),
+            Err("the hint names another algorithm"),
+            "{name}"
+        );
+    }
 }

@@ -17,7 +17,7 @@ use axum::routing::get;
 use axum::{Extension, Json, Router};
 use hodor_kernel::TenantContext;
 use hodor_oauth::api::{
-    BearerRefusal, ForwardedIdentity, OPENID_SCOPE, UserInfoService,
+    BearerRefusal, ForwardedIdentity, OPENID_SCOPE, UserInfoAnswer, UserInfoService,
     advertise_certificate_bound_tokens, advertise_forwarded_methods, discovery_document,
     with_registration,
 };
@@ -198,7 +198,7 @@ async fn userinfo(
     };
     match state
         .userinfo
-        .claims(
+        .answer(
             &tenant,
             &issuer(&state.public_url, &slug),
             token,
@@ -206,7 +206,18 @@ async fn userinfo(
         )
         .await
     {
-        Ok(Ok(claims)) => not_cached(Json(claims).into_response()),
+        Ok(Ok(UserInfoAnswer::Json(claims))) => not_cached(Json(claims).into_response()),
+        // A signed answer (OpenID Connect Core, section 5.3.2).
+        Ok(Ok(UserInfoAnswer::Signed(jwt))) => not_cached(
+            (
+                [(
+                    header::CONTENT_TYPE,
+                    HeaderValue::from_static("application/jwt"),
+                )],
+                jwt,
+            )
+                .into_response(),
+        ),
         Ok(Err(refusal)) => refused(refusal, OPENID_SCOPE, "UserInfo"),
         Err(error) => {
             tracing::error!(%error, "UserInfo could not answer");

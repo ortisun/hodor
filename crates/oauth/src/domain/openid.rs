@@ -120,13 +120,28 @@ pub fn authentication_methods(methods: &[String]) -> Vec<&'static str> {
         .collect()
 }
 
-/// `at_hash`: the base64url of the left half of the SHA-256 of the access
-/// token, for an ID token signed with ES256 (OpenID Connect Core, section
+/// `at_hash`: the base64url of the left half of the hash of the access
+/// token that the ID token's `algorithm` uses (OpenID Connect Core, section
 /// 3.1.3.6).
 #[must_use]
-pub fn access_token_hash(access_token: &str, digest: &dyn Digest) -> String {
-    let hash = digest.sha256(access_token.as_bytes());
-    URL_SAFE_NO_PAD.encode(&hash[..16])
+pub fn access_token_hash(
+    access_token: &str,
+    algorithm: IdTokenAlgorithm,
+    digest: &dyn Digest,
+) -> String {
+    // The hash of the ID token's `alg`: SHA-256 for the algorithms named
+    // ...256, and SHA-512 for EdDSA on Ed25519, as OpenID Connect Core
+    // (errata set 2) says.
+    match algorithm {
+        IdTokenAlgorithm::EdDsa => {
+            let hash = digest.sha512(access_token.as_bytes());
+            URL_SAFE_NO_PAD.encode(&hash[..32])
+        }
+        IdTokenAlgorithm::Es256 | IdTokenAlgorithm::Rs256 | IdTokenAlgorithm::Ps256 => {
+            let hash = digest.sha256(access_token.as_bytes());
+            URL_SAFE_NO_PAD.encode(&hash[..16])
+        }
+    }
 }
 
 /// Whether `scopes` make an OpenID Connect request.
@@ -166,6 +181,7 @@ pub fn id_token_claims(
     lifetime: Duration,
     now: Timestamp,
     access_token: &str,
+    algorithm: IdTokenAlgorithm,
     digest: &dyn Digest,
 ) -> Value {
     let mut claims = Map::new();
@@ -193,7 +209,7 @@ pub fn id_token_claims(
     }
     claims.insert(
         "at_hash".to_owned(),
-        json!(access_token_hash(access_token, digest)),
+        json!(access_token_hash(access_token, algorithm, digest)),
     );
     // The session, never its token: logout needs to know whether an ID
     // token names the browser's current session.
@@ -507,6 +523,31 @@ pub fn with_registration(mut document: Value, registration_open: bool) -> Value 
     document
 }
 
+/// The header of a signed UserInfo answer: `alg` and `kid`, and no `typ`.
+/// The answer is not an ID token, and nothing that checks one, the
+/// end-session endpoint's hint among them, takes it for one. See
+/// `docs/architecture/contexts/oauth.md`, "Signed UserInfo answers".
+#[must_use]
+pub(crate) fn userinfo_header(algorithm: &str, key_id: &str) -> Value {
+    json!({"alg": algorithm, "kid": key_id})
+}
+
+/// The claims of a signed UserInfo answer: those of the JSON answer, then
+/// `iss`, the tenant's issuer, and `aud`, the client, as OpenID Connect
+/// Core asks (section 5.3.2). No `exp` and no `iat`: the answer is read
+/// once, as the JSON one is, and a check of an ID token refuses it for
+/// lacking them.
+#[must_use]
+pub(crate) fn signed_userinfo_claims(claims: Value, issuer: &str, client_id: &str) -> Value {
+    let mut claims = match claims {
+        Value::Object(claims) => claims,
+        _ => Map::new(),
+    };
+    claims.insert("iss".to_owned(), json!(issuer));
+    claims.insert("aud".to_owned(), json!(client_id));
+    Value::Object(claims)
+}
+
 /// The tenant's discovery document (OpenID Connect Discovery 1.0 and RFC
 /// 8414). It names only what is built; a tenant open to registration adds
 /// `create` through [`with_registration`].
@@ -540,6 +581,10 @@ pub fn discovery_document(issuer: &str, acr_values: &[&str]) -> Value {
         ],
         "introspection_endpoint_auth_signing_alg_values_supported": ["ES256", "RS256", "PS256"],
         "id_token_signing_alg_values_supported": IdTokenAlgorithm::ALL.map(IdTokenAlgorithm::as_str),
+        // Signed UserInfo answers; `none` is not named, since a client that
+        // wants no signature gets JSON.
+        "userinfo_signing_alg_values_supported":
+            IdTokenAlgorithm::ALL.map(IdTokenAlgorithm::as_str),
         "subject_types_supported": ["public", "pairwise"],
         "scopes_supported": ["openid", "profile", "email", "groups"],
         "claims_supported": [

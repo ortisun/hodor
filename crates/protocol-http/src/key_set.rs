@@ -76,6 +76,13 @@ fn json_web_key(version: &KeyVersion) -> Option<JsonWebKey> {
             e: Some(encoded(exponent)),
             ..key
         }),
+        // An octet key pair, as RFC 8037 writes an Ed25519 key.
+        PublicKey::Ed25519 { x } => Some(JsonWebKey {
+            kty: "OKP",
+            crv: Some("Ed25519"),
+            x: Some(encoded(x)),
+            ..key
+        }),
     }
 }
 
@@ -91,10 +98,10 @@ async fn published(
     State(keys): State<KeyService>,
     Extension(tenant): Extension<TenantContext>,
 ) -> Response {
-    // The set names a key for every algorithm a token of the tenant may be
-    // signed with, before the first such token: a relying party that read
-    // the set of a tenant made a moment ago must find the key of the first
-    // token it gets.
+    // The set names a key for every algorithm a token or an answer of the
+    // tenant may be signed with, the four a client may choose, before the
+    // first such token: a relying party that read the set of a tenant made
+    // a moment ago must find the key of the first token it gets.
     for algorithm in IdTokenAlgorithm::ALL {
         if let Err(error) = keys
             .ensure_active(&tenant, algorithm.key_algorithm(), Caller::system())

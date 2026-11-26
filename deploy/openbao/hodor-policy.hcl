@@ -11,7 +11,7 @@
 path "hodor-transit/keys/+" {
   capabilities = ["update", "read"]
   allowed_parameters = {
-    "type" = ["ecdsa-p256", "rsa-2048"]
+    "type" = ["ecdsa-p256", "rsa-2048", "ed25519"]
   }
 }
 

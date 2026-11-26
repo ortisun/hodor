@@ -406,6 +406,8 @@ struct ClientBody {
     allowed_scopes: Vec<String>,
     require_pkce: bool,
     id_token_signed_response_alg: &'static str,
+    /// How its UserInfo answers are signed, or `null` for answers in JSON.
+    userinfo_signed_response_alg: Option<&'static str>,
     /// How it signs its request objects, or `null` when none is chosen.
     request_object_signing_alg: Option<&'static str>,
     /// Where its logout tokens are sent, or `null`.
@@ -458,6 +460,7 @@ impl From<&Client> for ClientBody {
             allowed_scopes: settings.allowed_scopes.clone(),
             require_pkce: settings.require_pkce,
             id_token_signed_response_alg: settings.id_token_algorithm.as_str(),
+            userinfo_signed_response_alg: settings.userinfo_algorithm.map(IdTokenAlgorithm::as_str),
             request_object_signing_alg: settings
                 .request_object_algorithm
                 .map(RequestObjectAlgorithm::as_str),
@@ -542,6 +545,7 @@ struct NewClientBody {
     allowed_scopes: Option<Vec<String>>,
     require_pkce: Option<bool>,
     id_token_signed_response_alg: Option<String>,
+    userinfo_signed_response_alg: Option<String>,
     request_object_signing_alg: Option<String>,
     backchannel_logout_uri: Option<String>,
     backchannel_logout_session_required: Option<bool>,
@@ -588,6 +592,9 @@ struct ClientChangesBody {
     allowed_scopes: Option<Vec<String>>,
     require_pkce: Option<bool>,
     id_token_signed_response_alg: Option<String>,
+    /// Left out: unchanged; `null`: answers in JSON; a name: replaced.
+    #[serde(default, deserialize_with = "present")]
+    userinfo_signed_response_alg: Option<Option<String>>,
     /// Left out: unchanged; `null`: none chosen; a name: replaced.
     #[serde(default, deserialize_with = "present")]
     request_object_signing_alg: Option<Option<String>>,
@@ -796,6 +803,10 @@ async fn create_client(
                 settings.id_token_algorithm =
                     IdTokenAlgorithm::parse(&algorithm).map_err(failed)?;
             }
+            if let Some(algorithm) = new.userinfo_signed_response_alg {
+                settings.userinfo_algorithm =
+                    Some(IdTokenAlgorithm::parse_for_userinfo(&algorithm).map_err(failed)?);
+            }
             if let Some(algorithm) = new.request_object_signing_alg {
                 settings.request_object_algorithm =
                     Some(RequestObjectAlgorithm::parse(&algorithm).map_err(failed)?);
@@ -927,6 +938,13 @@ async fn change_client(
                 id_token_algorithm: match changes.id_token_signed_response_alg {
                     Some(algorithm) => IdTokenAlgorithm::parse(&algorithm).map_err(failed)?,
                     None => now.id_token_algorithm,
+                },
+                userinfo_algorithm: match changes.userinfo_signed_response_alg {
+                    None => now.userinfo_algorithm,
+                    Some(None) => None,
+                    Some(Some(algorithm)) => {
+                        Some(IdTokenAlgorithm::parse_for_userinfo(&algorithm).map_err(failed)?)
+                    }
                 },
                 request_object_algorithm: match changes.request_object_signing_alg {
                     None => now.request_object_algorithm,

@@ -1,7 +1,7 @@
 //! Signature verification with `aws-lc-rs`.
 
 use aws_lc_rs::signature::{
-    ECDSA_P256_SHA256_FIXED, RSA_PKCS1_2048_8192_SHA256, RSA_PSS_2048_8192_SHA256,
+    ECDSA_P256_SHA256_FIXED, ED25519, RSA_PKCS1_2048_8192_SHA256, RSA_PSS_2048_8192_SHA256,
     RsaPublicKeyComponents, UnparsedPublicKey,
 };
 use hodor_kernel::{PublicKey, SignatureAlgorithm, SignatureVerifier};
@@ -51,9 +51,22 @@ impl SignatureVerifier for AwsLcVerifier {
                     .verify(message, signature)
                     .is_ok()
             }
+            (SignatureAlgorithm::EdDsa, PublicKey::Ed25519 { x }) => {
+                // The key's 32 bytes and a signature of 64, as RFC 8032
+                // writes both; the message is signed as it is, not hashed
+                // first.
+                x.len() == 32
+                    && UnparsedPublicKey::new(&ED25519, x)
+                        .verify(message, signature)
+                        .is_ok()
+            }
             // A key that cannot have made a signature of this algorithm.
-            (SignatureAlgorithm::Rs256 | SignatureAlgorithm::Ps256, PublicKey::P256 { .. })
-            | (SignatureAlgorithm::Es256, PublicKey::Rsa { .. }) => false,
+            (
+                SignatureAlgorithm::Rs256 | SignatureAlgorithm::Ps256,
+                PublicKey::P256 { .. } | PublicKey::Ed25519 { .. },
+            )
+            | (SignatureAlgorithm::Es256, PublicKey::Rsa { .. } | PublicKey::Ed25519 { .. })
+            | (SignatureAlgorithm::EdDsa, PublicKey::Rsa { .. } | PublicKey::P256 { .. }) => false,
         }
     }
 }

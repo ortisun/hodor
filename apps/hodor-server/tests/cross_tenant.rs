@@ -6424,3 +6424,147 @@ async fn a_signing_token_of_one_tenant_signs_nothing_at_another() {
         .await;
     assert_eq!(status, StatusCode::CREATED, "{again}");
 }
+
+/// A signed UserInfo answer of a tenant's first-party `client`, its
+/// UserInfo answers now signed with `algorithm`, and the access token it
+/// answered.
+async fn signed_userinfo_answer(
+    world: &World,
+    tenant: &Tenant,
+    client: &(String, String),
+    algorithm: hodor_oauth::api::IdTokenAlgorithm,
+) -> (String, String) {
+    use hodor_adapters_postgres::{PgApplicationStore, PgClientStore, PgResourceServerStore};
+    use hodor_oauth::api::{ApplicationPorts, ApplicationService, ClientId};
+    let applications = ApplicationService::new(ApplicationPorts {
+        units_of_work: Arc::new(world.database.app().clone()),
+        applications: Arc::new(PgApplicationStore),
+        clients: Arc::new(PgClientStore),
+        resource_servers: Arc::new(PgResourceServerStore),
+        digest: Arc::new(Sha256Digest),
+        random: Arc::new(OsRandom),
+        clock: Arc::new(SystemClock),
+    });
+    let id: ClientId = client.0.parse().expect("a client identifier");
+    let mut settings = applications
+        .client(&tenant.context, id)
+        .await
+        .expect("client")
+        .snapshot()
+        .settings
+        .clone();
+    settings.id_token_algorithm = algorithm;
+    settings.userinfo_algorithm = Some(algorithm);
+    applications
+        .change_client(&tenant.context, id, settings, Caller::system())
+        .await
+        .expect("changed");
+    let mut browser = Browser::not_following(&world.server);
+    let (_, body) = browser.sign_in(tenant.slug, EMAIL, PASSWORD).await;
+    assert_eq!(body["status"], "completed", "{body}");
+    let back = authorized(&mut browser, &authorize_path(tenant.slug, &client.0)).await;
+    let (status, tokens) = oauth_form(
+        world,
+        tenant,
+        "token",
+        (&client.0, &client.1),
+        &[
+            ("grant_type", "authorization_code"),
+            ("code", back.get("code").expect("a code")),
+            ("redirect_uri", REDIRECT),
+            ("code_verifier", VERIFIER),
+        ],
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{tokens}");
+    let access = tokens["access_token"]
+        .as_str()
+        .expect("an access token")
+        .to_owned();
+    let response = Client::new()
+        .get(format!(
+            "{}/t/{}/oauth2/userinfo",
+            world.server.base, tenant.slug
+        ))
+        .bearer_auth(&access)
+        .send()
+        .await
+        .expect("response");
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(response.headers()["content-type"], "application/jwt");
+    (response.text().await.expect("body"), access)
+}
+
+async fn key_set(world: &World, tenant: &Tenant) -> jsonwebtoken::jwk::JwkSet {
+    Client::new()
+        .get(format!(
+            "{}/t/{}/oauth2/jwks",
+            world.server.base, tenant.slug
+        ))
+        .send()
+        .await
+        .expect("response")
+        .json()
+        .await
+        .expect("a key set")
+}
+
+/// Whether some key of `set` verifies `token` as `algorithm`, whatever its
+/// `kid`.
+fn any_key_verifies(
+    set: &jsonwebtoken::jwk::JwkSet,
+    token: &str,
+    algorithm: jsonwebtoken::Algorithm,
+) -> bool {
+    let mut validation = jsonwebtoken::Validation::new(algorithm);
+    validation.set_required_spec_claims::<&str>(&[]);
+    validation.validate_exp = false;
+    validation.validate_aud = false;
+    set.keys.iter().any(|jwk| {
+        jsonwebtoken::DecodingKey::from_jwk(jwk).is_ok_and(|key| {
+            jsonwebtoken::decode::<serde_json::Value>(token, &key, &validation).is_ok()
+        })
+    })
+}
+
+#[tokio::test]
+async fn a_signed_userinfo_answer_of_one_tenant_verifies_with_no_key_of_another() {
+    use hodor_oauth::api::IdTokenAlgorithm;
+    let world = world_with(&[("HODOR_SECRET_KEYS", ROOT_KEY)]).await;
+    let (acme, globex) = (&world.acme, &world.globex);
+    let client = first_party_client(&world, acme).await;
+    for (algorithm, library) in [
+        (IdTokenAlgorithm::Es256, jsonwebtoken::Algorithm::ES256),
+        (IdTokenAlgorithm::Rs256, jsonwebtoken::Algorithm::RS256),
+        (IdTokenAlgorithm::Ps256, jsonwebtoken::Algorithm::PS256),
+        (IdTokenAlgorithm::EdDsa, jsonwebtoken::Algorithm::EdDSA),
+    ] {
+        let name = algorithm.as_str();
+        let (answer, access) = signed_userinfo_answer(&world, acme, &client, algorithm).await;
+        let kid = jsonwebtoken::decode_header(&answer)
+            .expect("a header")
+            .kid
+            .expect("kid");
+        let (in_acme, in_globex) = (key_set(&world, acme).await, key_set(&world, globex).await);
+        // Each tenant has a key of every algorithm, its own.
+        assert!(in_acme.find(&kid).is_some(), "{name}");
+        assert!(
+            in_globex.find(&kid).is_none(),
+            "{name}: Globex names no such key"
+        );
+        assert!(
+            any_key_verifies(&in_acme, &answer, library),
+            "{name}: it checks where it belongs"
+        );
+        assert!(
+            !any_key_verifies(&in_globex, &answer, library),
+            "{name}: no key of Globex verifies it"
+        );
+        // The access token it answered is no token of Globex's.
+        assert_eq!(
+            userinfo(&world, globex, &access).await,
+            StatusCode::UNAUTHORIZED,
+            "{name}"
+        );
+    }
+}

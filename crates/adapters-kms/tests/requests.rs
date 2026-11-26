@@ -359,3 +359,65 @@ async fn a_new_token_is_asked_for_once_two_thirds_of_its_life_have_passed() {
     assert_eq!(seen[2].url, format!("{ADDRESS}/v1/auth/approle/login"));
     assert_eq!(token_of(&seen[3]), Some("next"));
 }
+
+#[tokio::test]
+async fn an_eddsa_signature_names_no_hash_and_is_the_same_in_both_encodings() {
+    let tenant = TenantContext::assume(TenantId::generate());
+    let id = KeyVersionId::generate();
+    let name = OpenBaoKeyProvider::key_name(&tenant, id);
+    let version = KeyVersion::create(
+        id,
+        KeyAlgorithm::EdDsa,
+        "openbao",
+        GeneratedKey {
+            public_key: Some(PublicKey::Ed25519 { x: vec![3; 32] }),
+            material: KeyMaterial::from_stored(format!("openbao:1:{name}:EdDSA").into_bytes()),
+        },
+        Timestamp::UNIX_EPOCH,
+    )
+    .expect("version")
+    .0;
+    // 64 bytes in base64, as OpenBao writes every signature but the JWS
+    // marshaling of ECDSA.
+    let ed25519 = || {
+        Step::Answer(
+            200,
+            json!({"data": {"signature": format!("vault:v1:{}==", "A".repeat(86)), "key_version": 1}}),
+        )
+    };
+    let http = Scripted::new(vec![signed_in("t", 3600), ed25519(), ed25519()]);
+    let provider = OpenBaoKeyProvider::new(http.clone(), &settings(approle()));
+    let jose = provider
+        .sign(&tenant, &version, b"m", SignatureEncoding::Jose)
+        .await
+        .expect("signed");
+    let der = provider
+        .sign(&tenant, &version, b"m", SignatureEncoding::Der)
+        .await
+        .expect("signed");
+    assert_eq!(jose.len(), 64);
+    assert_eq!(jose, der);
+    for sign in &http.seen()[1..] {
+        assert_eq!(
+            sign.url,
+            format!("{ADDRESS}/v1/teams/hodor-transit/sign/{name}")
+        );
+        // The message itself is signed: no hash, no marshaling.
+        assert_eq!(body(sign), json!({"input": "bQ==", "key_version": 1}));
+    }
+
+    // A signature of another size is not an Ed25519 signature.
+    let http = Scripted::new(vec![
+        signed_in("t", 3600),
+        Step::Answer(
+            200,
+            json!({"data": {"signature": format!("vault:v1:{}", "A".repeat(84)), "key_version": 1}}),
+        ),
+    ]);
+    let provider = OpenBaoKeyProvider::new(http, &settings(approle()));
+    let error = provider
+        .sign(&tenant, &version, b"m", SignatureEncoding::Jose)
+        .await
+        .expect_err("63 bytes");
+    assert_eq!(error.code(), "keys.provider_failed");
+}

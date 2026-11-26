@@ -15,7 +15,7 @@ through `crate::api`.
   the key identifier of a signing key.
 - `KeyUse { Signing, Encryption, Data }` with `as_str()` (`sig`, `enc`,
   `data`) and `from_stored`.
-- `KeyAlgorithm { Es256, Rs256, Ps256, A256Gcm }` with `as_str()`,
+- `KeyAlgorithm { Es256, Rs256, Ps256, EdDsa, A256Gcm }` (`EdDsa` written `EdDSA`) with `as_str()`,
   `from_name`, `from_stored`, `key_use()`, `signature()`, `ALL` and
   `DEFAULT_SIGNING = Es256`.
 - `KeyState { Pending, Active, Retiring, Retired, Revoked }` with `as_str()`

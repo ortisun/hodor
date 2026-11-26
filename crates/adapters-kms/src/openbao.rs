@@ -3,7 +3,7 @@
 //!
 //! See `docs/architecture/contexts/keys.md`, "The OpenBao provider".
 
-use crate::public_key;
+use crate::public_key::{self, Shape};
 use crate::settings::{OpenBaoLogin, OpenBaoSettings};
 use base64::Engine as _;
 use base64::engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD};
@@ -103,11 +103,13 @@ fn refused(response: &HttpResponse, what: &str) -> DomainError {
     }
 }
 
-/// The type of a Transit key for an algorithm, and whether it is RSA.
-fn transit_type(algorithm: KeyAlgorithm) -> Option<(&'static str, bool)> {
+/// The type of a Transit key for an algorithm, and the shape of its
+/// public key.
+const fn transit_type(algorithm: KeyAlgorithm) -> Option<(&'static str, Shape)> {
     match algorithm {
-        KeyAlgorithm::Es256 => Some(("ecdsa-p256", false)),
-        KeyAlgorithm::Rs256 | KeyAlgorithm::Ps256 => Some(("rsa-2048", true)),
+        KeyAlgorithm::Es256 => Some(("ecdsa-p256", Shape::P256)),
+        KeyAlgorithm::Rs256 | KeyAlgorithm::Ps256 => Some(("rsa-2048", Shape::Rsa)),
+        KeyAlgorithm::EdDsa => Some(("ed25519", Shape::Ed25519)),
         KeyAlgorithm::A256Gcm => None,
     }
 }
@@ -277,7 +279,7 @@ impl OpenBaoKeyProvider {
         name: &str,
         algorithm: KeyAlgorithm,
     ) -> Result<hodor_kernel::PublicKey, DomainError> {
-        let (kind, rsa) = transit_type(algorithm).ok_or_else(|| unusable("not a signing key"))?;
+        let (kind, shape) = transit_type(algorithm).ok_or_else(|| unusable("not a signing key"))?;
         let response = self
             .call(HttpRequest::get(self.transit(&format!("keys/{name}"))))
             .await?;
@@ -301,13 +303,13 @@ impl OpenBaoKeyProvider {
                  backed up in plaintext, imported or rotated"
             )));
         }
-        let pem = data
+        let written = data
             .get("keys")
             .and_then(|keys| keys.get(TRANSIT_VERSION.to_string()))
             .and_then(|key| key.get("public_key"))
             .and_then(Value::as_str)
             .ok_or_else(|| failed("reading a key: no public key"))?;
-        public_key::read(pem, rsa)
+        public_key::read(written, shape)
             .ok_or_else(|| failed("reading a key: the public key is not of the type asked"))
     }
 
@@ -405,21 +407,29 @@ impl KeyProvider for OpenBaoKeyProvider {
         let name = self.key_of(tenant, version)?;
         let mut body = json!({
             "input": STANDARD.encode(message),
-            "hash_algorithm": "sha2-256",
             "key_version": TRANSIT_VERSION,
         });
         let (jws, length) = match version.algorithm() {
+            KeyAlgorithm::EdDsa => {
+                // Ed25519 signs the message itself (RFC 8037): no hash is
+                // named, and the signature is the same 64 bytes in both
+                // encodings.
+                (false, Some(64))
+            }
             KeyAlgorithm::Es256 => {
+                body["hash_algorithm"] = json!("sha2-256");
                 let jws = encoding == SignatureEncoding::Jose;
                 body["marshaling_algorithm"] = json!(if jws { "jws" } else { "asn1" });
                 (jws, jws.then_some(64))
             }
             KeyAlgorithm::Rs256 => {
+                body["hash_algorithm"] = json!("sha2-256");
                 body["signature_algorithm"] = json!("pkcs1v15");
                 (false, Some(256))
             }
             KeyAlgorithm::Ps256 => {
                 // JSON Web Algorithms ask for a salt as long as the hash.
+                body["hash_algorithm"] = json!("sha2-256");
                 body["signature_algorithm"] = json!("pss");
                 body["salt_length"] = json!("hash");
                 (false, Some(256))

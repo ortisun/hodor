@@ -163,29 +163,39 @@ function seedHodor() {
     );
     return { client_id: printed(output, "client"), client_secret: printed(output, "secret") };
   };
+  // A static client of the suite cannot choose how its ID tokens are
+  // signed, so each client is made with one of the four algorithms Hodor
+  // offers, and every one of them signs the ID tokens of some client: the
+  // suite checks each against the tenant's key set.
+  const signedWith = (algorithm) => ["--id-token-algorithm", algorithm];
   return {
-    first: client("First client", "client_secret_basic"),
-    second: client("Second client", "client_secret_basic"),
-    post: client("Client that sends its secret in the form", "client_secret_post"),
+    first: client("First client", "client_secret_basic", signedWith("ES256")),
+    second: client("Second client", "client_secret_basic", signedWith("RS256")),
+    post: client("Client that sends its secret in the form", "client_secret_post", signedWith("PS256")),
     // The back-channel plan's alone: a test of another plan that signs out
     // never gets a logout token it does not wait for.
     backchannel: client("Client told when the session ends", "client_secret_basic", [
       "--backchannel-logout-uri", BACKCHANNEL_LOGOUT, "--backchannel-logout-session-required",
+      ...signedWith("PS256"),
     ]),
     // The same four, pairwise, for the plans' second run: each knows the
     // person by an identifier of its sector. The second names a sector
     // identifier address, so its sector is another host than the others'.
     pairwise: {
-      first: client("Pairwise first client", "client_secret_basic", ["--subject-type", "pairwise"]),
+      first: client("Pairwise first client", "client_secret_basic", [
+        "--subject-type", "pairwise", ...signedWith("EdDSA"),
+      ]),
       second: client("Pairwise second client", "client_secret_basic", [
         "--subject-type", "pairwise", "--sector-identifier-uri", SECTOR_IDENTIFIER_URI,
+        ...signedWith("PS256"),
       ]),
       post: client("Pairwise client that sends its secret in the form", "client_secret_post", [
-        "--subject-type", "pairwise",
+        "--subject-type", "pairwise", ...signedWith("RS256"),
       ]),
       backchannel: client("Pairwise client told when the session ends", "client_secret_basic", [
         "--subject-type", "pairwise",
         "--backchannel-logout-uri", BACKCHANNEL_LOGOUT, "--backchannel-logout-session-required",
+        ...signedWith("EdDSA"),
       ]),
     },
   };

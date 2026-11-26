@@ -1001,6 +1001,9 @@ fn the_s256_challenge_is_that_of_rfc_7636() {
                 0xcb, 0x70, 0xf9, 0xc3,
             ]
         }
+        fn sha512(&self, _data: &[u8]) -> [u8; 64] {
+            unreachable!("a challenge is SHA-256")
+        }
     }
     assert_eq!(
         s256_challenge("dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk", &Sha256),

@@ -62,6 +62,18 @@ async fn tenant_signing_with(
     slug: &str,
     id_token_algorithm: IdTokenAlgorithm,
 ) -> ClientId {
+    tenant_with(database, slug, |settings| {
+        settings.id_token_algorithm = id_token_algorithm;
+    })
+    .await
+}
+
+/// The tenant of [`tenant`], its client's settings changed by `configure`.
+async fn tenant_with(
+    database: &TestDatabase,
+    slug: &str,
+    configure: impl FnOnce(&mut ClientSettings),
+) -> ClientId {
     let units = || Arc::new(database.app().clone());
     let clock = Arc::new(SystemClock);
     let created = TenantService::new(
@@ -199,10 +211,10 @@ async fn tenant_signing_with(
         vec![REDIRECT.to_owned()],
     );
     settings.authentication_method = AuthenticationMethod::None;
-    settings.id_token_algorithm = id_token_algorithm;
     settings.allowed_scopes = ["openid", "profile", "email", "groups", "payroll:read"]
         .map(str::to_owned)
         .to_vec();
+    configure(&mut settings);
     let (client, _) = applications
         .create_client(
             &context,
@@ -1449,4 +1461,236 @@ async fn under_the_policy_a_person_with_no_factor_sets_up_an_application_while_s
         )
         .await;
     assert_eq!(done["status"], "completed", "{done}");
+}
+
+/// A UserInfo answer as it came: its status, type, cache header and body.
+async fn userinfo_as_sent(
+    server: &Server,
+    slug: &str,
+    token: &str,
+) -> (StatusCode, String, String, String) {
+    let response = reqwest::Client::new()
+        .get(format!("{}/t/{slug}/oauth2/userinfo", server.base))
+        .header("authorization", format!("Bearer {token}"))
+        .send()
+        .await
+        .expect("response");
+    let header = |name: &str| {
+        response
+            .headers()
+            .get(name)
+            .and_then(|value| value.to_str().ok())
+            .unwrap_or_default()
+            .to_owned()
+    };
+    let (status, kind, cache) = (
+        response.status(),
+        header("content-type"),
+        header("cache-control"),
+    );
+    (status, kind, cache, response.text().await.expect("body"))
+}
+
+#[tokio::test]
+async fn every_algorithm_signs_id_tokens_and_userinfo_answers_that_check_with_the_key_set() {
+    let database = TestDatabase::start().await;
+    let algorithms = [
+        (IdTokenAlgorithm::Es256, Algorithm::ES256, "es"),
+        (IdTokenAlgorithm::Rs256, Algorithm::RS256, "rs"),
+        (IdTokenAlgorithm::Ps256, Algorithm::PS256, "ps"),
+        (IdTokenAlgorithm::EdDsa, Algorithm::EdDSA, "ed"),
+    ];
+    let mut clients = Vec::new();
+    for (algorithm, _, slug) in algorithms {
+        clients.push(
+            tenant_with(&database, slug, |settings| {
+                settings.id_token_algorithm = algorithm;
+                settings.userinfo_algorithm = Some(algorithm);
+            })
+            .await,
+        );
+    }
+    let server = server(&database).await;
+
+    for ((algorithm, library, slug), client_id) in algorithms.into_iter().zip(clients) {
+        let name = algorithm.as_str();
+        // The key set, read before any token of the algorithm is signed,
+        // names a key of every algorithm a client may choose.
+        let before: JwkSet = reqwest::get(format!("{}/t/{slug}/oauth2/jwks", server.base))
+            .await
+            .expect("key set")
+            .json()
+            .await
+            .expect("JSON");
+        let published: BTreeSet<String> = before
+            .keys
+            .iter()
+            .filter_map(|key| key.common.key_algorithm.map(|alg| format!("{alg:?}")))
+            .collect();
+        assert_eq!(
+            published,
+            ["ES256", "EdDSA", "PS256", "RS256"]
+                .map(str::to_owned)
+                .into(),
+            "{name}"
+        );
+
+        let mut browser = Browser::not_following(&server);
+        browser.sign_in(slug, "ana@example.com", PASSWORD).await;
+        let first = code(
+            &mut browser,
+            slug,
+            &authorize_query(client_id, "openid profile email", &[("nonce", NONCE)]),
+        )
+        .await;
+        let tokens = redeem(&server, slug, client_id, &first).await;
+
+        // The ID token, checked by a library of its own against the key
+        // set read before it was signed.
+        let id_token = tokens["id_token"].as_str().expect("an ID token");
+        let header = decode_header(id_token).expect("header");
+        assert_eq!(header.alg, library, "{name}");
+        let kid = header.kid.expect("kid");
+        let jwk = before
+            .find(&kid)
+            .expect("the key that signed, named before");
+        let mut validation = Validation::new(library);
+        validation.set_audience(&[client_id.to_string()]);
+        validation.set_issuer(&[issuer(slug)]);
+        let id_claims = decode::<Value>(
+            id_token,
+            &DecodingKey::from_jwk(jwk).expect("key"),
+            &validation,
+        )
+        .unwrap_or_else(|error| panic!("{name}: the ID token checks: {error}"))
+        .claims;
+        assert_eq!(id_claims["nonce"], NONCE);
+        // `at_hash` is the left half of the hash the algorithm names:
+        // SHA-512 for EdDSA on Ed25519, SHA-256 for the others.
+        let access = tokens["access_token"].as_str().expect("access token");
+        let (hash, half) = if algorithm == IdTokenAlgorithm::EdDsa {
+            (&aws_lc_rs::digest::SHA512, 32)
+        } else {
+            (&aws_lc_rs::digest::SHA256, 16)
+        };
+        let digest = aws_lc_rs::digest::digest(hash, access.as_bytes());
+        assert_eq!(
+            id_claims["at_hash"],
+            URL_SAFE_NO_PAD.encode(&digest.as_ref()[..half]),
+            "{name}"
+        );
+
+        // UserInfo answers a JSON Web Token, signed with the same
+        // algorithm by the same key.
+        let (status, kind, cache, body) = userinfo_as_sent(&server, slug, access).await;
+        assert_eq!(status, StatusCode::OK, "{name}: {body}");
+        assert_eq!(kind, "application/jwt", "{name}");
+        assert_eq!(cache, "no-store", "{name}");
+        let answer_header = decode_header(&body).expect("a JSON Web Token");
+        assert_eq!(answer_header.alg, library, "{name}");
+        assert_eq!(answer_header.kid.as_deref(), Some(kid.as_str()), "{name}");
+        assert_eq!(answer_header.typ, None, "{name}: no typ, it is no ID token");
+        let mut answer_validation = Validation::new(library);
+        answer_validation.set_audience(&[client_id.to_string()]);
+        answer_validation.set_issuer(&[issuer(slug)]);
+        answer_validation.set_required_spec_claims(&["iss", "aud", "sub"]);
+        answer_validation.validate_exp = false;
+        let answer = decode::<Value>(
+            &body,
+            &DecodingKey::from_jwk(jwk).expect("key"),
+            &answer_validation,
+        )
+        .unwrap_or_else(|error| panic!("{name}: the answer checks: {error}"))
+        .claims;
+        assert_eq!(answer["sub"], id_claims["sub"], "{name}");
+        assert_eq!(answer["name"], "Ana Lima");
+        assert_eq!(answer["email"], "ana@example.com");
+        assert_eq!(answer["iss"], issuer(slug));
+        assert_eq!(answer["aud"], client_id.to_string());
+        for absent in ["exp", "iat", "nonce"] {
+            assert!(answer.get(absent).is_none(), "{name}: {absent}");
+        }
+        // A library checking an ID token refuses it: it has no `exp`.
+        assert!(
+            decode::<Value>(
+                &body,
+                &DecodingKey::from_jwk(jwk).expect("key"),
+                &validation
+            )
+            .is_err(),
+            "{name}: never taken for an ID token"
+        );
+
+        // The ID token is a hint logout accepts; the UserInfo answer is
+        // not.
+        let (status, location, _) = browser
+            .navigate(
+                Method::GET,
+                &format!("/t/{slug}/oauth2/logout?id_token_hint={body}"),
+                None,
+            )
+            .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{name}: {location:?}");
+        let (status, location, _) = browser
+            .navigate(
+                Method::GET,
+                &format!("/t/{slug}/oauth2/logout?id_token_hint={id_token}"),
+                None,
+            )
+            .await;
+        assert_ne!(status, StatusCode::BAD_REQUEST, "{name}: {location:?}");
+    }
+}
+
+#[tokio::test]
+async fn a_client_without_a_userinfo_algorithm_gets_json_and_its_choice_can_change() {
+    let database = TestDatabase::start().await;
+    let client_id = tenant(&database, "acme").await;
+    let server = server(&database).await;
+    let mut browser = Browser::not_following(&server);
+    browser.sign_in("acme", "ana@example.com", PASSWORD).await;
+    let first = code(
+        &mut browser,
+        "acme",
+        &authorize_query(client_id, "openid profile", &[("nonce", NONCE)]),
+    )
+    .await;
+    let tokens = redeem(&server, "acme", client_id, &first).await;
+    let access = tokens["access_token"].as_str().expect("access token");
+    let (status, kind, _, body) = userinfo_as_sent(&server, "acme", access).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(kind.starts_with("application/json"), "{kind}");
+    let claims: Value = serde_json::from_str(&body).expect("JSON");
+    assert_eq!(claims["name"], "Ana Lima");
+    assert!(claims.get("iss").is_none(), "a JSON answer has no iss");
+
+    // The administrator chooses an algorithm: the same token's next answer
+    // is signed, since the client is read at every answer.
+    let units = Arc::new(database.app().clone());
+    let (context, _) = ana_of(&database, "acme").await;
+    let applications = ApplicationService::new(ApplicationPorts {
+        units_of_work: units,
+        applications: Arc::new(PgApplicationStore),
+        clients: Arc::new(PgClientStore),
+        resource_servers: Arc::new(PgResourceServerStore),
+        digest: Arc::new(Sha256Digest),
+        random: Arc::new(OsRandom),
+        clock: Arc::new(SystemClock),
+    });
+    let mut settings = applications
+        .client(&context, client_id)
+        .await
+        .expect("client")
+        .snapshot()
+        .settings
+        .clone();
+    settings.userinfo_algorithm = Some(IdTokenAlgorithm::EdDsa);
+    applications
+        .change_client(&context, client_id, settings, Caller::system())
+        .await
+        .expect("changed");
+    let (status, kind, _, body) = userinfo_as_sent(&server, "acme", access).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(kind, "application/jwt");
+    assert_eq!(decode_header(&body).expect("header").alg, Algorithm::EdDSA);
 }

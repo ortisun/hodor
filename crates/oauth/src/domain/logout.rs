@@ -6,12 +6,12 @@
 //! by the relying party".
 
 use crate::domain::application::Application;
-use crate::domain::client::{Client, ClientId};
+use crate::domain::client::{Client, ClientId, IdTokenAlgorithm};
 use crate::domain::openid::PublishedKey;
 use crate::domain::token::decode_json;
 use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
-use hodor_kernel::{SignatureAlgorithm, SignatureVerifier, UserId};
+use hodor_kernel::{SignatureVerifier, UserId};
 use hodor_session::api::SessionId;
 use serde_json::Value;
 
@@ -143,11 +143,12 @@ pub fn check_id_token_hint(
     }
     // An ID token of Hodor's is signed with one of the algorithms a client
     // may choose for them, and nothing else.
-    let algorithm = match header.get("alg").and_then(Value::as_str) {
-        Some("ES256") => SignatureAlgorithm::Es256,
-        Some("RS256") => SignatureAlgorithm::Rs256,
-        _ => return Err("the hint names another algorithm"),
-    };
+    let algorithm = header
+        .get("alg")
+        .and_then(Value::as_str)
+        .and_then(IdTokenAlgorithm::from_name)
+        .map(IdTokenAlgorithm::signature)
+        .ok_or("the hint names another algorithm")?;
     let kid = header
         .get("kid")
         .and_then(Value::as_str)

@@ -142,6 +142,7 @@ impl KeyProvider for FakeKeyProvider {
                 modulus: vec![3; 256],
                 exponent: vec![1, 0, 1],
             }),
+            KeyAlgorithm::EdDsa => Some(PublicKey::Ed25519 { x: vec![4; 32] }),
             KeyAlgorithm::A256Gcm => None,
         };
         Ok(GeneratedKey {
@@ -240,6 +241,7 @@ pub fn pending_version(
             modulus: vec![3; 256],
             exponent: vec![1, 0, 1],
         }),
+        KeyAlgorithm::EdDsa => Some(PublicKey::Ed25519 { x: vec![4; 32] }),
         KeyAlgorithm::A256Gcm => None,
     };
     let generated = GeneratedKey {
@@ -1271,11 +1273,20 @@ async fn each_signing_key_signs_in_both_encodings(ports: &ProviderPorts<'_>) {
             .sign(&tenant, &version, message, SignatureEncoding::Der)
             .await
             .expect("sign in the DER encoding");
-        let as_jose = if algorithm == KeyAlgorithm::Es256 {
-            assert_eq!(jose.len(), 64, "{name}: two numbers of 32 bytes");
-            der_to_jose(&der, 32).expect("an ASN.1 sequence of two integers")
-        } else {
-            der
+        let as_jose = match algorithm {
+            KeyAlgorithm::Es256 => {
+                assert_eq!(jose.len(), 64, "{name}: two numbers of 32 bytes");
+                der_to_jose(&der, 32).expect("an ASN.1 sequence of two integers")
+            }
+            KeyAlgorithm::EdDsa => {
+                // RFC 8032: one signature of 64 bytes, the same in both
+                // encodings, and the same for the same message, since
+                // Ed25519 draws nothing at random.
+                assert_eq!(jose.len(), 64, "{name}: 64 bytes");
+                assert_eq!(der, jose, "{name}: the same bytes in both encodings");
+                der
+            }
+            _ => der,
         };
         assert!(
             ports.verifier.verify(checked, public, message, &as_jose),

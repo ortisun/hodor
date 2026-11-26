@@ -280,7 +280,8 @@ const CLIENT_COLUMNS: &str = "id, application_id, name, client_type, authenticat
      refresh_idle_seconds, consent_seconds, status, created_at, updated_at, version, principal_id, \
      exchange_rules, backchannel_logout_uri, backchannel_logout_session_required, subject_type, \
      sector_identifier_uri, spiffe_id, linkerd_identity, request_object_signing_alg, \
-     certificate_bound_access_tokens, default_max_age, default_acr_values, require_auth_time";
+     certificate_bound_access_tokens, default_max_age, default_acr_values, require_auth_time, \
+     userinfo_signed_response_alg";
 
 /// A client's default max age, as the column holds it.
 fn default_max_age_of(settings: &ClientSettings) -> Result<Option<i32>, DomainError> {
@@ -366,6 +367,14 @@ async fn load_client(
                     .map_err(get)?,
             )
             .map_err(|_| corrupted("ID token algorithm"))?,
+            userinfo_algorithm: row
+                .try_get::<Option<String>, _>("userinfo_signed_response_alg")
+                .map_err(get)?
+                .map(|name| {
+                    IdTokenAlgorithm::parse_for_userinfo(&name)
+                        .map_err(|_| corrupted("UserInfo algorithm"))
+                })
+                .transpose()?,
             request_object_algorithm: row
                 .try_get::<Option<String>, _>("request_object_signing_alg")
                 .map_err(get)?
@@ -501,10 +510,10 @@ impl ClientStore for PgClientStore {
                   backchannel_logout_session_required, subject_type, sector_identifier_uri,
                   spiffe_id, linkerd_identity, request_object_signing_alg,
                   certificate_bound_access_tokens, default_max_age, default_acr_values,
-                  require_auth_time, version)
+                  require_auth_time, userinfo_signed_response_alg, version)
              VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16,
                      $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28,
-                     $29, $30, $31, $32, $33, 0)",
+                     $29, $30, $31, $32, $33, $34, 0)",
         )
         .bind(tenant)
         .bind(state.id.as_uuid())
@@ -548,6 +557,7 @@ impl ClientStore for PgClientStore {
         .bind(default_max_age_of(settings)?)
         .bind(&settings.default_acr_values)
         .bind(settings.require_auth_time)
+        .bind(settings.userinfo_algorithm.map(IdTokenAlgorithm::as_str))
         .execute(&mut *connection)
         .await;
         match inserted {
@@ -584,6 +594,7 @@ impl ClientStore for PgClientStore {
                  linkerd_identity = $26, request_object_signing_alg = $27,
                  certificate_bound_access_tokens = $28,
                  default_max_age = $29, default_acr_values = $30, require_auth_time = $31,
+                 userinfo_signed_response_alg = $32,
                  version = version + 1
              WHERE tenant_id = $1 AND id = $2 AND version = $17",
         )
@@ -627,6 +638,7 @@ impl ClientStore for PgClientStore {
         .bind(default_max_age_of(settings)?)
         .bind(&settings.default_acr_values)
         .bind(settings.require_auth_time)
+        .bind(settings.userinfo_algorithm.map(IdTokenAlgorithm::as_str))
         .execute(&mut *connection)
         .await
         .map_err(get)?;

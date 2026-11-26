@@ -233,9 +233,10 @@ certificates; without them every JWT-SVID, and every client of
     read for every token and left out past `MOST_GROUPS_IN_A_TOKEN`, 100;
     signed with `KeyAlgorithm::DEFAULT_SIGNING` through
     `KeyService::sign_naming_key` so that the header's `kid` is the version
-    that signs. `TokenService::signed` makes the tenant's first key of the
-    algorithm with `KeyService::ensure_active` when it has none, and only
-    when even then nothing signs is it `server_error`.
+    that signs. `signed_with_active_key`, which UserInfo shares, makes the
+    tenant's first key of the algorithm with `KeyService::ensure_active`
+    when it has none, and only when even then nothing signs is it
+    `server_error`.
   - The person as the client knows them: `subject_for` and `session_for`
     (`pairwise.rs`) give the user and session identifiers to a public
     client and, through the `PairwiseSubjects` given with
@@ -245,7 +246,8 @@ certificates; without them every JWT-SVID, and every client of
     is answered `oauth.pairwise_unavailable`, an error of storage.
   - The ID token, when the scopes hold `openid`: claims from
     `id_token_claims`, signed the same way with the client's ID token
-    algorithm (`ClientSettings::id_token_algorithm`, ES256 or RS256) and
+    algorithm (`ClientSettings::id_token_algorithm`, ES256, RS256, PS256
+    or EdDSA) and
     lifetime, header `typ` `JWT`.
   - The register: every access token issued is recorded with
     `AccessTokenRecordStore::record` in the unit of work of its event: the
@@ -322,23 +324,31 @@ whom a request waited for and their answer.
 
 ### UserInfo (`userinfo.rs`)
 
-`UserInfoService::new(UserInfoPorts { keys, verifier, identity, register,
-memberships, mapping, digest, clock })`:
+`UserInfoService::new(UserInfoPorts { units_of_work, clients, keys,
+verifier, identity, register, memberships, mapping, digest, clock })`:
 
-- `claims(tenant, issuer, token, forwarded)`: the outer `Result` is
-  storage; the inner one a `BearerRefusal` (`Missing`,
-  `InvalidToken(reason)`, `InsufficientScope`). Checks the token with
-  `check_access_token` against the tenant's published `ES256` keys and the
-  thumbprint of the certificate in `forwarded` (`presented_thumbprint`,
-  with `digest`), so that a bound token without its certificate is
-  `InvalidToken`, then asks the register: a token not
+- `answer(tenant, issuer, token, forwarded)`: the outer `Result` is
+  storage, or the key provider failing to sign; the inner one a
+  `BearerRefusal` (`Missing`, `InvalidToken(reason)`,
+  `InsufficientScope`). Checks the token with `check_access_token` against
+  the tenant's published `ES256` keys and the thumbprint of the
+  certificate in `forwarded` (`presented_thumbprint`, with `digest`), so
+  that a bound token without its certificate is `InvalidToken`, whichever
+  the answer, then asks the register: a token not
   in force is `InvalidToken`. Then it reads the person through
   `IdentityService::get`: an unknown user, or one who may not sign in (not
   `Active`, or a service account or an agent), is `InvalidToken`. The
   person is the one of the token's grant, through
   `AccessTokenRegister::person_in_force`, never read from its `sub`.
   Answers `userinfo_claims` for the token's scopes, with the token's own
-  `sub`.
+  `sub`, and the claims of the client's mappers, as
+  `UserInfoAnswer::Json`; when the token's client, read through
+  `ClientStore::get` in the token's tenant, has a
+  `ClientSettings::userinfo_algorithm`, as `UserInfoAnswer::Signed`: the
+  claims with `iss` and `aud` (`signed_userinfo_claims`), header
+  `userinfo_header` (`alg`, `kid`, no `typ`), signed through
+  `signed_with_active_key`; no key even then is the internal error
+  `oauth.userinfo_not_signed`, never an unsigned answer.
 - `published_keys(keys, tenant)` (crate-visible): the tenant's published
   signing keys as `PublishedKey`s, shared with logout.
 

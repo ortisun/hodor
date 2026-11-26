@@ -67,6 +67,7 @@ fn key_bytes(key: &PublicKey) -> Vec<u8> {
     match key {
         PublicKey::P256 { x, y } => [x.as_slice(), y.as_slice()].concat(),
         PublicKey::Rsa { modulus, exponent } => [modulus.as_slice(), exponent.as_slice()].concat(),
+        PublicKey::Ed25519 { x } => x.clone(),
     }
 }
 
@@ -84,6 +85,7 @@ pub fn fake_signature(algorithm: SignatureAlgorithm, key: &PublicKey, message: &
         SignatureAlgorithm::Es256 => "ES256",
         SignatureAlgorithm::Rs256 => "RS256",
         SignatureAlgorithm::Ps256 => "PS256",
+        SignatureAlgorithm::EdDsa => "EdDSA",
     };
     FakeDigest
         .sha256(&[name.as_bytes(), &key_bytes(key), message].concat())
