@@ -21,6 +21,12 @@ spec:
       labels:
         {{- include "hodor.labels" . | nindent 8 }}
         app.kubernetes.io/component: migration
+        {{- with include "hodor.meshLabels" (list . .Values.mesh.injectMigration) }}
+        {{- . | nindent 8 }}
+        {{- end }}
+      {{- with include "hodor.podAnnotations" (list . .Values.mesh.injectMigration dict) }}
+      {{- . | nindent 6 }}
+      {{- end }}
     spec:
       restartPolicy: Never
       # The service account of the release does not exist yet when this runs for the first time, and the

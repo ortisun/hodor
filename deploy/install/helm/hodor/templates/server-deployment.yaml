@@ -25,9 +25,11 @@ spec:
       labels:
         {{- include "hodor.labels" . | nindent 8 }}
         app.kubernetes.io/component: server
-      {{- with .Values.server.podAnnotations }}
-      annotations:
-        {{- toYaml . | nindent 8 }}
+        {{- with include "hodor.meshLabels" (list . true) }}
+        {{- . | nindent 8 }}
+        {{- end }}
+      {{- with include "hodor.podAnnotations" (list . true .Values.server.podAnnotations) }}
+      {{- . | nindent 6 }}
       {{- end }}
     spec:
       serviceAccountName: {{ include "hodor.serviceAccountName" . }}
@@ -73,17 +75,28 @@ spec:
             - name: HODOR_DIRECTORY_HOSTS
               value: {{ join "," . | quote }}
             {{- end }}
-            {{- with .Values.trustedProxies }}
+            {{- if eq (include "hodor.meshProvider" .) "linkerd" }}
+            # The pod's own addresses, where Linkerd's proxy connects to Hodor from.
+            - name: POD_ADDRESSES
+              valueFrom:
+                fieldRef:
+                  fieldPath: status.podIPs
+            {{- end }}
+            {{- with include "hodor.trustedProxies" . }}
             - name: HODOR_TRUSTED_PROXIES
-              value: {{ join "," . | quote }}
+              value: {{ . | quote }}
             {{- end }}
             - name: HODOR_FORWARDED_HEADER
-              value: {{ .Values.forwardedHeader | quote }}
-            {{- with .Values.clientIdentityHeader }}
+              value: {{ include "hodor.forwardedHeader" . | quote }}
+            {{- with include "hodor.clientIdentityHeader" . }}
             - name: HODOR_CLIENT_IDENTITY_HEADER
               value: {{ . | quote }}
             {{- end }}
             {{- include "hodor.authoritiesEnvironment" . | nindent 12 }}
+            {{- with include "hodor.gatewayIdentities" . }}
+            - name: HODOR_GATEWAY_IDENTITIES
+              value: {{ . | quote }}
+            {{- end }}
             {{- with .Values.server.extraEnvironment }}
             {{- toYaml . | nindent 12 }}
             {{- end }}

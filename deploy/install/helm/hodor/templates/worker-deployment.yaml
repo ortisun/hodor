@@ -20,9 +20,11 @@ spec:
       labels:
         {{- include "hodor.labels" . | nindent 8 }}
         app.kubernetes.io/component: worker
-      {{- with .Values.worker.podAnnotations }}
-      annotations:
-        {{- toYaml . | nindent 8 }}
+        {{- with include "hodor.meshLabels" (list . true) }}
+        {{- . | nindent 8 }}
+        {{- end }}
+      {{- with include "hodor.podAnnotations" (list . true .Values.worker.podAnnotations) }}
+      {{- . | nindent 6 }}
       {{- end }}
     spec:
       serviceAccountName: {{ include "hodor.serviceAccountName" . }}

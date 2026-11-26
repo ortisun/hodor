@@ -259,6 +259,7 @@ nav:
       - decisions/0057-certificate-bound-access-tokens.md
       - decisions/0058-hodor-ext-authz.md
       - decisions/0059-linkerd-policies-from-roles.md
+      - decisions/0061-gateway-identities.md
       - decisions/0062-the-certificate-authority-of-a-tenant.md
       - decisions/0071-signing-intermediates.md
       - decisions/0074-hodor-cert-manager-issuer.md

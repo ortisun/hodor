@@ -44,7 +44,8 @@ pub use authorization_api::{
 };
 pub use authorize::{AuthorizationState, authorization_routes};
 pub use client_address::{
-    AddressRange, ForwardedHeader, InvalidRange, MAX_FORWARDED_HOPS, TrustedProxies, parse_ranges,
+    AddressRange, ForwardedHeader, Ignored, InvalidGateway, InvalidRange, MAX_FORWARDED_HOPS,
+    TrustedProxies, parse_gateways, parse_ranges,
 };
 pub use consent::{ConsentState, consent_routes};
 pub use forwarded_identity::IdentityHeader;

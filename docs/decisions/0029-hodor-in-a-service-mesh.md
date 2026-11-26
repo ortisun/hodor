@@ -9,10 +9,10 @@ Status: Proposed (requested by the project owner)
 | Mesh | Workload identity | Checks a JWT | Asks an outside decision | What the application behind the proxy sees |
 |---|---|---|---|---|
 | Istio, with sidecars | `spiffe://<trust domain>/ns/<namespace>/sa/<service account>` | `RequestAuthentication` | Envoy external authorization: `extensionProviders` and an `AuthorizationPolicy` with `action: CUSTOM` | The peer is always `127.0.0.6`. `X-Forwarded-For` passes unchanged. `X-Forwarded-Client-Cert` names the caller |
-| Istio, ambient | The same | At a waypoint | At a waypoint | The caller's own address, kept by ztunnel |
+| Istio, ambient | The same | At a waypoint | At a waypoint | The caller's own address, kept by ztunnel. Behind a waypoint, the waypoint's address, with no identity (tried, [Decision 0061](0061-gateway-identities.md)) |
 | Consul | `spiffe://<id>.consul/.../svc/<service>` | `jwt-provider` with intentions | The `builtin/ext-authz` extension | `X-Forwarded-For` unchanged; `X-Forwarded-Client-Cert` names the caller |
 | Envoy Gateway (a gateway, not a mesh) | — | `SecurityPolicy` `jwt` | `SecurityPolicy` `extAuth`, with context per route | Adds the address it received the request from to `X-Forwarded-For` |
-| Linkerd | A DNS name, `<service account>.<namespace>.serviceaccount.identity.linkerd.<trust domain>`, and no URI in the certificate. SPIFFE identifiers only for workloads outside Kubernetes, through SPIRE | No | No | The peer is the proxy. `X-Forwarded-For` unchanged. `l5d-client-id` holds the caller's identity, and the proxy removes any value a caller sent |
+| Linkerd | A DNS name, `<service account>.<namespace>.serviceaccount.identity.linkerd.<trust domain>`, and no URI in the certificate. SPIFFE identifiers only for workloads outside Kubernetes, through SPIRE | No | No | The peer is the proxy, connecting from the pod's own address (tried, [Decision 0061](0061-gateway-identities.md)). `X-Forwarded-For` unchanged. `l5d-client-id` holds the caller's identity, and the proxy removes any value a caller sent |
 
 Kuma, Cilium and the other meshes are left out of this decision. Kuma checks neither tokens nor outside decisions without patching Envoy, its new identity model is experimental, and how it forwards addresses and certificates was not confirmed. A mesh built on Envoy that forwards `X-Forwarded-Client-Cert` and speaks Envoy's external authorization should work the same way as Istio and Consul, but none was tried.
 
@@ -73,8 +73,8 @@ The proxy accepts a revoked token until it expires, five minutes by default. [De
 ### Hodor runs inside a mesh too
 
 - **A forwarded address is believed from the local proxy only when the caller is a named gateway.** The operator names the identities of the ingress gateways (Requirement-Operations-08). The forwarded address is read only when the request came through the local proxy and the caller's identity, taken from `X-Forwarded-Client-Cert` or `l5d-client-id` as above, is one of them. Any other caller is known by the connection's address, so every caller that does not come through a gateway shares one limit.
-- **Until that is built,** the [installation on Kubernetes](../operations/install-on-kubernetes.md) tells an operator not to name the sidecar's address as a trusted proxy. Instead they exclude Hodor's port from the sidecar's inbound interception, so that the ingress controller reaches Hodor directly and the pod range rule holds, or they use Istio's ambient mode, where the caller's address is kept.
-- **Probes, egress and network policy** are written down for Istio and Linkerd. The probes stay on the operations port. Identity providers and webhooks are reached through the mesh's egress. The network policy keeps admitting only the gateway.
+- **Built in Issue-112**, as [Decision 0061](0061-gateway-identities.md) says: `HODOR_GATEWAY_IDENTITIES` names the gateways, and the chart's `mesh.provider` names the local proxy and its header. Behind a waypoint of Istio's ambient mode no identity reaches Hodor, so a waypoint is never a trusted proxy.
+- **Probes, egress and network policy** are written down for Istio and Linkerd, in [the installation on Kubernetes](../operations/install-on-kubernetes.md#inside-a-service-mesh). The probes stay on the operations port. Identity providers and webhooks are reached through the mesh's egress. The network policy keeps admitting only the gateway, and the workloads that call Hodor themselves.
 
 ## Consequences
 

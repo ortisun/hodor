@@ -338,3 +338,112 @@ true
 {{- $config := dict "hodor" $hodor "client" (dict "client_id" $clientId "authentication" $authentication) -}}
 {{- $config | toPrettyJson -}}
 {{- end -}}
+
+
+{{/* The service mesh of mesh.provider, checked: istio, linkerd, or empty for none. */}}
+{{- define "hodor.meshProvider" -}}
+{{- $provider := .Values.mesh.provider | default "" -}}
+{{- if not (has $provider (list "" "istio" "linkerd")) -}}
+{{- fail (printf "mesh.provider must be istio, linkerd or empty; it is %q" $provider) -}}
+{{- end -}}
+{{- $provider -}}
+{{- end -}}
+
+{{/* The labels that put a pod in the mesh, or keep it out. Takes a list: the context, and whether the pod
+     joins the mesh. */}}
+{{- define "hodor.meshLabels" -}}
+{{- $root := index . 0 -}}
+{{- if eq (include "hodor.meshProvider" $root) "istio" -}}
+sidecar.istio.io/inject: {{ ternary "true" "false" (index . 1) | quote }}
+{{- end -}}
+{{- end -}}
+
+{{/* The annotations of a pod in the mesh, as YAML. The operations port, where the health checks are, stays
+     out of the proxy, so that the kubelet reaches it directly. Takes a list: the context, and whether the pod
+     joins the mesh. */}}
+{{- define "hodor.meshAnnotations" -}}
+{{- $root := index . 0 -}}
+{{- $joins := index . 1 -}}
+{{- $provider := include "hodor.meshProvider" $root -}}
+{{- $skipped := join "," $root.Values.mesh.skipOutboundPorts -}}
+{{- if and (eq $provider "istio") $joins }}
+traffic.sidecar.istio.io/excludeInboundPorts: "9090"
+proxy.istio.io/config: '{"holdApplicationUntilProxyStarts": true}'
+{{- with $skipped }}
+traffic.sidecar.istio.io/excludeOutboundPorts: {{ . | quote }}
+{{- end }}
+{{- else if eq $provider "linkerd" }}
+linkerd.io/inject: {{ ternary "enabled" "disabled" $joins }}
+{{- if $joins }}
+config.linkerd.io/skip-inbound-ports: "9090"
+{{- with $skipped }}
+config.linkerd.io/skip-outbound-ports: {{ . | quote }}
+{{- end }}
+{{- end }}
+{{- end }}
+{{- end -}}
+
+{{/* The annotations of a pod: the mesh's, then the ones given, which win. Takes a list: the context, whether
+     the pod joins the mesh, and the annotations given. */}}
+{{- define "hodor.podAnnotations" -}}
+{{- $mesh := include "hodor.meshAnnotations" (list (index . 0) (index . 1)) | fromYaml | default dict -}}
+{{- $all := merge (dict) ((index . 2) | default dict) $mesh -}}
+{{- with $all }}
+annotations:
+  {{- toYaml . | nindent 2 }}
+{{- end }}
+{{- end -}}
+
+{{/* HODOR_TRUSTED_PROXIES: trustedProxies, and the proxy beside Hodor in a mesh. Istio's sidecar connects
+     from 127.0.0.6, or ::6; Linkerd's from the pod's own addresses, in POD_ADDRESSES. */}}
+{{- define "hodor.trustedProxies" -}}
+{{- $ranges := .Values.trustedProxies | default list -}}
+{{- $provider := include "hodor.meshProvider" . -}}
+{{- if eq $provider "istio" -}}
+{{- $ranges = concat $ranges (list "127.0.0.6" "::6") -}}
+{{- else if eq $provider "linkerd" -}}
+{{- $ranges = concat $ranges (list "$(POD_ADDRESSES)") -}}
+{{- end -}}
+{{- join "," $ranges -}}
+{{- end -}}
+
+{{/* HODOR_CLIENT_IDENTITY_HEADER: clientIdentityHeader, or the header of the mesh. */}}
+{{- define "hodor.clientIdentityHeader" -}}
+{{- $provider := include "hodor.meshProvider" . -}}
+{{- $mesh := get (dict "istio" "x-forwarded-client-cert" "linkerd" "l5d-client-id") $provider -}}
+{{- .Values.clientIdentityHeader | default $mesh -}}
+{{- end -}}
+
+{{/* HODOR_FORWARDED_HEADER: forwardedHeader, unless Hodor is in a mesh and no gateway is named. The proxy
+     beside Hodor passes X-Forwarded-For as any caller wrote it, so then none is read. */}}
+{{- define "hodor.forwardedHeader" -}}
+{{- if and (include "hodor.meshProvider" .) (not .Values.gatewayIdentities) -}}
+none
+{{- else -}}
+{{- .Values.forwardedHeader -}}
+{{- end -}}
+{{- end -}}
+
+{{/* The gateways of gatewayIdentities, refused when the server could never recognize them. */}}
+{{- define "hodor.gatewayIdentities" -}}
+{{- with .Values.gatewayIdentities -}}
+{{- if not (include "hodor.trustedProxies" $) -}}
+{{- fail "gatewayIdentities needs trustedProxies or mesh.provider: the proxy that forwards the gateway's identity" -}}
+{{- end -}}
+{{- if not (include "hodor.clientIdentityHeader" $) -}}
+{{- fail "gatewayIdentities needs clientIdentityHeader or mesh.provider: the header the gateway's identity arrives in" -}}
+{{- end -}}
+{{- if eq (include "hodor.forwardedHeader" $) "none" -}}
+{{- fail "gatewayIdentities needs a forwardedHeader other than none: the header the gateways' forwarded address is read from" -}}
+{{- end -}}
+{{- join "," . -}}
+{{- end -}}
+{{- end -}}
+
+{{/* The namespace of the mesh's control plane, or nothing outside a mesh. */}}
+{{- define "hodor.meshControlPlane" -}}
+{{- $provider := include "hodor.meshProvider" . -}}
+{{- if $provider -}}
+{{- .Values.mesh.controlPlaneNamespace | default (get (dict "istio" "istio-system" "linkerd" "linkerd") $provider) -}}
+{{- end -}}
+{{- end -}}

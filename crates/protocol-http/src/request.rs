@@ -58,6 +58,21 @@ fn unreadable_forwarded_addresses() -> &'static Counter<u64> {
     })
 }
 
+/// Counts the forwarded headers of trusted proxies that were there and not
+/// read, because the caller is not one of the ingress gateways.
+fn ignored_forwarded_addresses() -> &'static Counter<u64> {
+    static COUNTER: OnceLock<Counter<u64>> = OnceLock::new();
+    COUNTER.get_or_init(|| {
+        opentelemetry::global::meter("hodor.server")
+            .u64_counter("hodor.http.forwarded_address.ignored")
+            .with_description(
+                "Forwarded headers of trusted proxies not read because the caller is not an \
+                 ingress gateway, by reason",
+            )
+            .build()
+    })
+}
+
 /// Counts the headers of the caller's identity that trusted proxies sent
 /// and that could not be read.
 fn unreadable_forwarded_identities() -> &'static Counter<u64> {
@@ -88,7 +103,9 @@ pub(crate) fn current_request_id() -> Option<CorrelationId> {
 ///
 /// The client address is set here too, once, before anything reads it,
 /// and the caller's identity a trusted proxy forwarded, as a
-/// `ForwardedIdentity` extension, when it holds one.
+/// `ForwardedIdentity` extension, when it holds one. The identity is read
+/// first: when the operator names ingress gateways, it decides whether the
+/// forwarded address is read.
 pub(crate) async fn request_context(
     State(proxies): State<Arc<TrustedProxies>>,
     mut request: Request,
@@ -108,7 +125,16 @@ pub(crate) async fn request_context(
         .extensions()
         .get::<ConnectInfo<SocketAddr>>()
         .map(|connection| connection.0.ip());
-    let resolved = proxies.resolve(peer, request.headers());
+    let caller = proxies.forwarded_identity(peer, request.headers());
+    let resolved = proxies.resolve_with(peer, request.headers(), &caller);
+    if let Some(ignored) = resolved.ignored {
+        ignored_forwarded_addresses().add(1, &[KeyValue::new("reason", ignored.as_str())]);
+        tracing::debug!(
+            reason = ignored.as_str(),
+            "the forwarded header of a trusted proxy was not read: the caller is not an ingress \
+             gateway; the connection's address is used"
+        );
+    }
     if let Some(unreadable) = resolved.unreadable {
         unreadable_forwarded_addresses().add(1, &[KeyValue::new("reason", unreadable.as_str())]);
         tracing::debug!(
@@ -119,7 +145,7 @@ pub(crate) async fn request_context(
     request
         .extensions_mut()
         .insert(ClientAddress(resolved.address));
-    match proxies.forwarded_identity(peer, request.headers()) {
+    match caller {
         Read::Identity(identity) => {
             request.extensions_mut().insert(identity);
         }

@@ -22,6 +22,11 @@ spec:
     - ports:
         - port: http
           protocol: TCP
+        {{- if eq (include "hodor.meshProvider" .) "linkerd" }}
+        # Where Linkerd's proxy receives every connection from another of its proxies.
+        - port: 4143
+          protocol: TCP
+        {{- end }}
       {{- with .Values.networkPolicy.ingressFrom }}
       from:
         {{- toYaml . | nindent 8 }}
@@ -46,6 +51,13 @@ spec:
           protocol: TCP
       to:
         - namespaceSelector: {}
+    {{- with include "hodor.meshControlPlane" . }}
+    # The mesh's control plane, where the proxy gets its configuration and its certificate.
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ . }}
+    {{- end }}
     {{- with .Values.networkPolicy.egress.to }}
     {{- toYaml . | nindent 4 }}
     {{- end }}

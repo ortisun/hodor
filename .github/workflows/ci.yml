@@ -430,6 +430,27 @@ jobs:
           --set keyProvider.openbao.enabled=true --set keyProvider.openbao.authMethod=approle
           --set keyProvider.openbao.address=https://openbao.openbao.svc:8200
           > /dev/null
+      - name: Lint and render the chart inside each service mesh
+        env:
+          ISTIO: >-
+            --set mesh.provider=istio
+            --set gatewayIdentities={spiffe://cluster.local/ns/istio-system/sa/istio-ingressgateway-service-account}
+            --set networkPolicy.enabled=true --set networkPolicy.egress.enabled=true
+          LINKERD: >-
+            --set mesh.provider=linkerd --set mesh.skipOutboundPorts={25,587} --set mesh.injectMigration=false
+            --set gatewayIdentities={gateway.edge.serviceaccount.identity.linkerd.cluster.local}
+            --set networkPolicy.enabled=true --set networkPolicy.egress.enabled=true
+        run: |
+          for mesh in "$ISTIO" "$LINKERD"; do
+            helm lint "$CHART" --strict $REQUIRED $mesh
+            helm template hodor "$CHART" --namespace hodor $REQUIRED $mesh > rendered.yaml
+            grep -q 'name: HODOR_GATEWAY_IDENTITIES' rendered.yaml
+            grep -q -e '127.0.0.6,::6' -e '$(POD_ADDRESSES)' rendered.yaml
+          done
+          # Inside a mesh with no gateway named, no forwarded address is read.
+          helm template hodor "$CHART" --namespace hodor $REQUIRED --set mesh.provider=istio > rendered.yaml
+          grep -A1 'name: HODOR_FORWARDED_HEADER' rendered.yaml | grep -q '"none"'
+          rm rendered.yaml
       - name: The chart refuses to render without its required values
         run: |
           refused() { if "$@" > /dev/null 2>&1; then echo "accepted, and should not be: $*"; return 1; fi; }
@@ -445,6 +466,9 @@ jobs:
           refused helm template hodor "$CHART" --namespace hodor $ISSUER --set certManagerIssuer.only=true
           refused helm template hodor "$CHART" --namespace hodor $REQUIRED $ISSUER --set certManagerIssuer.authentication.method=private_key_jwt
           refused helm template hodor "$CHART" --namespace hodor $REQUIRED $ISSUER --set certManagerIssuer.authentication.method=client_secret_basic
+          refused helm template hodor "$CHART" --namespace hodor $REQUIRED --set mesh.provider=consul
+          refused helm template hodor "$CHART" --namespace hodor $REQUIRED --set gatewayIdentities={spiffe://cluster.local/ns/edge/sa/gateway}
+          refused helm template hodor "$CHART" --namespace hodor $REQUIRED --set mesh.provider=istio --set forwardedHeader=none --set gatewayIdentities={spiffe://cluster.local/ns/edge/sa/gateway}
       - name: The Compose file is valid with every part
         env:
           HODOR_IMAGE: hodor:test
