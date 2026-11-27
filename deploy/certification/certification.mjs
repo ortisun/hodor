@@ -172,6 +172,16 @@ export function readPlans(document) {
   return { ready, waiting, tenants, clients, responseTypes, typeArguments, tenantCommands };
 }
 
+/**
+ * Replaces an argument that is exactly `{responseTypes}` with
+ * `--response-type <type>` for each response type that is built; with
+ * nothing when `code` alone is, which is every command's default.
+ */
+export function withResponseTypes(argumentsList, responseTypes) {
+  const named = responseTypes.length > 1 ? responseTypes.flatMap((type) => ["--response-type", type]) : [];
+  return argumentsList.flatMap((argument) => (argument === "{responseTypes}" ? named : [argument]));
+}
+
 /** Replaces `{name}` in each argument with its value. */
 function fill(argumentsList, values) {
   return argumentsList.map((argument) =>
@@ -340,7 +350,7 @@ async function make(settings) {
     made.retireCommands = (tenant.retireCommands ?? []).map((command) => fill(command, tenantValues));
     saveState(settings, state);
     for (const command of plans.tenantCommands(slug)) {
-      cli(...fill(command, tenantValues));
+      cli(...fill(withResponseTypes(command, plans.responseTypes), tenantValues));
     }
 
     for (const key of plans.clients.filter((name) => document.clients[name].tenant === slug)) {
@@ -357,7 +367,7 @@ async function make(settings) {
         "--request-object-signing-alg", "none",
         // `code` alone is the default, and the option exists only once
         // another response type is built.
-        ...(plans.responseTypes.length > 1 ? plans.responseTypes.flatMap((type) => ["--response-type", type]) : []),
+        ...withResponseTypes(["{responseTypes}"], plans.responseTypes),
         ...plans.typeArguments,
         ...fill(client.arguments ?? [], tenantValues),
       );

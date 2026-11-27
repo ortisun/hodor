@@ -14,7 +14,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { after, before, describe, it } from "node:test";
 import { fileURLToPath } from "node:url";
-import { readPlans } from "../certification.mjs";
+import { readPlans, withResponseTypes } from "../certification.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const SCRIPT = join(HERE, "..", "certification.mjs");
@@ -209,6 +209,7 @@ describe("the certification script, as plans.json stands", () => {
 
   it("has the plans built on develop ready, and nothing else", () => {
     assert.deepEqual(printed.plans.map(runName).sort(), [
+      "oidcc-3rdparty-init-login-certification-test-plan",
       "oidcc-backchannel-rp-initiated-logout-certification-test-plan code",
       "oidcc-basic-certification-test-plan",
       "oidcc-config-certification-test-plan",
@@ -271,7 +272,10 @@ describe("the certification script, as plans.json stands", () => {
 
   it("makes no tenant, client or option for a feature not built", () => {
     const hodor = stand.hodor();
-    assert.deepEqual(Object.keys(hodor.tenants), ["certification"]);
+    // The tenant of registration, for the 3rd Party-Init plan, which needs
+    // only the registration endpoint and managing a registration.
+    assert.deepEqual(Object.keys(hodor.tenants).sort(), ["certification", "certification-dynamic"]);
+    assert.deepEqual(Object.keys(hodor.tenants["certification-dynamic"].clients), []);
     const names = Object.values(hodor.tenants.certification.clients).map((client) => client.name).sort();
     assert.deepEqual(names, [
       "Client that sends its secret in the form", "Client that signs out", "Client told through the back channel",
@@ -295,11 +299,12 @@ describe("the certification script, as plans.json stands", () => {
     const retired = await run("retire", stand.environment);
     assert.equal(retired.status, 0, retired.stderr);
     const report = JSON.parse(retired.stdout);
-    assert.deepEqual(report.retired, ["certification"]);
+    assert.deepEqual(report.retired.sort(), ["certification", "certification-dynamic"]);
     assert.ok(report.checks.length > 0);
     assert.ok(report.checks.every((check) => check.held), JSON.stringify(report.checks));
 
     const hodor = stand.hodor();
+    assert.equal(hodor.tenants["certification-dynamic"].registration, "off");
     const tenant = hodor.tenants.certification;
     assert.equal(tenant.status, "suspended");
     assert.ok(Object.values(tenant.clients).every((client) => !client.enabled));
@@ -360,6 +365,8 @@ describe("the certification script, once more features are built", () => {
       assert.deepEqual(Object.keys(third.configuration).sort(), ["alias", "description", "server"]);
       const registration = stand.hodor().calls.find((call) => call[0] === "client-registration");
       assert.ok(registration.includes("www.certification.openid.net"));
+      // `code` alone is built: the policy's default, so no response type is named.
+      assert.equal(registration.includes("--response-type"), false);
       assert.equal(stand.hodor().tenants["certification-dynamic"].registration, "on");
       assert.equal(stand.hodor().tenants["certification-dynamic"].applications[
         registration[registration.indexOf("--application") + 1]].firstParty, false);
@@ -388,6 +395,15 @@ describe("the certification script, once more features are built", () => {
       await stand.close();
       rmSync(stand.folder, { recursive: true, force: true });
     }
+  });
+});
+
+describe("the response types of a command", () => {
+  it("names each one built, and none when `code` alone is", () => {
+    assert.deepEqual(withResponseTypes(["on", "{responseTypes}", "--grant", "x"], ["code"]), ["on", "--grant", "x"]);
+    assert.deepEqual(withResponseTypes(["on", "{responseTypes}"], ["code", "id_token", "code id_token"]), [
+      "on", "--response-type", "code", "--response-type", "id_token", "--response-type", "code id_token",
+    ]);
   });
 });
 

@@ -151,6 +151,28 @@ pub trait ClientStore: Send + Sync {
         address_hash: Option<&[u8; 32]>,
         since: Timestamp,
     ) -> Result<usize, DomainError>;
+
+    /// The client with this identifier, if the tenant has it, with its row
+    /// locked until the unit of work ends: what a change of a registration
+    /// reads before it stores, so that two changes at once are made one
+    /// after the other.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if storage fails.
+    async fn lock(
+        &self,
+        uow: &mut dyn UnitOfWork,
+        id: ClientId,
+    ) -> Result<Option<Client>, DomainError>;
+
+    /// Deletes the client, with its secrets and keys and everything else
+    /// stored that names it. Answers whether the tenant had it.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if storage fails.
+    async fn delete(&self, uow: &mut dyn UnitOfWork, id: ClientId) -> Result<bool, DomainError>;
 }
 
 /// Stores resource servers.

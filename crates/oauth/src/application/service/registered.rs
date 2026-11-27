@@ -16,6 +16,7 @@ use crate::domain::registration::{
     RegistrationRequest, RegistrationSettings, RegistrationWay, check_redirect_hosts,
     check_registration,
 };
+use crate::domain::registration_token::RegistrationAccessTokenValue;
 use crate::domain::secret::{ClientSecret, ClientSecretValue};
 use hodor_kernel::{Caller, DomainError, ErrorKind, TenantContext, Timestamp, UnitOfWork};
 use time::Duration;
@@ -45,6 +46,18 @@ impl std::fmt::Debug for RegisterClient {
             .field("carries_token", &self.initial_access_token.is_some())
             .finish_non_exhaustive()
     }
+}
+
+/// A client the registration endpoint registered, with what it is given
+/// once.
+#[derive(Debug)]
+pub struct RegisteredClient {
+    /// The client, as stored.
+    pub client: Client,
+    /// Its first secret, if its method takes one.
+    pub secret: Option<ClientSecretValue>,
+    /// Its registration access token.
+    pub access_token: RegistrationAccessTokenValue,
 }
 
 fn too_many_registrations() -> DomainError {
@@ -78,12 +91,16 @@ fn addresses_of(client: &Client) -> Vec<&str> {
         .chain(settings.jwks_uri.as_deref())
         .chain(settings.sector_identifier_uri.as_deref())
         .chain(settings.display_uris().into_iter().map(|(_, uri)| uri))
+        .chain(settings.initiate_login_uri.as_deref())
         .collect()
 }
 
 /// Checks what a client names against the tenant's policy, the hosts of
 /// its redirect addresses first.
-fn check_against(settings: &RegistrationSettings, client: &Client) -> Result<(), DomainError> {
+pub(super) fn check_against(
+    settings: &RegistrationSettings,
+    client: &Client,
+) -> Result<(), DomainError> {
     let checked = &client.snapshot().settings;
     check_redirect_hosts(&settings.policy, &checked.redirect_uris)?;
     check_registration(
@@ -126,7 +143,8 @@ impl ApplicationService {
     /// administrator's client and against the policy, its addresses checked
     /// by the guarded outbound client, then stored under the bounds, its
     /// initial access token spent in the same unit of work. Returns the
-    /// client and its first secret, once, if its method takes one.
+    /// client, its first secret, once, if its method takes one, and its
+    /// registration access token, once.
     ///
     /// # Errors
     ///
@@ -147,7 +165,7 @@ impl ApplicationService {
         tenant: &TenantContext,
         command: RegisterClient,
         caller: Caller,
-    ) -> Result<(Client, Option<ClientSecretValue>), DomainError> {
+    ) -> Result<RegisteredClient, DomainError> {
         let presented = command.initial_access_token.as_deref();
         let address = command.address_hash.as_ref();
         let now = self.clock.now();
@@ -187,9 +205,12 @@ impl ApplicationService {
             let key = ClientKey::parse(jwk, now)?;
             events.push(client.add_key(key, now)?);
         }
-        let client = client.registered_from(SelfRegistration {
+        let mut client = client.registered_from(SelfRegistration {
             address_hash: command.address_hash,
+            token_hash: None,
         });
+        let access_token =
+            client.issue_registration_token(self.random.as_ref(), self.digest.as_ref())?;
         check_against(&settings, &client)?;
 
         // Only now that the caller may register are its addresses called.
@@ -246,6 +267,10 @@ impl ApplicationService {
         });
         self.record(uow.as_mut(), caller, &events)?;
         uow.commit().await?;
-        Ok((client, secret))
+        Ok(RegisteredClient {
+            client,
+            secret,
+            access_token,
+        })
     }
 }

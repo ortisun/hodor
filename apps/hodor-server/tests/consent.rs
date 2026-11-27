@@ -904,3 +904,202 @@ async fn a_client_that_registered_itself_asks_in_its_own_words_even_in_a_first_p
     assert_eq!(status, StatusCode::OK);
     assert_eq!(consents["consents"][0]["application"], "Partner portal");
 }
+
+/// The path of a registration client address on the server under test:
+/// the address is written with the server's default public address.
+fn on_server(server: &Server, registration_client_uri: &Value) -> String {
+    let uri = registration_client_uri.as_str().expect("an address");
+    let path = uri
+        .strip_prefix("http://localhost:8080")
+        .expect("the default public address");
+    format!("{}{path}", server.base)
+}
+
+#[tokio::test]
+async fn a_registered_client_manages_its_registration_and_is_gone_once_it_removes_it() {
+    let database = TestDatabase::start().await;
+    tenant(&database, "acme").await;
+    let server = server(&database).await;
+    registration_open(&database).await;
+    let http = reqwest::Client::new();
+
+    let response = http
+        .post(format!("{}/t/acme/oauth2/register", server.base))
+        .json(&json!({
+            "redirect_uris": [REDIRECT],
+            "client_name": "Partner portal",
+            "scope": "openid",
+            "initiate_login_uri": "https://billing.example.com/start"
+        }))
+        .send()
+        .await
+        .expect("response");
+    assert_eq!(response.status(), StatusCode::CREATED);
+    let registered: Value = response.json().await.expect("JSON");
+    let client_id = registered["client_id"].as_str().expect("id").to_owned();
+    let secret = registered["client_secret"]
+        .as_str()
+        .expect("secret")
+        .to_owned();
+    let first = registered["registration_access_token"]
+        .as_str()
+        .expect("a token")
+        .to_owned();
+    assert!(first.starts_with("hodor_rat_"));
+    assert_eq!(
+        registered["registration_client_uri"],
+        format!("http://localhost:8080/t/acme/oauth2/register/{client_id}")
+    );
+    assert_eq!(
+        registered["initiate_login_uri"],
+        "https://billing.example.com/start"
+    );
+    let address = on_server(&server, &registered["registration_client_uri"]);
+
+    // Read with its token: the same token comes back.
+    let read = http
+        .get(&address)
+        .bearer_auth(&first)
+        .send()
+        .await
+        .expect("response");
+    assert_eq!(read.status(), StatusCode::OK);
+    assert_eq!(read.headers()["cache-control"], "no-store");
+    let read: Value = read.json().await.expect("JSON");
+    assert_eq!(read["registration_access_token"], first.as_str());
+    assert_eq!(
+        read["initiate_login_uri"],
+        "https://billing.example.com/start"
+    );
+
+    // The person signs in through it, and the account page links to it.
+    let client = client_id.parse::<ClientId>().expect("a client identifier");
+    let mut browser = signed_in(&server, "ana@example.com").await;
+    let (status, location, _) = browser
+        .navigate(Method::GET, &authorize("acme", client, "openid", &[]), None)
+        .await;
+    assert_eq!(status, StatusCode::FOUND);
+    assert_eq!(location.as_deref(), Some("/t/acme/account/consent"));
+    let (status, question) = browser
+        .send(Method::GET, "/t/acme/interaction/consent", None)
+        .await;
+    assert_eq!(status, StatusCode::OK, "{question}");
+    let (status, _) = browser
+        .send(
+            Method::POST,
+            "/t/acme/interaction/consent",
+            Some(json!({ "decision": "allow" })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    let (_, location, _) = browser
+        .navigate(Method::GET, "/t/acme/oauth2/authorize/resume", None)
+        .await;
+    let code = sent_back(&location.expect("a redirect"))
+        .get("code")
+        .expect("a code")
+        .clone();
+    let response = http
+        .post(format!("{}/t/acme/oauth2/token", server.base))
+        .basic_auth(&client_id, Some(&secret))
+        .header("content-type", "application/x-www-form-urlencoded")
+        .body(
+            form_urlencoded::Serializer::new(String::new())
+                .extend_pairs([
+                    ("grant_type", "authorization_code"),
+                    ("code", code.as_str()),
+                    ("redirect_uri", REDIRECT),
+                    ("code_verifier", VERIFIER),
+                ])
+                .finish(),
+        )
+        .send()
+        .await
+        .expect("response");
+    assert_eq!(response.status(), StatusCode::OK);
+    let tokens: Value = response.json().await.expect("JSON");
+    let access = tokens["access_token"].as_str().expect("access").to_owned();
+    assert_eq!(userinfo(&server, &access).await, StatusCode::OK);
+    let (status, consents) = browser
+        .send(Method::GET, "/t/acme/interaction/consents", None)
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        consents["consents"][0]["sign_in_uri"],
+        "https://billing.example.com/start?iss=http%3A%2F%2Flocalhost%3A8080%2Ft%2Facme"
+    );
+
+    // A change: a new token, and the first one refused.
+    let changed = http
+        .put(&address)
+        .bearer_auth(&first)
+        .json(&json!({
+            "client_id": client_id,
+            "redirect_uris": [REDIRECT],
+            "client_name": "Partner portal, renamed",
+            "scope": "openid",
+            "client_secret": secret
+        }))
+        .send()
+        .await
+        .expect("response");
+    assert_eq!(changed.status(), StatusCode::OK);
+    let changed: Value = changed.json().await.expect("JSON");
+    assert_eq!(changed["client_name"], "Partner portal, renamed");
+    assert!(
+        changed.get("initiate_login_uri").is_none(),
+        "left out, removed"
+    );
+    let second = changed["registration_access_token"]
+        .as_str()
+        .expect("a new token")
+        .to_owned();
+    assert_ne!(second, first);
+    let old = http
+        .get(&address)
+        .bearer_auth(&first)
+        .send()
+        .await
+        .expect("response");
+    assert_eq!(old.status(), StatusCode::UNAUTHORIZED);
+    let (_, consents) = browser
+        .send(Method::GET, "/t/acme/interaction/consents", None)
+        .await;
+    assert_eq!(
+        consents["consents"][0]["application"],
+        "Partner portal, renamed"
+    );
+    assert!(consents["consents"][0].get("sign_in_uri").is_none());
+
+    // Removed: the client, its token and its tokens stop working at once.
+    let removed = http
+        .delete(&address)
+        .bearer_auth(&second)
+        .send()
+        .await
+        .expect("response");
+    assert_eq!(removed.status(), StatusCode::NO_CONTENT);
+    assert_eq!(userinfo(&server, &access).await, StatusCode::UNAUTHORIZED);
+    let again = http
+        .get(&address)
+        .bearer_auth(&second)
+        .send()
+        .await
+        .expect("response");
+    assert_eq!(again.status(), StatusCode::UNAUTHORIZED);
+    let (status, refused) = token(
+        &server,
+        &[
+            ("grant_type", "client_credentials"),
+            ("client_id", client_id.as_str()),
+            ("client_secret", secret.as_str()),
+        ],
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED, "{refused}");
+    assert_eq!(refused["error"], "invalid_client");
+    let (_, consents) = browser
+        .send(Method::GET, "/t/acme/interaction/consents", None)
+        .await;
+    assert_eq!(consents["consents"], json!([]));
+}

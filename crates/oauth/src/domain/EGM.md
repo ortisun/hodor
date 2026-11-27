@@ -473,20 +473,38 @@ randomness and hashing are passed in. Every module is `pub(crate)` in
   `response_types` Hodor does not offer (`oauth.client_response_types_invalid`), a
   `token_endpoint_auth_signing_alg` other than `ES256`, `RS256` and `PS256`
   or without `private_key_jwt`, and `private_key_jwt` with neither `jwks`
-  nor `jwks_uri`; keeps `response_types`, `request_uris`, `jwks_uri` and
-  `require_pushed_authorization_requests`; reads the grant `implicit` as
-  `authorization_code`;
-  ignores every other member. `registration_answer(client, secret)` writes
-  the answer, leaving out what has no value. Its cases are in
+  nor `jwks_uri`; keeps `response_types`, `request_uris`, `jwks_uri`,
+  `initiate_login_uri` and `require_pushed_authorization_requests`; reads
+  the grant `implicit` as `authorization_code`; ignores `jwks` for any
+  method but `private_key_jwt` (Decision 0084);
+  ignores every other member. `read_change(body, client_id)` reads what a
+  change of a registration says beside its members: its own `client_id`
+  (`oauth.registration_client_id_mismatch`) and the `client_secret` it
+  sent, if any. `registration_answer(client, secret, management)` writes
+  the answer, leaving out what has no value, with
+  `registration_access_token` and `registration_client_uri` from
+  `Management` when given. Its cases are in
   `client_metadata/tests.rs`.
 - `client.rs` also holds `ApplicationType` (`web`, `native`), the
   addresses a person is shown (`client_uri`, `logo_uri`, `policy_uri`,
   `tos_uri`, `display_uris`, checked as HTTPS addresses,
   `oauth.client_display_uri_invalid`), the rule that a web client's
   redirect addresses are HTTPS (`oauth.client_application_type_invalid`),
-  and `SelfRegistration` on the snapshot (`registered_from`,
-  `is_registered`); `authorization.rs` reads a registered client as never
-  first party.
+  the login initiation address (`initiate_login_uri`, checked by the same
+  rules, `oauth.client_initiate_login_uri_invalid`), and `SelfRegistration`
+  on the snapshot (`registered_from`, `is_registered`, the hash of the
+  registration access token: `issue_registration_token`,
+  `accepts_registration_token`); `change_registration(settings, keys, now)`
+  removes the keys a change drops, changes the settings, then adds the new
+  keys; `ensure_secret` gives a first secret to a client of a secret method
+  that has none that works; `authorization.rs` reads a registered client as
+  never first party.
+- `registration_token.rs`: registration access tokens (Decision 0084).
+  `hodor_rat_` and 64 hexadecimal characters from 32 random bytes
+  (`RegistrationAccessTokenValue`, never shown in `Debug`),
+  `looks_like_registration_access_token`, and
+  `RegistrationAccessTokenHash` (`of_presented` only for the shape,
+  `matches` in constant time). Its cases are at the bottom of the file.
 - `registration.rs`: the client registration settings of a tenant
   (Decision 0075). `RegistrationWay` (`initial_access_token`,
   `software_statement`, `open`); `RegistrationPolicy` (`checked`: grants

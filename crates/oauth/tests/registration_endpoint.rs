@@ -181,6 +181,7 @@ impl World {
                 Caller::system(),
             )
             .await
+            .map(|registered| (registered.client, registered.secret))
     }
 
     async fn register(
@@ -429,15 +430,19 @@ async fn a_refused_registration_spends_nothing_and_stores_nothing() {
             "oauth.client_display_uri_invalid",
         ),
         (
+            json!({
+                "redirect_uris": ["https://portal.partner.example/callback"],
+                "token_endpoint_auth_method": "private_key_jwt",
+                "jwks": { "keys": [{ "kty": "oct", "kid": "one", "k": "c2VjcmV0" }] }
+            }),
+            "oauth.client_key_invalid",
+        ),
+        (
             with(
-                "jwks",
-                json!({ "keys": [{
-                    "kty": "EC", "crv": "P-256", "kid": "one",
-                    "x": "AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE",
-                    "y": "AgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgI"
-                }] }),
+                "initiate_login_uri",
+                json!("http://portal.partner.example/start"),
             ),
-            "oauth.client_key_not_allowed",
+            "oauth.client_initiate_login_uri_invalid",
         ),
     ] {
         let error = world
@@ -909,7 +914,7 @@ async fn response_types_are_kept_within_the_policy() {
         vec![ResponseType::Code, ResponseType::IdToken]
     );
     assert_eq!(settings.grant_types, vec![GrantType::AuthorizationCode]);
-    let answer = hodor_oauth::api::registration_answer(&client, None);
+    let answer = hodor_oauth::api::registration_answer(&client, None, None);
     assert_eq!(answer["response_types"], json!(["code", "id_token"]));
     assert_eq!(answer["grant_types"], json!(["authorization_code"]));
 }

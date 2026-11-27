@@ -15,7 +15,7 @@ All paths are relative to the tenant: `https://{host}/t/{slug}`.
 | `/account/complete-registration` | Arrives from the link in the message, chooses a password | `POST /interaction/registration/complete` |
 | `/account/recover` | Asks for a link to choose a new password | `POST /interaction/recovery` |
 | `/account/reset-password` | Arrives from the link in the message, chooses a new password | `POST /interaction/recovery/complete` |
-| `/account` | Sees that they are signed in and which applications they agreed to, withdraws an agreement, goes to their profile or their factors, and signs out | `GET` and `DELETE /interaction/session`, [`GET` and `DELETE /interaction/consents`](../api/interaction-api.md#the-persons-consents) |
+| `/account` | Sees that they are signed in and which applications they agreed to, withdraws an agreement, starts a sign-in at an application that offers one, goes to their profile or their factors, and signs out | `GET` and `DELETE /interaction/session`, [`GET` and `DELETE /interaction/consents`](../api/interaction-api.md#the-persons-consents) |
 | `/account/sign-out` | Is asked whether to sign out, when an application asked Hodor to sign them out | `GET` and `DELETE /interaction/session` |
 | `/account/security` | Manages their second factors and recovery codes | [The factor routes](../api/interaction-api.md#managing-ones-factors) and the WebAuthn registration routes |
 | `/account/profile` | Sees and changes their name and their [standard claims](contexts/identity.md#standard-claims): names, nickname, addresses of pages and picture, gender, birth date, time zone, telephone number and postal address | [`GET` and `PUT /interaction/profile`](../api/interaction-api.md#the-persons-profile) |
@@ -122,7 +122,7 @@ When a third-party application asks for access the person has not agreed to, the
 - offers two buttons, "allow" and "deny". Neither is chosen for the person: nothing is answered until one is pressed;
 - sends the answer, then goes where the answer says, which is only ever an address of the tenant's own authorization endpoint, as after a sign-in.
 
-The account page lists the applications the person agreed to, each with what it may do and until when, and a button, "withdraw", that asks nothing more: a withdrawn agreement only means the application asks again.
+The account page lists the applications the person agreed to, each with what it may do and until when, and a button, "withdraw", that asks nothing more: a withdrawn agreement only means the application asks again. Beside an application that named a [login initiation address](contexts/oauth.md#the-login-initiation-address), a link, "sign in at Partner portal", starts a sign-in there: it opens the address the server gave, with the tenant's issuer as `iss`, in a new tab without a referrer. The page shows the link only when that address is HTTPS, and builds nothing of it itself.
 
 ### Registering and recovering
 

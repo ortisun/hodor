@@ -107,6 +107,7 @@ export const en = {
   givenConsentsNone: "You have not let any application into your account.",
   givenConsent: (application: string, until: string) => `${application}, until ${until}`,
   withdrawConsent: (application: string) => `Withdraw ${application}`,
+  signInAt: (application: string) => `Sign in at ${application}`,
   consentWithdrawn: (application: string) =>
     `${application} no longer has access. It will ask you again if it needs it.`,
 

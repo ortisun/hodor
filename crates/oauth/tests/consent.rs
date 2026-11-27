@@ -691,7 +691,7 @@ async fn a_client_that_registered_itself_is_asked_for_and_shown_in_its_own_words
         )
         .await
         .expect("on");
-    let (client, _) = world
+    let client = world
         .applications
         .register_client(
             &world.registration,
@@ -709,7 +709,8 @@ async fn a_client_that_registered_itself_is_asked_for_and_shown_in_its_own_words
             Caller::system(),
         )
         .await
-        .expect("registered");
+        .expect("registered")
+        .client;
     // The application is made first party afterwards: the registered
     // client still asks.
     world

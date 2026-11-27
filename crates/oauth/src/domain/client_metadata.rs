@@ -6,7 +6,7 @@
 //! and Decision 0080.
 
 use crate::domain::client::{
-    ApplicationType, AuthenticationMethod, Client, ClientSettings, ClientType, GrantType,
+    ApplicationType, AuthenticationMethod, Client, ClientId, ClientSettings, ClientType, GrantType,
     IdTokenAlgorithm, RequestObjectAlgorithm,
 };
 use crate::domain::pairwise::SubjectType;
@@ -136,6 +136,43 @@ pub(crate) fn software_statement_unapproved() -> DomainError {
     )
 }
 
+/// Reads what a change of a registration says of the client it changes,
+/// beside its members (RFC 7592, section 2.2): `client_id` must be the
+/// client's own. Answers the `client_secret` it sent, if any, which must be
+/// a secret of the client that works. `registration_access_token`,
+/// `registration_client_uri`, `client_id_issued_at` and
+/// `client_secret_expires_at` are ignored.
+///
+/// # Errors
+///
+/// `oauth.client_metadata_invalid` for a body that is not an object or a
+/// member of the wrong kind, and `oauth.registration_client_id_mismatch`
+/// for a `client_id` left out or not the client's.
+pub fn read_change(body: &Value, client_id: ClientId) -> Result<Option<String>, DomainError> {
+    let object = body
+        .as_object()
+        .ok_or_else(|| metadata_invalid("the registration is a JSON object"))?;
+    let members = Members(object);
+    if members.text("client_id")?.as_deref() != Some(client_id.to_string().as_str()) {
+        return Err(DomainError::invalid(
+            "oauth.registration_client_id_mismatch",
+            "a change of a registration names the client's own `client_id`",
+        ));
+    }
+    members.text("client_secret")
+}
+
+/// The refusal of a `client_secret` sent with a change that is not a
+/// secret of the client that works.
+#[must_use]
+pub(crate) fn client_secret_mismatch() -> DomainError {
+    DomainError::invalid(
+        "oauth.registration_client_secret_mismatch",
+        "a change of a registration that names `client_secret` names a secret of the client that \
+         works",
+    )
+}
+
 /// Reads a registration's members into what the client asks to be. A
 /// member left out takes the default of its specification; `scope` left
 /// out is every scope `policy` allows. Members Hodor does not keep are
@@ -220,8 +257,12 @@ pub fn read_client_metadata(
         ClientType::Confidential
     };
 
+    // Hodor reads a client's keys only to check what it signs, and only a
+    // client of `private_key_jwt` has keys: those of any other client are
+    // ignored, and left out of the answer (Decision 0084).
     let keys = match members.get("jwks") {
         None => Vec::new(),
+        Some(_) if method != AuthenticationMethod::PrivateKeyJwt => Vec::new(),
         Some(jwks) => jwks
             .get("keys")
             .and_then(Value::as_array)
@@ -272,6 +313,7 @@ pub fn read_client_metadata(
     settings.logo_uri = members.text("logo_uri")?;
     settings.policy_uri = members.text("policy_uri")?;
     settings.tos_uri = members.text("tos_uri")?;
+    settings.initiate_login_uri = members.text("initiate_login_uri")?;
     settings.subject_type = match members.text("subject_type")? {
         None => SubjectType::Public,
         Some(name) => SubjectType::parse(&name)?,
@@ -318,11 +360,28 @@ pub fn read_client_metadata(
     })
 }
 
-/// What the registration endpoint answers for a client it registered: its
-/// identifier, its first secret once, and every member kept (RFC 7591,
-/// section 3.2.1). A member without a value, or an empty list, is left out.
+/// What a client is given to manage its registration with, in the answer of
+/// its registration, a read and a change (RFC 7592, section 3).
+#[derive(Debug, Clone, Copy)]
+pub struct Management<'a> {
+    /// Its registration access token: new at a registration and a change,
+    /// the one presented at a read.
+    pub access_token: &'a str,
+    /// Its registration client address, `{issuer}/oauth2/register/{client_id}`.
+    pub client_uri: &'a str,
+}
+
+/// What the registration endpoint answers for a client it registered, and
+/// what its registration client address answers: its identifier, a secret
+/// once when one was just made, every member kept (RFC 7591, section
+/// 3.2.1), and what it manages its registration with (RFC 7592, section
+/// 3). A member without a value, or an empty list, is left out.
 #[must_use]
-pub fn registration_answer(client: &Client, secret: Option<&ClientSecretValue>) -> Value {
+pub fn registration_answer(
+    client: &Client,
+    secret: Option<&ClientSecretValue>,
+    management: Option<Management<'_>>,
+) -> Value {
     let state = client.snapshot();
     let settings = &state.settings;
     let mut answer = Map::new();
@@ -438,6 +497,11 @@ pub fn registration_answer(client: &Client, secret: Option<&ClientSecretValue>) 
     );
     for (member, uri) in settings.display_uris() {
         put(member, json!(uri));
+    }
+    put("initiate_login_uri", json!(settings.initiate_login_uri));
+    if let Some(management) = management {
+        put("registration_access_token", json!(management.access_token));
+        put("registration_client_uri", json!(management.client_uri));
     }
     Value::Object(answer)
 }

@@ -350,6 +350,22 @@ pub enum OauthEvent {
         #[serde(skip_serializing_if = "Option::is_none")]
         token_id: Option<InitialAccessTokenId>,
     },
+    /// A registered client changed its registration with its registration
+    /// access token, which was replaced. Never carries a token.
+    RegisteredClientChanged {
+        /// The client.
+        client_id: ClientId,
+        /// Its application.
+        application_id: ApplicationId,
+    },
+    /// A registered client removed its registration, and was deleted with
+    /// everything that named it.
+    RegisteredClientRemoved {
+        /// The client, which no longer exists.
+        client_id: ClientId,
+        /// The application it belonged to.
+        application_id: ApplicationId,
+    },
     /// A logout token was not delivered: every attempt failed, or its
     /// client could no longer be sent to. Never carries the address or the
     /// token.
@@ -404,6 +420,8 @@ impl DomainEvent for OauthEvent {
             Self::InitialAccessTokenRevoked { .. } => "oauth.initial_access_token_revoked",
             Self::InitialAccessTokenUsed { .. } => "oauth.initial_access_token_used",
             Self::ClientRegistered { .. } => "oauth.client_registered",
+            Self::RegisteredClientChanged { .. } => "oauth.registered_client_changed",
+            Self::RegisteredClientRemoved { .. } => "oauth.registered_client_removed",
         }
     }
 }

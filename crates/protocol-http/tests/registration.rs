@@ -1,9 +1,10 @@
-//! The registration endpoint over HTTP, with the OAuth context on its
-//! in-memory stores: what each refusal answers, and the answer of a
-//! registration.
+//! The registration endpoint and the registration client address over
+//! HTTP, with the OAuth context on its in-memory stores: what each refusal
+//! answers, the answer of a registration, and reading, changing and
+//! removing one with its registration access token.
 //!
 //! Specified in `docs/architecture/contexts/oauth.md`, "The registration
-//! endpoint".
+//! endpoint" and "Managing a registration".
 
 use axum::Router;
 use axum::body::Body;
@@ -126,9 +127,27 @@ const ISSUER: &str = "https://login.example.com/t/acme";
 
 impl World {
     async fn post(&self, token: Option<&str>, content_type: &str, body: &str) -> Reply {
+        self.send(
+            Method::POST,
+            "/t/acme/oauth2/register",
+            token,
+            content_type,
+            body,
+        )
+        .await
+    }
+
+    async fn send(
+        &self,
+        method: Method,
+        path: &str,
+        token: Option<&str>,
+        content_type: &str,
+        body: &str,
+    ) -> Reply {
         let mut request = Request::builder()
-            .method(Method::POST)
-            .uri("/t/acme/oauth2/register")
+            .method(method)
+            .uri(path)
             .header(header::HOST, "login.example.com")
             .header(header::CONTENT_TYPE, content_type);
         if let Some(token) = token {
@@ -160,6 +179,10 @@ impl World {
     }
 
     async fn turned_on(&self, ways: &[RegistrationWay]) {
+        self.turned_on_for(ways, 1).await;
+    }
+
+    async fn turned_on_for(&self, ways: &[RegistrationWay], max_clients: u32) {
         let application = self
             .applications
             .create_application(
@@ -179,7 +202,7 @@ impl World {
                     enabled: true,
                     application_id: Some(application.id()),
                     ways: ways.to_vec(),
-                    max_clients: 1,
+                    max_clients,
                     ..RegistrationSettings::default()
                 },
                 Caller::system(),
@@ -262,7 +285,18 @@ async fn a_registration_is_answered_201_with_the_client_and_its_secret_once() {
         reply.body.get("contacts").is_none(),
         "not kept, not answered"
     );
-    assert!(reply.body.get("registration_access_token").is_none());
+    assert!(
+        reply.body["registration_access_token"]
+            .as_str()
+            .is_some_and(|token| token.starts_with("hodor_rat_"))
+    );
+    assert_eq!(
+        reply.body["registration_client_uri"],
+        format!(
+            "{ISSUER}/oauth2/register/{}",
+            reply.body["client_id"].as_str().expect("an identifier")
+        )
+    );
 }
 
 #[tokio::test]
@@ -414,4 +448,314 @@ async fn the_bound_of_an_address_is_answered_429_with_the_wait() {
     let reply = world.register(None, &body()).await;
     reply.refused_with(StatusCode::TOO_MANY_REQUESTS, "temporarily_unavailable");
     assert_eq!(reply.header(header::RETRY_AFTER), "60");
+}
+
+/// A client registered openly, with its registration client address as a
+/// path of the router, and its registration access token.
+async fn registered(world: &World, body: &Value) -> (Value, String, String) {
+    world.turned_on_for(&[RegistrationWay::Open], 10).await;
+    let reply = world.register(None, body).await;
+    assert_eq!(reply.status, StatusCode::CREATED, "{}", reply.body);
+    let uri = reply.body["registration_client_uri"]
+        .as_str()
+        .expect("an address")
+        .to_owned();
+    let path = uri
+        .strip_prefix("https://login.example.com")
+        .expect("on this installation")
+        .to_owned();
+    let token = reply.body["registration_access_token"]
+        .as_str()
+        .expect("a token")
+        .to_owned();
+    (reply.body, path, token)
+}
+
+fn bearer(token: &str) -> String {
+    format!("Bearer {token}")
+}
+
+#[tokio::test]
+async fn a_registration_is_read_with_its_token_and_the_same_token_answered() {
+    let world = world();
+    let (registered, path, token) = registered(&world, &body()).await;
+    let reply = world
+        .send(
+            Method::GET,
+            &path,
+            Some(&bearer(&token)),
+            "application/json",
+            "",
+        )
+        .await;
+    assert_eq!(reply.status, StatusCode::OK, "{}", reply.body);
+    assert_eq!(reply.header(header::CACHE_CONTROL), "no-store");
+    assert!(
+        reply
+            .header(header::CONTENT_TYPE)
+            .starts_with("application/json")
+    );
+    assert_eq!(reply.body["client_id"], registered["client_id"]);
+    assert_eq!(reply.body["client_name"], "Partner portal");
+    assert_eq!(reply.body["registration_access_token"], token);
+    assert_eq!(
+        reply.body["registration_client_uri"],
+        registered["registration_client_uri"]
+    );
+    assert!(reply.body.get("client_secret").is_none(), "kept as a hash");
+}
+
+#[tokio::test]
+async fn a_change_is_answered_with_a_new_token_and_the_old_one_is_refused() {
+    let world = world();
+    let (registered, path, token) = registered(&world, &body()).await;
+    let mut change = body();
+    change["client_id"] = registered["client_id"].clone();
+    change["client_name"] = json!("Partner portal, renamed");
+    change["initiate_login_uri"] = json!("https://portal.partner.example/start");
+    let reply = world
+        .send(
+            Method::PUT,
+            &path,
+            Some(&bearer(&token)),
+            "application/json",
+            &change.to_string(),
+        )
+        .await;
+    assert_eq!(reply.status, StatusCode::OK, "{}", reply.body);
+    assert_eq!(reply.header(header::CACHE_CONTROL), "no-store");
+    assert_eq!(reply.body["client_name"], "Partner portal, renamed");
+    assert_eq!(
+        reply.body["initiate_login_uri"],
+        "https://portal.partner.example/start"
+    );
+    let new = reply.body["registration_access_token"]
+        .as_str()
+        .expect("a new token")
+        .to_owned();
+    assert_ne!(new, token);
+    assert!(reply.body.get("client_secret").is_none());
+
+    let old = world
+        .send(
+            Method::GET,
+            &path,
+            Some(&bearer(&token)),
+            "application/json",
+            "",
+        )
+        .await;
+    old.refused_with(StatusCode::UNAUTHORIZED, "invalid_token");
+    assert_eq!(
+        old.header(header::WWW_AUTHENTICATE),
+        format!("Bearer realm=\"{ISSUER}\", error=\"invalid_token\"")
+    );
+    let read = world
+        .send(
+            Method::GET,
+            &path,
+            Some(&bearer(&new)),
+            "application/json",
+            "",
+        )
+        .await;
+    assert_eq!(read.status, StatusCode::OK);
+    assert_eq!(read.body["client_name"], "Partner portal, renamed");
+}
+
+#[tokio::test]
+async fn each_refusal_at_the_registration_client_address_has_its_answer() {
+    let world = world();
+    let (registered, path, token) = registered(&world, &body()).await;
+    let (other, _, other_token) = {
+        let reply = world.register(None, &body()).await;
+        assert_eq!(reply.status, StatusCode::CREATED, "{}", reply.body);
+        (
+            reply.body.clone(),
+            (),
+            reply.body["registration_access_token"]
+                .as_str()
+                .expect("a token")
+                .to_owned(),
+        )
+    };
+    assert_ne!(other["client_id"], registered["client_id"]);
+
+    // No token: a challenge without an error, as RFC 6750 asks.
+    let reply = world
+        .send(Method::GET, &path, None, "application/json", "")
+        .await;
+    reply.refused_with(StatusCode::UNAUTHORIZED, "invalid_token");
+    assert_eq!(
+        reply.header(header::WWW_AUTHENTICATE),
+        format!("Bearer realm=\"{ISSUER}\"")
+    );
+    // Every token that is not good, alike, for every method.
+    for (path, authorization) in [
+        (path.clone(), bearer(&other_token)),
+        (path.clone(), bearer("hodor_rat_short")),
+        (path.clone(), "Basic YTpi".to_owned()),
+        (
+            "/t/acme/oauth2/register/not-a-client".to_owned(),
+            bearer(&token),
+        ),
+        (
+            "/t/acme/oauth2/register/0193f1d0-7c2e-7b1a-9a3e-5f6d7e8f9a0b".to_owned(),
+            bearer(&token),
+        ),
+    ] {
+        for method in [Method::GET, Method::PUT, Method::DELETE] {
+            let reply = world
+                .send(
+                    method.clone(),
+                    &path,
+                    Some(&authorization),
+                    "application/json",
+                    "{}",
+                )
+                .await;
+            reply.refused_with(StatusCode::UNAUTHORIZED, "invalid_token");
+            assert_eq!(
+                reply.header(header::WWW_AUTHENTICATE),
+                format!("Bearer realm=\"{ISSUER}\", error=\"invalid_token\""),
+                "{method} {path}"
+            );
+        }
+    }
+
+    // A change whose members are refused, as at the registration endpoint.
+    let change = |change: &dyn Fn(&mut Value)| {
+        let mut body = body();
+        body["client_id"] = registered["client_id"].clone();
+        change(&mut body);
+        body.to_string()
+    };
+    for (body, status, error) in [
+        (
+            change(&|body| body["client_id"] = other["client_id"].clone()),
+            StatusCode::BAD_REQUEST,
+            "invalid_client_metadata",
+        ),
+        (
+            change(&|body| {
+                body["initiate_login_uri"] = json!("http://portal.partner.example/start")
+            }),
+            StatusCode::BAD_REQUEST,
+            "invalid_client_metadata",
+        ),
+        (
+            change(&|body| {
+                body["redirect_uris"] = json!(["https://portal.partner.example/cb#here"]);
+            }),
+            StatusCode::BAD_REQUEST,
+            "invalid_redirect_uri",
+        ),
+        (
+            change(&|body| body["software_statement"] = json!("eyJ")),
+            StatusCode::BAD_REQUEST,
+            "unapproved_software_statement",
+        ),
+        (
+            "not json".to_owned(),
+            StatusCode::BAD_REQUEST,
+            "invalid_client_metadata",
+        ),
+    ] {
+        let reply = world
+            .send(
+                Method::PUT,
+                &path,
+                Some(&bearer(&token)),
+                "application/json",
+                &body,
+            )
+            .await;
+        reply.refused_with(status, error);
+    }
+    // Refused, the token still works.
+    let reply = world
+        .send(
+            Method::GET,
+            &path,
+            Some(&bearer(&token)),
+            "application/json",
+            "",
+        )
+        .await;
+    assert_eq!(reply.status, StatusCode::OK);
+
+    // A method the address does not take.
+    let reply = world
+        .send(
+            Method::POST,
+            &path,
+            Some(&bearer(&token)),
+            "application/json",
+            "{}",
+        )
+        .await;
+    assert_eq!(reply.status, StatusCode::METHOD_NOT_ALLOWED);
+}
+
+#[tokio::test]
+async fn a_removal_is_answered_204_and_the_client_is_gone() {
+    let world = world();
+    let (_, path, token) = registered(&world, &body()).await;
+    let reply = world
+        .send(
+            Method::DELETE,
+            &path,
+            Some(&bearer(&token)),
+            "application/json",
+            "",
+        )
+        .await;
+    assert_eq!(reply.status, StatusCode::NO_CONTENT);
+    assert_eq!(reply.header(header::CACHE_CONTROL), "no-store");
+    for method in [Method::GET, Method::DELETE] {
+        world
+            .send(method, &path, Some(&bearer(&token)), "application/json", "")
+            .await
+            .refused_with(StatusCode::UNAUTHORIZED, "invalid_token");
+    }
+}
+
+#[tokio::test]
+async fn while_registration_is_off_the_registration_client_address_does_not_exist() {
+    let world = world();
+    let (_, path, token) = registered(&world, &body()).await;
+    let application = world
+        .registration
+        .settings(&world.acme)
+        .await
+        .expect("settings")
+        .settings
+        .application_id;
+    world
+        .registration
+        .replace(
+            &world.acme,
+            RegistrationSettings {
+                enabled: false,
+                application_id: application,
+                ways: vec![RegistrationWay::Open],
+                ..RegistrationSettings::default()
+            },
+            Caller::system(),
+        )
+        .await
+        .expect("off");
+    for method in [Method::GET, Method::PUT, Method::DELETE] {
+        let reply = world
+            .send(
+                method,
+                &path,
+                Some(&bearer(&token)),
+                "application/json",
+                "{}",
+            )
+            .await;
+        assert_eq!(reply.status, StatusCode::NOT_FOUND);
+        assert_eq!(reply.body["code"], "route.not_found");
+    }
 }

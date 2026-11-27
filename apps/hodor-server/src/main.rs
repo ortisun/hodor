@@ -431,6 +431,7 @@ async fn run(config: Config) -> Result<(), Box<dyn Error>> {
                     consents: authorization.consents.clone(),
                     sessions: authorization.sessions.clone(),
                     digest: Arc::new(Sha256Digest),
+                    public_url: config.public_url.clone(),
                 }))
                 .merge(invitation_routes(InvitationState {
                     invitations: invitations.clone(),

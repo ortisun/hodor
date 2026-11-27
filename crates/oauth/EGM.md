@@ -38,7 +38,9 @@ consented to for the client covers them, reads an essential `acr` as
 `acr_values` and a `sub` with a value as the person expected; and Issue-133: the registration endpoint's use case,
 reading a client's metadata into its settings, checking them as an
 administrator's change and against the policy, and storing the client
-under the bounds, never first party. Storage,
+under the bounds, never first party; and Issue-134: reading, changing and
+removing a registration with its registration access token, replaced at
+every change, and a client's login initiation address. Storage,
 randomness, hashing, signature checking and time are reached through ports
 and kernel traits.
 

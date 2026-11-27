@@ -13938,6 +13938,7 @@
           "logo_uri",
           "policy_uri",
           "tos_uri",
+          "initiate_login_uri",
           "registered"
         ],
         "properties": {
@@ -14280,6 +14281,15 @@
             "format": "uri",
             "maxLength": 2000,
             "description": "The client's terms of service, an HTTPS address a person is shown, as a registration named it; `null` otherwise. Not set through this interface."
+          },
+          "initiate_login_uri": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uri",
+            "maxLength": 2000,
+            "description": "Where a sign-in at the client can be started by someone else, its login initiation address of OpenID Connect, an HTTPS address that the account page links to, as a registration named it; `null` otherwise. Not set through this interface."
           },
           "registered": {
             "type": "boolean",

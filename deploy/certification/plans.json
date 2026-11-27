@@ -34,8 +34,9 @@
       "what": "the registration endpoint"
     },
     "registration-management": {
-      "built": false,
+      "built": true,
       "issue": "Issue-134",
+      "pullRequest": 192,
       "what": "managing a registration and third-party initiated login"
     },
     "dynamic-plan": {
@@ -74,9 +75,7 @@
           "client-registration", "on", "--tenant", "{tenant}", "--application", "{application}",
           "--way", "open", "--host", "{suiteHost}", "--most-clients", "200",
           "--grant", "authorization_code", "--grant", "refresh_token",
-          "--response-type", "code", "--response-type", "id_token", "--response-type", "code id_token",
-          "--response-type", "id_token token", "--response-type", "code token",
-          "--response-type", "code id_token token",
+          "{responseTypes}",
           "--method", "client_secret_basic", "--method", "client_secret_post", "--method", "private_key_jwt",
           "--subject-type", "public", "--subject-type", "pairwise",
           "--scope", "openid", "--scope", "profile", "--scope", "email", "--scope", "address",
@@ -259,7 +258,7 @@
       "plan": "oidcc-3rdparty-init-login-certification-test-plan",
       "tenant": "certification-dynamic",
       "needs": ["registration-endpoint", "registration-management"],
-      "variant": {},
+      "variant": { "response_type": "code" },
       "clients": {}
     }
   ]

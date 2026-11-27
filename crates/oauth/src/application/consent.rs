@@ -113,6 +113,9 @@ pub struct ListedConsent {
     /// The name of the client's application; for a client that registered
     /// itself, the client's own name.
     pub application: String,
+    /// The client's login initiation address, if it named one: where the
+    /// account page lets the person start a sign-in at it.
+    pub initiate_login_uri: Option<String>,
 }
 
 /// The name a person knows a client by: its application's, or, for a
@@ -506,9 +509,11 @@ impl ConsentService {
                 .await?
                 .map(|application| shown_name(&client, application.name()))
                 .unwrap_or_default();
+            let initiate_login_uri = client.snapshot().settings.initiate_login_uri.clone();
             listed.push(ListedConsent {
                 consent,
                 application,
+                initiate_login_uri,
             });
         }
         Ok(listed)

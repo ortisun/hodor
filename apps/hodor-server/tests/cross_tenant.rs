@@ -8265,3 +8265,121 @@ async fn a_client_registered_in_one_tenant_is_unknown_in_another() {
     .await;
     assert_eq!(status, StatusCode::CREATED, "{body}");
 }
+
+/// A request at a tenant's registration client address for `client_id`,
+/// with a registration access token: the status and the body.
+async fn at_registration_client_address(
+    world: &World,
+    tenant: &Tenant,
+    method: Method,
+    client_id: &str,
+    token: &str,
+    body: Option<serde_json::Value>,
+) -> (StatusCode, serde_json::Value) {
+    let mut request = Client::new()
+        .request(
+            method,
+            format!(
+                "{}/t/{}/oauth2/register/{client_id}",
+                world.server.base, tenant.slug
+            ),
+        )
+        .bearer_auth(token);
+    if let Some(body) = body {
+        request = request.json(&body);
+    }
+    let response = request.send().await.expect("response");
+    let status = response.status();
+    (
+        status,
+        response.json().await.unwrap_or(serde_json::Value::Null),
+    )
+}
+
+#[tokio::test]
+async fn one_tenants_registration_access_token_is_refused_at_the_others_registration_client_address()
+ {
+    let world = world().await;
+    let (acme, globex) = (&world.acme, &world.globex);
+    let acme_partners = partners_application(&world, acme).await;
+    let globex_partners = partners_application(&world, globex).await;
+    for (tenant, application) in [(acme, &acme_partners), (globex, &globex_partners)] {
+        let (status, body) = registration_on(&world, tenant, application).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+    }
+    let mut registered = Vec::new();
+    for tenant in [acme, globex] {
+        let (token, _) = initial_access_token(&world, tenant, 1).await;
+        let (status, body) = register(
+            &world,
+            tenant,
+            Some(&token),
+            serde_json::json!({ "redirect_uris": [REDIRECT], "client_name": "Partner portal" }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CREATED, "{body}");
+        assert_eq!(
+            body["registration_client_uri"],
+            format!(
+                "http://localhost:8080/t/{}/oauth2/register/{}",
+                tenant.slug,
+                body["client_id"].as_str().expect("id")
+            )
+        );
+        registered.push((
+            body["client_id"].as_str().expect("id").to_owned(),
+            body["registration_access_token"]
+                .as_str()
+                .expect("a registration access token")
+                .to_owned(),
+        ));
+    }
+    let (acme_client, acme_token) = &registered[0];
+    let (globex_client, _) = &registered[1];
+
+    // At Globex, Acme's token reads, changes and removes nothing: not
+    // Acme's client by its identifier, which Globex does not know, and not
+    // Globex's own client.
+    for client in [acme_client, globex_client] {
+        for method in [Method::GET, Method::PUT, Method::DELETE] {
+            let body = (method == Method::PUT).then(|| {
+                serde_json::json!({
+                    "client_id": client,
+                    "redirect_uris": [REDIRECT],
+                    "client_name": "Taken over"
+                })
+            });
+            let (status, refused) = at_registration_client_address(
+                &world,
+                globex,
+                method.clone(),
+                client,
+                acme_token,
+                body,
+            )
+            .await;
+            assert_eq!(status, StatusCode::UNAUTHORIZED, "{method} {refused}");
+            assert_eq!(refused["error"], "invalid_token");
+        }
+    }
+
+    // Both clients are as they were, and Acme's token still manages its
+    // own registration where it belongs.
+    let (status, globex_own) = world
+        .admin(
+            globex,
+            &globex.administrator_token,
+            Method::GET,
+            &format!("/clients/{globex_client}"),
+            None,
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{globex_own}");
+    assert_eq!(globex_own["name"], "Partner portal");
+    let (status, read) =
+        at_registration_client_address(&world, acme, Method::GET, acme_client, acme_token, None)
+            .await;
+    assert_eq!(status, StatusCode::OK, "{read}");
+    assert_eq!(read["client_name"], "Partner portal");
+    assert_eq!(read["registration_access_token"], acme_token.as_str());
+}

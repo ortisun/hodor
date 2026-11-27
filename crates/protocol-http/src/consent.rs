@@ -38,6 +38,9 @@ pub struct ConsentState {
     pub sessions: SessionService,
     /// For the CSRF token derived from the session token.
     pub digest: Arc<dyn Digest>,
+    /// The address people reach this installation at, without a path. The
+    /// issuer of a tenant is this address followed by `/t/{slug}`.
+    pub public_url: String,
 }
 
 impl std::fmt::Debug for ConsentState {
@@ -315,6 +318,26 @@ struct ListedBody {
     scopes: Vec<String>,
     given_at: String,
     expires_at: String,
+    /// Where the page links to start a sign-in at the client, for a client
+    /// that named a login initiation address.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    sign_in_uri: Option<String>,
+}
+
+/// The address that starts a sign-in at a client: its login initiation
+/// address with `iss`, the tenant's issuer, added to its query, and nothing
+/// else (OpenID Connect Core, section 4). See
+/// `docs/architecture/contexts/oauth.md`, "The login initiation address".
+fn sign_in_uri(initiate_login_uri: &str, issuer: &str) -> String {
+    let query = form_urlencoded::Serializer::new(String::new())
+        .append_pair("iss", issuer)
+        .finish();
+    let joint = if initiate_login_uri.contains('?') {
+        "&"
+    } else {
+        "?"
+    };
+    format!("{initiate_login_uri}{joint}{query}")
 }
 
 #[derive(Debug, Serialize)]
@@ -325,8 +348,10 @@ struct ConsentsBody {
 async fn list(
     State(state): State<ConsentState>,
     Extension(tenant): Extension<TenantContext>,
+    Extension(TenantSlug(slug)): Extension<TenantSlug>,
     headers: HeaderMap,
 ) -> Response {
+    let issuer = format!("{}/t/{slug}", state.public_url.trim_end_matches('/'));
     let person = match signed_in(&state, &tenant, &headers).await {
         Ok(person) => person,
         Err(response) => return *response,
@@ -341,6 +366,10 @@ async fn list(
                     scopes: listed.consent.scopes,
                     given_at: written(listed.consent.given_at),
                     expires_at: written(listed.consent.expires_at),
+                    sign_in_uri: listed
+                        .initiate_login_uri
+                        .as_deref()
+                        .map(|address| sign_in_uri(address, &issuer)),
                 })
                 .collect(),
         })
@@ -384,5 +413,28 @@ async fn withdraw(
     {
         Ok(()) => StatusCode::NO_CONTENT.into_response(),
         Err(error) => Problem::from(error).into_response(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::sign_in_uri;
+
+    #[test]
+    fn the_sign_in_address_carries_the_issuer_alone() {
+        assert_eq!(
+            sign_in_uri(
+                "https://portal.partner.example/start",
+                "https://id.example.com/t/acme"
+            ),
+            "https://portal.partner.example/start?iss=https%3A%2F%2Fid.example.com%2Ft%2Facme"
+        );
+        assert_eq!(
+            sign_in_uri(
+                "https://portal.partner.example/start?from=hodor",
+                "https://id.example.com/t/acme"
+            ),
+            "https://portal.partner.example/start?from=hodor&iss=https%3A%2F%2Fid.example.com%2Ft%2Facme"
+        );
     }
 }

@@ -22,8 +22,12 @@ use hodor_kernel::{
 use std::sync::Arc;
 use time::Duration;
 
+mod managed;
 mod registered;
-pub use registered::{MOST_REGISTRATIONS_PER_ADDRESS, REGISTRATION_WINDOW, RegisterClient};
+pub use managed::{ChangeRegistration, ChangedRegistration, ManageRegistration};
+pub use registered::{
+    MOST_REGISTRATIONS_PER_ADDRESS, REGISTRATION_WINDOW, RegisterClient, RegisteredClient,
+};
 
 /// What is needed to create a client.
 #[derive(Debug, Clone)]
@@ -354,6 +358,46 @@ impl ApplicationService {
         destinations.check(url).await.map_err(refused_address)
     }
 
+    /// Checks the addresses Hodor will call that a change of a client
+    /// makes new, from `before` to `after`: an address the client already
+    /// had is not checked again, so a name that leads elsewhere since does
+    /// not stop other changes.
+    async fn check_changed_addresses(
+        &self,
+        before: &ClientSettings,
+        after: &ClientSettings,
+    ) -> Result<(), DomainError> {
+        if let Some(url) = after.backchannel_logout_uri.as_deref()
+            && before.backchannel_logout_uri.as_deref() != Some(url)
+        {
+            self.check_backchannel_address(url).await?;
+        }
+        // Only a request object address new to the client is checked.
+        let new_addresses: Vec<&String> = after
+            .request_uris
+            .iter()
+            .filter(|address| !before.request_uris.contains(address))
+            .collect();
+        self.check_request_addresses(&new_addresses).await?;
+        // So is only a new or changed key set address.
+        if let Some(url) = after.jwks_uri.as_deref()
+            && before.jwks_uri.as_deref() != Some(url)
+        {
+            self.check_jwks_address(url).await?;
+        }
+        // The sector identifier document is fetched again only when what it
+        // vouches for changes: its address, the redirect addresses it must
+        // list, or the client becoming pairwise.
+        if after.subject_type == SubjectType::Pairwise
+            && (before.subject_type != SubjectType::Pairwise
+                || before.sector_identifier_uri != after.sector_identifier_uri
+                || before.redirect_uris != after.redirect_uris)
+        {
+            self.check_sector_address(after).await?;
+        }
+        Ok(())
+    }
+
     fn record(
         &self,
         uow: &mut dyn UnitOfWork,
@@ -628,39 +672,10 @@ impl ApplicationService {
         settings: ClientSettings,
         caller: Caller,
     ) -> Result<Client, DomainError> {
-        // Only a new or changed back-channel logout address is checked: a
-        // name that leads elsewhere since does not stop other changes.
         let current = self.client(tenant, id).await?;
         let settings = settings.checked(current.client_type())?;
-        if let Some(url) = settings.backchannel_logout_uri.as_deref()
-            && current.backchannel_logout_uri() != Some(url)
-        {
-            self.check_backchannel_address(url).await?;
-        }
-        // Only a request object address new to the client is checked.
-        let new_addresses: Vec<&String> = settings
-            .request_uris
-            .iter()
-            .filter(|address| !current.snapshot().settings.request_uris.contains(address))
-            .collect();
-        self.check_request_addresses(&new_addresses).await?;
-        // So is only a new or changed key set address.
-        if let Some(url) = settings.jwks_uri.as_deref()
-            && current.jwks_uri() != Some(url)
-        {
-            self.check_jwks_address(url).await?;
-        }
-        // The sector identifier document is fetched again only when what it
-        // vouches for changes: its address, the redirect addresses it must
-        // list, or the client becoming pairwise.
-        let before = &current.snapshot().settings;
-        if settings.subject_type == SubjectType::Pairwise
-            && (before.subject_type != SubjectType::Pairwise
-                || before.sector_identifier_uri != settings.sector_identifier_uri
-                || before.redirect_uris != settings.redirect_uris)
-        {
-            self.check_sector_address(&settings).await?;
-        }
+        self.check_changed_addresses(&current.snapshot().settings, &settings)
+            .await?;
         let now = self.clock.now();
         self.change_client_with(tenant, id, caller, |client| {
             Ok(((), client.change(settings, now)?))

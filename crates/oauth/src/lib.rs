@@ -55,9 +55,9 @@ pub mod api {
         ResourceAccessPorts, ResourceAccessService, ResourceCaller,
     };
     pub use crate::application::service::{
-        ApplicationPorts, ApplicationService, ClientWithApplication, CreateClient,
-        CreateResourceServer, MOST_REGISTRATIONS_PER_ADDRESS, REGISTRATION_WINDOW, RegisterClient,
-        RotateSecret,
+        ApplicationPorts, ApplicationService, ChangeRegistration, ChangedRegistration,
+        ClientWithApplication, CreateClient, CreateResourceServer, MOST_REGISTRATIONS_PER_ADDRESS,
+        ManageRegistration, REGISTRATION_WINDOW, RegisterClient, RegisteredClient, RotateSecret,
     };
     pub use crate::application::token::{IssuedTokens, Issuer, TokenPorts, TokenService};
     pub use crate::application::userinfo::{UserInfoAnswer, UserInfoPorts, UserInfoService};
@@ -99,7 +99,8 @@ pub mod api {
         TOKEN_EXCHANGE_GRANT, TokenPolicy,
     };
     pub use crate::domain::client_metadata::{
-        ClientMetadata, DEFAULT_REGISTERED_CLIENT_NAME, read_client_metadata, registration_answer,
+        ClientMetadata, DEFAULT_REGISTERED_CLIENT_NAME, Management, read_change,
+        read_client_metadata, registration_answer,
     };
     pub use crate::domain::consent::{
         Consent, ConsentAction, ConsentActor, ConsentAnswer, ConsentHistoryEntry, ConsentWait,
@@ -169,6 +170,10 @@ pub mod api {
         MAX_POLICY_HOSTS, MAX_POLICY_SCOPES, MOST_REGISTERED_CLIENTS, REGISTERABLE_METHODS,
         RegistrationPolicy, RegistrationRequest, RegistrationSettings, RegistrationWay,
         check_redirect_hosts, check_registration, is_policy_host, ways_from_stored,
+    };
+    pub use crate::domain::registration_token::{
+        REGISTRATION_ACCESS_TOKEN_PREFIX, RegistrationAccessTokenHash,
+        RegistrationAccessTokenValue, looks_like_registration_access_token,
     };
     pub use crate::domain::request_object::{
         MAX_REQUEST_OBJECT_BYTES, RequestObjectCheck, RequestObjectRefusal, check_request_object,

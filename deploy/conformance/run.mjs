@@ -3,8 +3,9 @@
 // the Basic and Back-Channel plans again with pairwise clients, in the stack
 // of compose.yaml, and fails unless every test ends as
 // docs/operations/conformance.md expects. The Form Post plan of the code
-// flow, and the Implicit and Hybrid plans, for the response types `id_token`
-// and `code id_token`, run when asked for with CONFORMANCE_PLANS.
+// flow, the Implicit and Hybrid plans, for the response types `id_token`
+// and `code id_token`, and the 3rd Party-Init plan, whose clients the suite
+// registers itself, run when asked for with CONFORMANCE_PLANS.
 //
 // NOT FOR ANYTHING REAL: the person, the clients and their secrets are made
 // here for the run and written to the console.
@@ -55,12 +56,12 @@ const SECTOR_DOCUMENT_HOST = "sector-document:8080";
 const SECTOR_IDENTIFIER_URI = `http://${SECTOR_DOCUMENT_HOST}/redirect_uris.json`;
 const ONLY = (process.env.CONFORMANCE_ONLY ?? "").split(",").filter((name) => name !== "");
 // The plans this script can run, by a short name. Continuous integration
-// runs the first five; the Form Post plan of the code flow and the Implicit
-// and Hybrid plans of the response types Hodor answers through the browser
-// run when named.
+// runs the first five; the Form Post plan of the code flow, the Implicit
+// and Hybrid plans of the response types Hodor answers through the browser,
+// and the 3rd Party-Init plan run when named.
 const PLANS = [
   "basic", "config", "backchannel", "basic-pairwise", "backchannel-pairwise",
-  "formpost-basic", "implicit-id-token", "hybrid-code-id-token",
+  "formpost-basic", "implicit-id-token", "hybrid-code-id-token", "3rdparty-init",
 ];
 const CONTINUOUS_INTEGRATION_PLANS = PLANS.slice(0, 5);
 const CHOSEN = (process.env.CONFORMANCE_PLANS ?? CONTINUOUS_INTEGRATION_PLANS.join(","))
@@ -215,6 +216,26 @@ function seedHodor() {
       ]),
     },
   };
+}
+
+// The tenant whose clients register themselves, for the plans of dynamic
+// registration: open, for the suite's host alone, in an application of its
+// own that is never first party.
+const DYNAMIC_TENANT = "conformance-dynamic";
+
+function seedRegistration() {
+  step(`The tenant ${DYNAMIC_TENANT}, open to the suite's registrations`);
+  if (!cli("tenant", "list").split("\n").some((line) => line.startsWith(`${DYNAMIC_TENANT} `))) {
+    cli("tenant", "create", "--slug", DYNAMIC_TENANT, "--name", "Conformance, registration");
+  }
+  const application = printed(
+    cli("application", "add", "--tenant", DYNAMIC_TENANT, "--name", "Clients the suite registered"),
+    "application",
+  );
+  cli(
+    "client-registration", "on", "--tenant", DYNAMIC_TENANT, "--application", application,
+    "--way", "open", "--host", new URL(SUITE).hostname,
+  );
 }
 
 async function messageLink(address) {
@@ -466,6 +487,19 @@ async function main() {
       "hybrid-code-id-token": () => runPlan("oidcc-hybrid-certification-test-plan", config,
         { server_metadata: "discovery", client_registration: "static_client" }, browser,
         "oidcc-hybrid-certification-test-plan (code id_token)", "code id_token"),
+      // Issue-134: the suite registers a client with `initiate_login_uri`,
+      // reads it back with its registration access token and removes it,
+      // and registers one whose address is not HTTPS, which is refused.
+      // The plan sets every variant but the response type.
+      "3rdparty-init": () => {
+        seedRegistration();
+        return runPlan("oidcc-3rdparty-init-login-certification-test-plan", {
+          alias: ALIAS,
+          description: "Hodor, 3rd Party-Init",
+          server: { discoveryUrl: `${HODOR}/t/${DYNAMIC_TENANT}/.well-known/openid-configuration` },
+          client: { client_name: "Hodor 3rd Party-Init" },
+        }, { response_type: "code" }, browser);
+      },
     };
     const results = [];
     for (const name of PLANS.filter((plan) => CHOSEN.includes(plan))) {

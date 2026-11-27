@@ -1,3 +1,4 @@
+import { Link } from "@astryxdesign/core/Link";
 import { VStack } from "@astryxdesign/core/VStack";
 import { useEffect, useState } from "react";
 import type { Failure, GivenConsent, Session } from "../client";
@@ -129,7 +130,11 @@ interface ConsentsProps {
   withdraw: (consent: GivenConsent) => void;
 }
 
-/** The applications the person let into their account, each with a way to withdraw it. */
+/**
+ * The applications the person let into their account, each with a way to
+ * withdraw it, and a link that starts a sign-in at one that offers it: the
+ * address the server gave, opened in a new tab without a referrer.
+ */
 function Consents({ consents, withdrawn, busy, text, withdraw }: ConsentsProps) {
   const until = (moment: string) =>
     new Intl.DateTimeFormat(text.locale, { dateStyle: "long" }).format(new Date(moment));
@@ -145,6 +150,11 @@ function Consents({ consents, withdrawn, busy, text, withdraw }: ConsentsProps) 
             <li key={consent.clientId}>
               <VStack gap={2}>
                 <Words>{text.givenConsent(consent.application, until(consent.expiresAt))}</Words>
+                {consent.signInUri === null ? null : (
+                  <Link href={consent.signInUri} hasUnderline isExternalLink newTabLabel={text.opensInNewTab}>
+                    {text.signInAt(consent.application)}
+                  </Link>
+                )}
                 <Action
                   label={text.withdrawConsent(consent.application)}
                   variant="ghost"

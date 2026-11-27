@@ -109,6 +109,7 @@ export const ptBR: Messages = {
   givenConsentsNone: "Você não deixou nenhum aplicativo entrar na sua conta.",
   givenConsent: (application: string, until: string) => `${application}, até ${until}`,
   withdrawConsent: (application: string) => `Retirar ${application}`,
+  signInAt: (application: string) => `Entrar em ${application}`,
   consentWithdrawn: (application: string) =>
     `${application} não tem mais acesso. Ele vai pedir de novo se precisar.`,
 

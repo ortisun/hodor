@@ -150,6 +150,12 @@ export interface GivenConsent {
   scopes: string[];
   givenAt: string;
   expiresAt: string;
+  /**
+   * Where a sign-in at the application starts, with the tenant's issuer
+   * added, for one that named a login initiation address; only an HTTPS
+   * address the server gave.
+   */
+  signInUri: string | null;
 }
 
 /**
@@ -631,8 +637,9 @@ export class Client {
       const scopes = Array.isArray(fields["scopes"])
         ? fields["scopes"].filter((scope): scope is string => typeof scope === "string")
         : [];
+      const signInUri = httpsAddress(fields["sign_in_uri"]);
       return clientId !== null && application !== null && givenAt !== null && expiresAt !== null
-        ? [{ clientId, application, scopes, givenAt, expiresAt }]
+        ? [{ clientId, application, scopes, givenAt, expiresAt, signInUri }]
         : [];
     });
   }
