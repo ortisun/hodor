@@ -27,4 +27,4 @@ The deployment the owner asks the OpenID Foundation to certify, and the script t
 node --test deploy/certification/test/certification.test.mjs
 ```
 
-The job `Certification deployment` of `.github/workflows/ci.yml` runs it, `docker compose config` on the two files and `caddy adapt --validate` on `Caddyfile`; the job `OpenID conformance` runs `make` and `retire` against its stack.
+The job `Certification deployment` of `.github/workflows/ci.yml` runs it, `docker compose config` on the two files and `caddy adapt --validate` on `Caddyfile`; the job `Certification deployment against Hodor` of `.github/workflows/conformance.yml` runs `make` and `retire` against Hodor started from the conformance stack without the suite, from the image the plans run against.

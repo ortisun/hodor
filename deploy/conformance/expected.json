@@ -1,11 +1,20 @@
 {
   "oidcc-prompt-login": {
-    "REVIEW": "The suite keeps a screenshot of the second sign-in page, which `prompt=login` must show, for a person to look at. The test passes otherwise."
+    "REVIEW": {
+      "why": "The suite keeps a screenshot of the second sign-in page, which `prompt=login` must show, for a person to look at. The test passes otherwise.",
+      "plans": ["basic", "basic-pairwise", "formpost-basic", "implicit-id-token", "hybrid-code-id-token"]
+    }
   },
   "oidcc-max-age-1": {
-    "REVIEW": "The suite keeps a screenshot of the second sign-in page, which `max_age=1` must show, for a person to look at. The test passes otherwise."
+    "REVIEW": {
+      "why": "The suite keeps a screenshot of the second sign-in page, which `max_age=1` must show, for a person to look at. The test passes otherwise.",
+      "plans": ["basic", "basic-pairwise", "formpost-basic", "implicit-id-token", "hybrid-code-id-token"]
+    }
   },
   "oidcc-ensure-registered-redirect-uri": {
-    "REVIEW": "Hodor shows its own error page and never sends the browser to an address that is not registered; the suite keeps a screenshot of that page for a person to look at."
+    "REVIEW": {
+      "why": "Hodor shows its own error page and never sends the browser to an address that is not registered; the suite keeps a screenshot of that page for a person to look at.",
+      "plans": ["basic", "basic-pairwise", "formpost-basic", "implicit-id-token", "hybrid-code-id-token"]
+    }
   }
 }

@@ -1,0 +1,12 @@
+{
+  "plans": [
+    { "name": "basic", "core": true },
+    { "name": "config", "core": true },
+    { "name": "backchannel", "core": true },
+    { "name": "basic-pairwise", "core": true },
+    { "name": "backchannel-pairwise", "core": true },
+    { "name": "formpost-basic", "core": false },
+    { "name": "implicit-id-token", "core": false },
+    { "name": "hybrid-code-id-token", "core": false }
+  ]
+}
