@@ -363,6 +363,44 @@ It ends with `The demonstration of Milestone 10 passed.` It can be run again and
 kind delete cluster --name hodor-milestone-10
 ```
 
+## The demonstration of Milestone 11
+
+[Milestone 11](../product/epics.md#milestone-11-hodor-in-a-service-mesh) lets a service mesh's proxies check Hodor's tokens and ask Hodor's decisions, and runs Hodor inside the mesh with every client still limited apart. Its demonstration needs clusters, not the development stack: it makes a [kind](https://kind.sigs.k8s.io/) cluster with Istio and one with Linkerd, installs Hodor and `hodor-ext-authz` in each mesh with [its chart](install-on-kubernetes.md), and does what [the service mesh guide](service-mesh.md) says an operator does:
+
+```bash
+python3 deploy/demo/service_mesh.py
+```
+
+It needs Docker, kind, `kubectl`, Helm and OpenSSL besides Python 3, and about 3 GiB of memory for Docker for each cluster besides what it already runs. It never changes the current context of `kubectl` or the repositories of Helm: it gives both files of their own, in a temporary directory. It runs Istio's cluster first, then Linkerd's; `HODOR_MESH=istio` or `HODOR_MESH=linkerd` runs one.
+
+| Step | What it shows |
+|---|---|
+| A kind cluster with Hodor's images | The cluster `hodor-milestone-11-istio` or `hodor-milestone-11-linkerd`, made the first time and taken as it is after. The images `hodor:milestone-11` and `hodor-ext-authz:milestone-11`, built from the checkout when Docker does not have them, and loaded into the cluster |
+| The mesh and its gateway | Istio 1.30.8 with native sidecars, `hodor-ext-authz` named as a provider in its mesh configuration, and its ingress gateway from the chart `gateway`, which runs as `spiffe://cluster.local/ns/istio-system/sa/istio-ingressgateway`. Or Envoy Gateway 1.10.0, then Linkerd edge-26.11.1 with a trust anchor and an identity issuer the script makes with OpenSSL, and Envoy Gateway's proxies meshed by Linkerd, their listeners' ports left out of the proxy, as `edge-gateway.envoy-gateway-system.serviceaccount.identity.linkerd.cluster.local`. Envoy Gateway serves Orders over TLS, with a certificate the script makes for `orders.example.com` |
+| The workloads | In the namespace `shop`, in the mesh: `orders`, the protected application, which answers with the headers it received; `web`, whose service account will hold Orders' role; `stranger`, whose service account will hold none. In `outside`, out of it: `visitor-a` and `visitor-b`, two clients at two addresses. Each client runs `deploy/demo/service-mesh/client.py` in its own pod |
+| Hodor in the mesh by `mesh.provider` | The chart, with the stand-ins of [trying the chart](install-on-kubernetes.md#trying-the-chart-on-a-cluster-of-your-own), in a namespace with no label: `mesh.provider` gives the server, the worker and the migration job their proxy, and the stand-in database and mail server stay out of the mesh. The gateway is named in `gatewayIdentities`, and the network policy lets in only the gateway's namespace and `shop` |
+| A tenant, its administrator, and the mesh's trust domain | Made with the command-line tool, in the server's pod; `cluster.local` as checked by the mesh |
+| Orders in Hodor | The Authorization API; Orders' resource server, `https://orders.example.com`, whose role `reader` may read an order; a service account for `hodor-ext-authz` and its client bound to the adapter's identity in the mesh, `spiffe_x509` or `linkerd_identity`; the service accounts of `web` and `stranger`, each with a client bound to its identity, `web`'s holding `reader`; and Orders' own client for people |
+| Two people | Ana and Bruno register through the link Hodor mails to the stand-in's mailbox, and sign in; Ana is given `reader` |
+| `hodor-ext-authz`, beside Hodor and in the mesh with it | The chart again, with `extAuthz` for the tenant: Orders' entry names its destination, its client, its audience and the route `GET /orders/{id}`. Its pods get their proxy from `mesh.provider` |
+| Orders protected | With Istio, a `RequestAuthentication` for the tenant's issuer and audience, and an `AuthorizationPolicy` of action `CUSTOM` naming `hodor-ext-authz`, as the guide writes them. With Linkerd, Envoy Gateway's `SecurityPolicy` that checks the token, its key set inline, and asks `hodor-ext-authz` |
+| Through the gateway | From `visitor-a`, `GET /orders/42` at `orders.example.com` through the gateway, with Ana's access token, is let through; with Bruno's, `403`. With no token, `403` from Istio, whose check names the gateway's identity, which Hodor knows as nobody, and `401` from Envoy Gateway. A token of a second tenant for the same audience, `401`. Behind Envoy Gateway, the caller sends the claims of its token in `x-hodor-token-claims`, and Ana's token with Bruno's claims beside it is `403` |
+| Both decisions in Hodor's record | `GET /decisions` holds Ana's `allow` and Bruno's `deny`, reading order 42 on Orders' resource server |
+| Hodor stopped | With the server scaled to nothing, Ana's request is `403`: `hodor-ext-authz` denies when Hodor cannot answer. The server is started again |
+| Two clients behind the gateway, limited apart | `visitor-a` fails passwords through the gateway, each for another identifier, until its address is locked out after about fifty; Ana's own password is then refused from `visitor-a` and signs her in from `visitor-b`, and Hodor knows that session by `visitor-b`'s own address |
+| A forwarded address ignored | Bruno signs in from `web`, which writes `X-Forwarded-For: 198.51.100.7` and is not the gateway: Hodor knows that session by the address of its own proxy, `127.0.0.6` with Istio and the pod's own address with Linkerd |
+| Linkerd's policies (Linkerd only) | `stranger` reaches Orders, whose proxy names it in `l5d-client-id`. The script applies a `Server` for Orders' port, runs `hodor-cli mesh linkerd-policy` in a pod of its own with the server's settings, checks that the file names `web`'s identity and not `stranger`'s, and applies it: Linkerd refuses `stranger` with `403` and lets `web` in |
+| The audit log | The tenant's chain is intact |
+
+The script reaches Hodor at `http://localhost:18111` and the stand-in's mailbox at `http://localhost:18112` through `kubectl port-forward`, from outside the mesh, as an operator does; the workloads reach Hodor at `http://hodor.hodor.svc:8080`, the address every tenant's issuer starts with. Its files are in `deploy/demo/service-mesh/`: the values of each mesh and of the chart, the routes and policies of each gateway, and the workloads.
+
+It ends with `The demonstration of Milestone 11 passed.` It can be run again and again against the same clusters, making new tenants each time, and runs in continuous integration, one job for each mesh, against the images built from the pull request. `HODOR_KIND_ISTIO_CLUSTER`, `HODOR_KIND_LINKERD_CLUSTER`, `HODOR_IMAGE`, `HODOR_EXT_AUTHZ_IMAGE`, `HODOR_PORT` and `HODOR_MAIL_PORT` choose other clusters, images or ports. The clusters are left running; to remove them:
+
+```bash
+kind delete cluster --name hodor-milestone-11-istio
+kind delete cluster --name hodor-milestone-11-linkerd
+```
+
 ## The demonstration of Milestone 12
 
 [Milestone 12](../product/epics.md#milestone-12-an-optional-certificate-authority-per-tenant) gives a tenant that turns it on a certificate authority of its own, whose key OpenBao holds, which signs the intermediates of the tenant's meshes, by hand or through cert-manager, so that every mesh of the tenant trusts one root and Hodor trusts what it signed. Its demonstration needs two clusters: it makes a [kind](https://kind.sigs.k8s.io/) cluster with Istio, where Hodor runs in the mesh with [its chart](install-on-kubernetes.md) beside OpenBao, and another with Linkerd, and plays an operator, an administrator, cert-manager and the workloads of both meshes:
