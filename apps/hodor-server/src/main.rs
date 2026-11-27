@@ -70,12 +70,13 @@ use hodor_observability::{LogFormat, Telemetry};
 use hodor_protocol_http::{
     AdminState, ApiKeyAccess, AuthorizationApiState, AuthorizationState, ConsentState,
     ConsoleState, DiscoveryState, ForwardedHeader, Health, IdentityHeader, InteractionState,
-    InvitationState, Limits, LogoutState, Pages, ReadinessCheck, ResolvedTenant, ScimState,
-    TenantResolver, TenantStatus as HttpTenantStatus, TokenState, TrustedProxies, UserInfoState,
-    admin_routes, authority_bundle_routes, authorization_api_routes, authorization_routes,
-    consent_routes, console_routes, discovery_routes, interaction_routes, invitation_routes,
-    key_set_routes, logout_routes, ops_router, parse_gateways, parse_ranges, policy_agent_routes,
-    public_router_behind, scim_routes, serve, token_routes, userinfo_routes,
+    InvitationState, Limits, LogoutState, Pages, ReadinessCheck, RegistrationState, ResolvedTenant,
+    ScimState, TenantResolver, TenantStatus as HttpTenantStatus, TokenState, TrustedProxies,
+    UserInfoState, admin_routes, authority_bundle_routes, authorization_api_routes,
+    authorization_routes, consent_routes, console_routes, discovery_routes, interaction_routes,
+    invitation_routes, key_set_routes, logout_routes, ops_router, parse_gateways, parse_ranges,
+    policy_agent_routes, public_router_behind, registration_routes, scim_routes, serve,
+    token_routes, userinfo_routes,
 };
 use hodor_provisioning::api::{ProvisioningPorts, ProvisioningService};
 use hodor_session::api::SessionService;
@@ -407,7 +408,10 @@ async fn run(config: Config) -> Result<(), Box<dyn Error>> {
         _ => None,
     };
     authorization.id_tokens = tokens.as_ref().map(|state| state.tokens.clone());
-    let mut oauth2 = authorization_routes(authorization.clone());
+    // Clients register themselves only in a tenant that turns registration
+    // on; elsewhere the address answers as one that does not exist.
+    let mut oauth2 = authorization_routes(authorization.clone())
+        .merge(registration_routes(registration(&config, &database)?));
     if let (Some(keys), Some(setting), Some(tokens)) = (&keys, &config.secret_keys, tokens) {
         oauth2 = oauth2.merge(token_routes(tokens));
         oauth2 = oauth2.merge(userinfo_routes(userinfo(&config, &database, keys.clone())));
@@ -473,6 +477,7 @@ async fn run(config: Config) -> Result<(), Box<dyn Error>> {
                     public_url: config.public_url.clone(),
                     tenants: tenant_service(&database),
                     identity_header: proxies.identity_header(),
+                    client_registration: Some(client_registration(&database)),
                 }));
         }
         None => tracing::warn!(
@@ -794,6 +799,49 @@ fn tenant_service(database: &Database) -> TenantService {
         Arc::new(PgTenantDirectory::new(database.clone())),
         Arc::new(SystemClock),
     )
+}
+
+/// The settings of client registration and initial access tokens.
+fn client_registration(database: &Database) -> ClientRegistrationService {
+    ClientRegistrationService::new(ClientRegistrationPorts {
+        units_of_work: Arc::new(database.clone()),
+        registrations: Arc::new(PgClientRegistrationStore),
+        tokens: Arc::new(PgInitialAccessTokenStore),
+        applications: Arc::new(PgApplicationStore),
+        digest: Arc::new(Sha256Digest),
+        random: Arc::new(OsRandom),
+        clock: Arc::new(SystemClock),
+    })
+}
+
+/// Builds the registration endpoint: clients registered as an
+/// administrator's are, their back-channel logout and sector identifier
+/// addresses checked and fetched by the guarded outbound client with this
+/// installation's development exception.
+fn registration(config: &Config, database: &Database) -> Result<RegistrationState, DomainError> {
+    let guarded = || {
+        GuardedHttpClient::new(OutboundPolicy {
+            development_hosts: development_hosts(config),
+            ..OutboundPolicy::default()
+        })
+    };
+    let applications = ApplicationService::new(ApplicationPorts {
+        units_of_work: Arc::new(database.clone()),
+        applications: Arc::new(PgApplicationStore),
+        clients: Arc::new(PgClientStore),
+        resource_servers: Arc::new(PgResourceServerStore),
+        digest: Arc::new(Sha256Digest),
+        random: Arc::new(OsRandom),
+        clock: Arc::new(SystemClock),
+    })
+    .with_destinations(Arc::new(guarded()?))
+    .with_sector_documents(Arc::new(guarded()?));
+    Ok(RegistrationState {
+        applications,
+        registration: client_registration(database),
+        public_url: config.public_url.clone(),
+        digest: Arc::new(Sha256Digest),
+    })
 }
 
 /// Builds the use cases of consent.
@@ -1681,15 +1729,7 @@ fn administration(
             mappers: Arc::new(PgClaimMapperStore),
             clock: clock.clone(),
         }),
-        client_registration: ClientRegistrationService::new(ClientRegistrationPorts {
-            units_of_work: units(),
-            registrations: Arc::new(PgClientRegistrationStore),
-            tokens: Arc::new(PgInitialAccessTokenStore),
-            applications: Arc::new(PgApplicationStore),
-            digest: digest.clone(),
-            random: random.clone(),
-            clock: clock.clone(),
-        }),
+        client_registration: client_registration(database),
         tokens: AccessTokenService::new(
             units(),
             Arc::new(PgAccessTokenStore),

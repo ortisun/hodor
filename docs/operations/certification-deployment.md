@@ -146,8 +146,8 @@ The plans of 0.5.0, as [the target](conformance.md#the-target) names them, with 
 | Back-Channel OP | `oidcc-backchannel-rp-initiated-logout-certification-test-plan`, once per response type | As RP-Initiated | `certification`: the Back-Channel client | `code` yes; the others wait for Issues 127 and 128 |
 | Front-Channel OP | `oidcc-frontchannel-rp-initiated-logout-certification-test-plan`, once per response type | As RP-Initiated | `certification`: the Front-Channel client | Waits for Issue-139 |
 | Session OP | `oidcc-session-management-certification-test-plan`, once per response type | As RP-Initiated | `certification-session` | Waits for Issue-140 |
-| Dynamic OP | `oidcc-dynamic-certification-test-plan` | `response_type=code`; the plan sets the rest | `certification-dynamic`: the suite registers its own | Waits for Issues 127, 128, 133, 134 and 137 |
-| 3rd Party-Init OP | `oidcc-3rdparty-init-login-certification-test-plan` | Set by the plan | `certification-dynamic` | Waits for Issues 133 and 134 |
+| Dynamic OP | `oidcc-dynamic-certification-test-plan` | `response_type=code`; the plan sets the rest | `certification-dynamic`: the suite registers its own | Waits for Issues 127, 128, 134 and 137 |
+| 3rd Party-Init OP | `oidcc-3rdparty-init-login-certification-test-plan` | Set by the plan | `certification-dynamic` | Waits for Issue-134 |
 
 The response types are `code`, `id_token`, `code id_token`, `id_token token`, `code token` and `code id_token token`. The suite's plan of the Dynamic profile offers the response type in its menu and the Foundation's page names none; `code` is what continuous integration runs ([Decision 0051](../decisions/0051-conformance-runs-and-certification.md#what-runs-and-when)), and `plans.json` lists it alone until the Foundation is asked.
 
@@ -161,7 +161,7 @@ Some plans need what is not built on `develop` yet. The script never guesses: `p
 | `access-token-through-the-browser` | Issue-128 | `id_token token`, `code token` and `code id_token token`. Also give its `clientArguments` the option of `hodor-cli client add` that marks a client as allowed tokens through the browser, which that issue names |
 | `front-channel-logout` | Issue-139, pull request 184 | The Front-Channel client and plan |
 | `session-management` | Issue-140 | The tenant `certification-session` and the Session plan. Also give its `tenantCommands` the command of `hodor-cli` that turns session management on for a tenant, which that issue names |
-| `registration-endpoint` | Issue-133, pull request 179 | The tenant `certification-dynamic` with registration on |
+| `registration-endpoint` | Issue-133, pull request 179; built | The tenant `certification-dynamic` with registration on, made once a plan that uses it is ready: the 3rd Party-Init plan with Issue-134, the Dynamic plan with Issues 127, 128, 134 and 137. Its command turns registration on with the six response types, so it needs Issue-128 too, or fewer response types, before either plan is ready |
 | `registration-management` | Issue-134 | The 3rd Party-Init plan, with the Dynamic plan |
 | `dynamic-plan` | Issue-137 | What the Dynamic plan needs of a tenant beyond the endpoint, such as registered clients without PKCE, which Issue-137 decides; its `tenantCommands` take the command it names |
 

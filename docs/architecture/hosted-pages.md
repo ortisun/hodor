@@ -116,6 +116,7 @@ When a third-party application asks for access the person has not agreed to, the
 
 - reads what the request asks for. Without a request waiting for this browser, it says there is nothing to answer and offers the account page;
 - names the application, in the heading: "Billing wants to access your account";
+- for an application that [registered itself](contexts/oauth.md#a-registered-client), names it by the name it gave itself, shows its logo beside the heading, says below it that the application named itself and the tenant has not checked who it is, and links to its home page, privacy policy and terms of service when it named them. The logo is an image of the application's choosing at an HTTPS address, loaded without a referrer, and the links open in a new tab without one. The pages' content security policy lets images come from any HTTPS address for this;
 - lists what it asks for, one line per scope. The scopes of OpenID Connect are worded by the page in the person's language: `openid` "know who you are", `profile` "see your name and username", `email` "see your email address", `address` and `phone` likewise. A scope of a resource server shows the description its administrator wrote, with the resource server's name; that text is shown as text, never as markup;
 - says so plainly when the application asks for offline access: "keep this access when you are not using it";
 - offers two buttons, "allow" and "deny". Neither is chosen for the person: nothing is answered until one is pressed;

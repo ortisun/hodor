@@ -339,6 +339,78 @@ impl ClientRegistrationService {
         self.ports.tokens.list(uow.as_mut()).await
     }
 
+    /// The settings in force, with their row locked until the unit of work
+    /// ends: what the registration endpoint takes first in the unit of work
+    /// that stores a registration, so that its bounds are counted while no
+    /// other registration of the tenant is stored.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if storage fails.
+    pub async fn lock_settings(
+        &self,
+        uow: &mut dyn UnitOfWork,
+    ) -> Result<RegistrationSettings, DomainError> {
+        Ok(RegistrationInForce::of(self.ports.registrations.lock(uow).await?.as_ref()).settings)
+    }
+
+    /// Decides whether a registration may go ahead without spending
+    /// anything: the token found and good, or open registration.
+    async fn decide(
+        &self,
+        uow: &mut dyn UnitOfWork,
+        presented: Option<&str>,
+    ) -> Result<(RegistrationSettings, Option<InitialAccessToken>), DomainError> {
+        let settings =
+            RegistrationInForce::of(self.ports.registrations.get(uow).await?.as_ref()).settings;
+        if !settings.enabled {
+            return Err(registration_off());
+        }
+        let Some(presented) = presented else {
+            if settings.allows(RegistrationWay::Open) {
+                return Ok((settings, None));
+            }
+            return Err(DomainError::new(
+                ErrorKind::Unauthenticated,
+                "oauth.initial_access_token_required",
+                "this tenant's registration needs an initial access token",
+            ));
+        };
+        if !settings.allows(RegistrationWay::InitialAccessToken) {
+            return Err(token_invalid());
+        }
+        let hash = InitialAccessTokenHash::of_presented(presented, self.ports.digest.as_ref())
+            .ok_or_else(token_invalid)?;
+        let token = self
+            .ports
+            .tokens
+            .lock_by_hash(uow, &hash)
+            .await?
+            .ok_or_else(token_invalid)?;
+        if !token.is_active(self.ports.clock.now()) {
+            return Err(token_invalid());
+        }
+        Ok((settings, Some(token)))
+    }
+
+    /// Whether a registration would be admitted, spending nothing and
+    /// recording nothing: what the registration endpoint asks before it
+    /// calls any address a registration names, in a unit of work it never
+    /// commits. Answers the settings in force.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::admit`].
+    pub async fn may_register(
+        &self,
+        uow: &mut dyn UnitOfWork,
+        presented: Option<&str>,
+    ) -> Result<RegistrationSettings, DomainError> {
+        self.decide(uow, presented)
+            .await
+            .map(|(settings, _)| settings)
+    }
+
     /// Whether a registration may go ahead, for the registration endpoint,
     /// inside the unit of work in which it registers the client, so that a
     /// registration refused afterwards spends nothing. `presented` is the
@@ -359,35 +431,13 @@ impl ClientRegistrationService {
         presented: Option<&str>,
         caller: Caller,
     ) -> Result<Admission, DomainError> {
-        let settings =
-            RegistrationInForce::of(self.ports.registrations.get(uow).await?.as_ref()).settings;
-        if !settings.enabled {
-            return Err(registration_off());
-        }
-        let Some(presented) = presented else {
-            if settings.allows(RegistrationWay::Open) {
-                return Ok(Admission {
-                    settings,
-                    allowed_by: AllowedBy::Open,
-                });
-            }
-            return Err(DomainError::new(
-                ErrorKind::Unauthenticated,
-                "oauth.initial_access_token_required",
-                "this tenant's registration needs an initial access token",
-            ));
+        let (settings, token) = self.decide(uow, presented).await?;
+        let Some(mut token) = token else {
+            return Ok(Admission {
+                settings,
+                allowed_by: AllowedBy::Open,
+            });
         };
-        if !settings.allows(RegistrationWay::InitialAccessToken) {
-            return Err(token_invalid());
-        }
-        let hash = InitialAccessTokenHash::of_presented(presented, self.ports.digest.as_ref())
-            .ok_or_else(token_invalid)?;
-        let mut token = self
-            .ports
-            .tokens
-            .lock_by_hash(uow, &hash)
-            .await?
-            .ok_or_else(token_invalid)?;
         let event = token.spend(self.ports.clock.now())?;
         self.ports.tokens.record_use(uow, &token).await?;
         self.record(uow, caller, &event)?;

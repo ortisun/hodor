@@ -28,7 +28,7 @@
       "tenantCommands": []
     },
     "registration-endpoint": {
-      "built": false,
+      "built": true,
       "issue": "Issue-133",
       "pullRequest": 179,
       "what": "the registration endpoint"

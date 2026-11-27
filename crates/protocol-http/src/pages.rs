@@ -75,9 +75,25 @@ pub const CONSOLE_PATHS: &[&str] = &[
 pub const CONSOLE_ASSETS_PATH: &str = "/admin-console/assets";
 
 /// The policy sent with the page. Everything the page loads comes from
-/// files served by this server; no inline script or style, no `eval`, and
-/// no way to turn text into markup or script.
+/// files served by this server, but the logo of a client that registered
+/// itself, an image at an HTTPS address of its choosing, which the consent
+/// page shows; no inline script or style, no `eval`, and no way to turn
+/// text into markup or script.
 pub const PAGES_CONTENT_SECURITY_POLICY: &str = "default-src 'none'; \
+     script-src 'self'; \
+     style-src 'self'; \
+     font-src 'self'; \
+     img-src 'self' https:; \
+     connect-src 'self'; \
+     form-action 'none'; \
+     base-uri 'none'; \
+     frame-ancestors 'none'; \
+     require-trusted-types-for 'script'; \
+     trusted-types 'none'";
+
+/// The policy sent with the admin console: everything it loads comes from
+/// files served by this server, images included.
+pub const CONSOLE_CONTENT_SECURITY_POLICY: &str = "default-src 'none'; \
      script-src 'self'; \
      style-src 'self'; \
      font-src 'self'; \
@@ -101,6 +117,7 @@ pub struct Pages {
     /// Pages whose path has a part that varies, beside the fixed ones.
     varying: &'static [&'static str],
     assets_path: &'static str,
+    policy: &'static str,
 }
 
 impl Pages {
@@ -117,6 +134,7 @@ impl Pages {
             PAGE_PATHS,
             &[PROVIDER_CALLBACK_PAGE],
             PAGE_ASSETS_PATH,
+            PAGES_CONTENT_SECURITY_POLICY,
         )
     }
 
@@ -128,7 +146,13 @@ impl Pages {
     /// Returns an error naming the directory if `index.html` cannot be
     /// read from it.
     pub fn load_console(directory: &Path) -> io::Result<Self> {
-        Self::read(directory, CONSOLE_PATHS, &[], CONSOLE_ASSETS_PATH)
+        Self::read(
+            directory,
+            CONSOLE_PATHS,
+            &[],
+            CONSOLE_ASSETS_PATH,
+            CONSOLE_CONTENT_SECURITY_POLICY,
+        )
     }
 
     fn read(
@@ -136,6 +160,7 @@ impl Pages {
         paths: &'static [&'static str],
         varying: &'static [&'static str],
         assets_path: &'static str,
+        policy: &'static str,
     ) -> io::Result<Self> {
         let index = std::fs::read_to_string(directory.join("index.html")).map_err(|error| {
             io::Error::new(
@@ -152,6 +177,7 @@ impl Pages {
             paths,
             varying,
             assets_path,
+            policy,
         })
     }
 
@@ -161,7 +187,7 @@ impl Pages {
         for path in self.paths.iter().chain(self.varying) {
             router = router.route(path, get(page));
         }
-        router.with_state(self.index.clone())
+        router.with_state((self.index.clone(), self.policy))
     }
 
     /// The routes of the application's files, to be mounted at the root.
@@ -175,14 +201,11 @@ impl Pages {
     }
 }
 
-async fn page(State(index): State<Arc<str>>) -> Response {
+async fn page(State((index, policy)): State<(Arc<str>, &'static str)>) -> Response {
     (
         [
             (header::CONTENT_TYPE, "text/html; charset=utf-8"),
-            (
-                header::CONTENT_SECURITY_POLICY,
-                PAGES_CONTENT_SECURITY_POLICY,
-            ),
+            (header::CONTENT_SECURITY_POLICY, policy),
             // The browser asks every time whether the page changed: it
             // names the files to load, and those names change.
             (header::CACHE_CONTROL, "no-cache"),

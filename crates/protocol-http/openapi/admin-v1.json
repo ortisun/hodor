@@ -13932,7 +13932,13 @@
           "exchange_rules",
           "spiffe_id",
           "linkerd_identity",
-          "tls_client_certificate_bound_access_tokens"
+          "tls_client_certificate_bound_access_tokens",
+          "application_type",
+          "client_uri",
+          "logo_uri",
+          "policy_uri",
+          "tos_uri",
+          "registered"
         ],
         "properties": {
           "id": {
@@ -14226,6 +14232,58 @@
           "tls_client_certificate_bound_access_tokens": {
             "type": "boolean",
             "description": "Whether every access token of the client is bound to the certificate the proxy in front of Hodor forwards with its request (`cnf` with `x5t#S256`, RFC 8705), and for a public client its refresh tokens too. `false` unless set; never with `linkerd_identity`."
+          },
+          "application_type": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "enum": [
+              "web",
+              "native",
+              null
+            ],
+            "description": "`web` or `native`, as a registration named it; `null` for a client made by an administrator. A web client's redirect addresses are all HTTPS. Not set through this interface."
+          },
+          "client_uri": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uri",
+            "maxLength": 2000,
+            "description": "The client's home page, an HTTPS address a person is shown, as a registration named it; `null` otherwise. Not set through this interface."
+          },
+          "logo_uri": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uri",
+            "maxLength": 2000,
+            "description": "The client's logo, an HTTPS address a person is shown, as a registration named it; `null` otherwise. Not set through this interface."
+          },
+          "policy_uri": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uri",
+            "maxLength": 2000,
+            "description": "The client's privacy policy, an HTTPS address a person is shown, as a registration named it; `null` otherwise. Not set through this interface."
+          },
+          "tos_uri": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uri",
+            "maxLength": 2000,
+            "description": "The client's terms of service, an HTTPS address a person is shown, as a registration named it; `null` otherwise. Not set through this interface."
+          },
+          "registered": {
+            "type": "boolean",
+            "description": "Whether the client registered itself at the registration endpoint. Such a client is never first party, whatever its application says."
           }
         }
       },
@@ -14951,7 +15009,7 @@
               "type": "string",
               "maxLength": 200
             },
-            "description": "Paths erased from the input before a record is stored: `subject.attributes.\u2026`, `asserted.\u2026`, `resource.attributes.\u2026` or `context.attributes.\u2026`, with `*` alone as the last segment."
+            "description": "Paths erased from the input before a record is stored: `subject.attributes.…`, `asserted.…`, `resource.attributes.…` or `context.attributes.…`, with `*` alone as the last segment."
           },
           "retention_days": {
             "type": "integer",
@@ -16944,7 +17002,7 @@
             "minLength": 1,
             "maxLength": 255,
             "pattern": "^[a-z0-9._-]+$",
-            "description": "The trust domain's name, as in `spiffe://<name>/\u2026`. Unique in the tenant; it never changes."
+            "description": "The trust domain's name, as in `spiffe://<name>/…`. Unique in the tenant; it never changes."
           },
           "source": {
             "type": "string",

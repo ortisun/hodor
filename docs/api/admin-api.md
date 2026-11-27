@@ -766,6 +766,12 @@ A client:
   "spiffe_id": null,
   "linkerd_identity": null,
   "tls_client_certificate_bound_access_tokens": false,
+  "application_type": null,
+  "client_uri": null,
+  "logo_uri": null,
+  "policy_uri": null,
+  "tos_uri": null,
+  "registered": false,
   "token_policy": {
     "access_token_seconds": 300,
     "id_token_seconds": 300,
@@ -782,7 +788,7 @@ A client:
 }
 ```
 
-`id` is the `client_id` the client sends. `secrets` lists the secrets that exist, by identifier and expiry, never the secret or its hash. `keys` lists the public keys Hodor keeps, each as `{ "kid": "…", "jwk": { … }, "added_at": "…" }`. `jwks_uri` is the address where a client using `private_key_jwt` publishes its keys itself, or `null`; a client with one has no `keys`, and what its address answers is never shown. `spiffe_id` is the SPIFFE identifier of a client using `spiffe_jwt` or `spiffe_x509`, or using `tls_client_auth` bound to one, and `linkerd_identity` the Linkerd identity of a client using `linkerd_identity`, or using `tls_client_auth` bound to one; each is `null` for any other. `tls_client_certificate_bound_access_tokens` says whether the client's access tokens are bound to a certificate.
+`id` is the `client_id` the client sends. `secrets` lists the secrets that exist, by identifier and expiry, never the secret or its hash. `keys` lists the public keys Hodor keeps, each as `{ "kid": "…", "jwk": { … }, "added_at": "…" }`. `jwks_uri` is the address where a client using `private_key_jwt` publishes its keys itself, or `null`; a client with one has no `keys`, and what its address answers is never shown. `spiffe_id` is the SPIFFE identifier of a client using `spiffe_jwt` or `spiffe_x509`, or using `tls_client_auth` bound to one, and `linkerd_identity` the Linkerd identity of a client using `linkerd_identity`, or using `tls_client_auth` bound to one; each is `null` for any other. `tls_client_certificate_bound_access_tokens` says whether the client's access tokens are bound to a certificate. `registered` says whether the client registered itself at [the registration endpoint](../architecture/contexts/oauth.md#the-registration-endpoint); such a client is never first party. `application_type`, `web` or `native`, and the [addresses a person is shown](../architecture/contexts/oauth.md#addresses-a-person-is-shown), `client_uri`, `logo_uri`, `policy_uri` and `tos_uri`, are what a registration named, and `null` for a client made here: this interface shows them and does not set them, and a change made here keeps them.
 
 `POST /applications/{application_id}/clients` with:
 

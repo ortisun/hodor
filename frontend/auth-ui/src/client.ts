@@ -112,12 +112,35 @@ export type AskedScope =
   | { kind: "openid"; scope: string }
   | { kind: "resource"; scope: string; description: string; resourceServer: string };
 
+/**
+ * What an application that registered itself says of itself. Nobody
+ * checked it: the page shows it as the application's own words.
+ */
+export interface SelfDescription {
+  /** Its home page. */
+  clientUri: string | null;
+  /** An image of its logo. */
+  logoUri: string | null;
+  /** Its privacy policy. */
+  policyUri: string | null;
+  /** Its terms of service. */
+  tosUri: string | null;
+}
+
 /** What an application's request asks the person to agree to. */
 export interface ConsentQuestion {
+  /** The application's name; for one that registered itself, the name it gave itself. */
   application: string;
   scopes: AskedScope[];
   /** Whether it asks to keep access when the person is not there. */
   offlineAccess: boolean;
+  /** For an application that registered itself, what it says of itself. */
+  registered: SelfDescription | null;
+}
+
+/** An address the server gave, only when it is HTTPS: nothing else is loaded or linked to. */
+function httpsAddress(value: unknown): string | null {
+  return typeof value === "string" && value.startsWith("https://") ? value : null;
 }
 
 /** An application the person agreed to. */
@@ -567,7 +590,16 @@ export class Client {
         },
       ];
     });
-    return { application, scopes, offlineAccess: reply.body["offline_access"] === true };
+    const registered: SelfDescription | null =
+      reply.body["registered"] === true
+        ? {
+            clientUri: httpsAddress(reply.body["client_uri"]),
+            logoUri: httpsAddress(reply.body["logo_uri"]),
+            policyUri: httpsAddress(reply.body["policy_uri"]),
+            tosUri: httpsAddress(reply.body["tos_uri"]),
+          }
+        : null;
+    return { application, scopes, offlineAccess: reply.body["offline_access"] === true, registered };
   }
 
   /**

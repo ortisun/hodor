@@ -6,8 +6,9 @@ use axum::body::Body;
 use axum::http::{HeaderMap, Method, Request, StatusCode, header};
 use hodor_kernel::{DomainError, TenantContext, TenantId};
 use hodor_protocol_http::{
-    CONSOLE_ASSETS_PATH, CONSOLE_PATHS, Limits, PAGE_PATHS, PAGES_CONTENT_SECURITY_POLICY, Pages,
-    ResolvedTenant, TenantResolver, TenantStatus, public_router,
+    CONSOLE_ASSETS_PATH, CONSOLE_CONTENT_SECURITY_POLICY, CONSOLE_PATHS, Limits, PAGE_PATHS,
+    PAGES_CONTENT_SECURITY_POLICY, Pages, ResolvedTenant, TenantResolver, TenantStatus,
+    public_router,
 };
 use http_body_util::BodyExt as _;
 use std::path::{Path, PathBuf};
@@ -143,41 +144,52 @@ async fn every_page_is_answered_with_the_application_and_its_policy() {
     }
 }
 
-#[test]
-fn the_policy_allows_nothing_inline_and_nothing_from_elsewhere() {
-    let policy = PAGES_CONTENT_SECURITY_POLICY;
-    let directives: Vec<(&str, &str)> = policy
+/// The directives of a content security policy, by name.
+fn directives(policy: &str) -> Vec<(&str, &str)> {
+    policy
         .split(';')
         .map(|directive| {
             let directive = directive.trim();
             directive.split_once(' ').unwrap_or((directive, ""))
         })
-        .collect();
-    let value = |name: &str| {
-        directives
-            .iter()
-            .find(|(directive, _)| *directive == name)
-            .map(|(_, value)| *value)
-    };
+        .collect()
+}
 
+fn directive<'a>(directives: &[(&'a str, &'a str)], name: &str) -> Option<&'a str> {
+    directives
+        .iter()
+        .find(|(directive, _)| *directive == name)
+        .map(|(_, value)| *value)
+}
+
+fn assert_nothing_inline(policy: &str, images: &str) {
+    let directives = directives(policy);
+    let value = |name: &str| directive(&directives, name);
     assert_eq!(value("default-src"), Some("'none'"));
-    for name in [
-        "script-src",
-        "style-src",
-        "font-src",
-        "img-src",
-        "connect-src",
-    ] {
+    for name in ["script-src", "style-src", "font-src", "connect-src"] {
         assert_eq!(value(name), Some("'self'"), "{name}");
     }
+    assert_eq!(value("img-src"), Some(images));
     assert_eq!(value("form-action"), Some("'none'"));
     assert_eq!(value("base-uri"), Some("'none'"));
     assert_eq!(value("frame-ancestors"), Some("'none'"));
     assert_eq!(value("require-trusted-types-for"), Some("'script'"));
     assert_eq!(value("trusted-types"), Some("'none'"));
-    for forbidden in ["unsafe", "http:", "https:", "data:", "blob:", "*"] {
+    for forbidden in ["unsafe", "http:", "data:", "blob:", "*"] {
         assert!(!policy.contains(forbidden), "{forbidden}");
     }
+}
+
+#[test]
+fn the_policy_allows_nothing_inline_and_nothing_from_elsewhere() {
+    // The hosted pages load images from any HTTPS address, for the logo of
+    // a client that registered itself on the consent page; nothing else
+    // comes from elsewhere.
+    assert_nothing_inline(PAGES_CONTENT_SECURITY_POLICY, "'self' https:");
+    assert_eq!(PAGES_CONTENT_SECURITY_POLICY.matches("https:").count(), 1);
+    // The console loads nothing from elsewhere, images included.
+    assert_nothing_inline(CONSOLE_CONTENT_SECURITY_POLICY, "'self'");
+    assert!(!CONSOLE_CONTENT_SECURITY_POLICY.contains("https:"));
 }
 
 #[tokio::test]
@@ -399,7 +411,7 @@ async fn the_console_is_another_application_at_its_own_addresses() {
         assert_eq!(reply.body, "<p>console</p>", "{path}");
         assert_eq!(
             reply.header(header::CONTENT_SECURITY_POLICY),
-            PAGES_CONTENT_SECURITY_POLICY,
+            CONSOLE_CONTENT_SECURITY_POLICY,
             "{path}"
         );
         assert_eq!(reply.header(header::CACHE_CONTROL), "no-cache", "{path}");

@@ -35,7 +35,7 @@ pub mod api {
     };
     pub use crate::application::client_keys::{ClientKeySets, MAX_KEPT_KEY_SETS};
     pub use crate::application::consent::{
-        AskedScope, ConsentPorts, ConsentQuestion, ConsentService, ListedConsent,
+        AskedScope, ConsentPorts, ConsentQuestion, ConsentService, ListedConsent, SelfDescription,
     };
     pub use crate::application::introspection::{AccessTokenRegister, WorkloadTokens};
     pub use crate::application::logout::{LogoutPorts, LogoutRefusal, LogoutService};
@@ -56,7 +56,8 @@ pub mod api {
     };
     pub use crate::application::service::{
         ApplicationPorts, ApplicationService, ClientWithApplication, CreateClient,
-        CreateResourceServer, RotateSecret,
+        CreateResourceServer, MOST_REGISTRATIONS_PER_ADDRESS, REGISTRATION_WINDOW, RegisterClient,
+        RotateSecret,
     };
     pub use crate::application::token::{IssuedTokens, Issuer, TokenPorts, TokenService};
     pub use crate::application::userinfo::{UserInfoAnswer, UserInfoPorts, UserInfoService};
@@ -92,9 +93,13 @@ pub mod api {
         add_asked_claims, read_claims,
     };
     pub use crate::domain::client::{
-        AuthenticationMethod, Client, ClientId, ClientSettings, ClientSnapshot, ClientType,
-        ExchangeRule, GrantType, IdTokenAlgorithm, MAX_CLIENTS, MAX_EXCHANGE_RULES,
-        MAX_REDIRECT_URIS, MAX_SCOPES, RequestObjectAlgorithm, TOKEN_EXCHANGE_GRANT, TokenPolicy,
+        ApplicationType, AuthenticationMethod, Client, ClientId, ClientSettings, ClientSnapshot,
+        ClientType, ExchangeRule, GrantType, IdTokenAlgorithm, MAX_CLIENTS, MAX_EXCHANGE_RULES,
+        MAX_REDIRECT_URIS, MAX_SCOPES, RequestObjectAlgorithm, SelfRegistration,
+        TOKEN_EXCHANGE_GRANT, TokenPolicy,
+    };
+    pub use crate::domain::client_metadata::{
+        ClientMetadata, DEFAULT_REGISTERED_CLIENT_NAME, read_client_metadata, registration_answer,
     };
     pub use crate::domain::consent::{
         Consent, ConsentAction, ConsentActor, ConsentAnswer, ConsentHistoryEntry, ConsentWait,
@@ -140,7 +145,9 @@ pub mod api {
         is_multi_factor, left_half_hash, person_claim, read_access_token, scope_of_claim,
         userinfo_claims, userinfo_claims_with,
     };
-    pub use crate::domain::openid::{prompt_values_supported, with_registration};
+    pub use crate::domain::openid::{
+        prompt_values_supported, with_registration, with_registration_endpoint,
+    };
     pub use crate::domain::pairwise::{
         HmacSha256, MAX_SECTOR_DOCUMENT_BYTES, MAX_SECTOR_IDENTIFIER_URI_LENGTH,
         PAIRWISE_SECRET_BYTES, PAIRWISE_SECRET_PURPOSE, PairwiseSecret, SECTOR_DOCUMENT_TIME_LIMIT,
@@ -161,7 +168,7 @@ pub mod api {
         ClientRegistration, ClientRegistrationSnapshot, DEFAULT_MOST_REGISTERED_CLIENTS,
         MAX_POLICY_HOSTS, MAX_POLICY_SCOPES, MOST_REGISTERED_CLIENTS, REGISTERABLE_METHODS,
         RegistrationPolicy, RegistrationRequest, RegistrationSettings, RegistrationWay,
-        check_registration, is_policy_host, ways_from_stored,
+        check_redirect_hosts, check_registration, is_policy_host, ways_from_stored,
     };
     pub use crate::domain::request_object::{
         MAX_REQUEST_OBJECT_BYTES, RequestObjectCheck, RequestObjectRefusal, check_request_object,

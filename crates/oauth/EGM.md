@@ -35,7 +35,10 @@ policy and its initial access tokens, with the admission the registration
 endpoint asks for; and Issue-124: the `claims` parameter, which puts a
 person's claims in the ID token or at UserInfo as asked when a scope
 consented to for the client covers them, reads an essential `acr` as
-`acr_values` and a `sub` with a value as the person expected. Storage,
+`acr_values` and a `sub` with a value as the person expected; and Issue-133: the registration endpoint's use case,
+reading a client's metadata into its settings, checking them as an
+administrator's change and against the policy, and storing the client
+under the bounds, never first party. Storage,
 randomness, hashing, signature checking and time are reached through ports
 and kernel traits.
 

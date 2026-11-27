@@ -634,13 +634,15 @@ Each needs a valid session cookie, and is answered `401` with `session.not_authe
     { "scope": "invoices:read", "kind": "resource", "description": "Read your invoices", "resource_server": "Invoices" }
   ],
   "offline_access": false,
+  "registered": false,
   "csrf_token": "5b1e…"
 }
 ```
 
 - `kind` `openid` is a scope of OpenID Connect, which the page words in the person's language by its name;
 - `kind` `resource` is a scope of a resource server, with the description and the resource server's name as the tenant's administrator wrote them;
-- `offline_access` says the application asks to keep access when the person is not there. It is not repeated in `scopes`.
+- `offline_access` says the application asks to keep access when the person is not there. It is not repeated in `scopes`;
+- `registered` says the client [registered itself](../architecture/contexts/oauth.md#a-registered-client). `application` is then the client's own `client_name`, which no administrator checked, and the answer carries what the client named of [the addresses a person is shown](../architecture/contexts/oauth.md#addresses-a-person-is-shown), `client_uri`, `logo_uri`, `policy_uri` and `tos_uri`, each left out when it has none. A client an administrator made carries none of them, and `application` is its application's name.
 
 Without the cookie, with a request that does not wait for consent, that is another browser's, another session's or already answered, the answer is `404` with `oauth.consent_request_not_found`, in the same way for every reason.
 
@@ -656,7 +658,7 @@ The page goes there, and the authorization endpoint answers the application: wit
 
 ### The person's consents
 
-`GET /interaction/consents` lists the consents of the person that stand and have not expired, the most recently given first:
+`GET /interaction/consents` lists the consents of the person that stand and have not expired, the most recently given first, each `application` the application's name, or a registered client's own name:
 
 ```json
 {
