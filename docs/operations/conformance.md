@@ -1,27 +1,27 @@
 # OpenID conformance
 
-Hodor runs the [OpenID conformance suite](https://openid.net/certification/) of the OpenID Foundation against itself on every pull request: the **Basic OpenID Provider**, the **Config OpenID Provider** and the **Back-Channel OpenID Provider** plans, and the Basic and Back-Channel plans again with pairwise clients. Passing them is the exit criterion of Phase 2 in the [roadmap](../product/roadmap.md) and the acceptance of Issue-61 in [the epics](../product/epics.md#slice-o--openid-connect-epic-10). The Basic and Config plans with no test skipped and none ending in a warning are part of the acceptance of [Milestone 13](../product/epics.md#milestone-13-requests-that-say-what-they-need), Issue-126. The suite is the same one the OpenID Foundation uses to certify providers. Running it here is not a certification: nobody at the Foundation has looked at the results, and no certification has been asked for. [The target](#the-target) says which plans 0.5.0 and 0.6.0 add, and [how certification is obtained](certification.md) what a certification takes.
+Hodor runs the [OpenID conformance suite](https://openid.net/certification/) of the OpenID Foundation against itself in continuous integration, one plan in each job: the **core set** on every pull request, the **Basic OpenID Provider**, the **Config OpenID Provider** and the **Back-Channel OpenID Provider** plans and the Basic and Back-Channel plans again with pairwise clients; and **every plan** every night, on every pull request into `main` and on a pull request labelled `conformance: full`, as [when each plan runs](#when-each-plan-runs) says. Passing them is the exit criterion of Phase 2 in the [roadmap](../product/roadmap.md) and the acceptance of Issue-61 in [the epics](../product/epics.md#slice-o--openid-connect-epic-10). The Basic and Config plans with no test skipped and none ending in a warning are part of the acceptance of [Milestone 13](../product/epics.md#milestone-13-requests-that-say-what-they-need), Issue-126. The suite is the same one the OpenID Foundation uses to certify providers. Running it here is not a certification: nobody at the Foundation has looked at the results, and no certification has been asked for. [The target](#the-target) says which plans 0.5.0 and 0.6.0 add, and [how certification is obtained](certification.md) what a certification takes.
 
 **Not for anything real.** The stack it runs in has passwords and keys written in the repository, and both sides trust whatever certificate the other shows.
 
 ## What runs
 
-| Plan | Variant | Tests |
-|---|---|---|
-| `oidcc-basic-certification-test-plan` | `server_metadata=discovery`, `client_registration=static_client` | 35 |
-| `oidcc-config-certification-test-plan` | as the plan sets it | 1 |
-| `oidcc-backchannel-rp-initiated-logout-certification-test-plan` | `client_registration=static_client`, `response_type=code`; the plan sets the rest | 2 |
-| `oidcc-basic-certification-test-plan`, with pairwise clients | as the first | 35 |
-| `oidcc-backchannel-rp-initiated-logout-certification-test-plan`, with a pairwise client | as the third | 2 |
+Each plan has a short name, the name `deploy/conformance/plans.json` and the script know it by, and belongs to the core set or runs only with every plan:
 
-Two more plans run when asked for, outside continuous integration until Issue-131 adds them there ([running it](#running-it)):
+| Short name | Plan | Variant | Tests | Set |
+|---|---|---|---|---|
+| `basic` | `oidcc-basic-certification-test-plan` | `server_metadata=discovery`, `client_registration=static_client` | 35 | Core |
+| `config` | `oidcc-config-certification-test-plan` | as the plan sets it | 1 | Core |
+| `backchannel` | `oidcc-backchannel-rp-initiated-logout-certification-test-plan` | `client_registration=static_client`, `response_type=code`; the plan sets the rest | 2 | Core |
+| `basic-pairwise` | `oidcc-basic-certification-test-plan`, with pairwise clients | as `basic` | 35 | Core |
+| `backchannel-pairwise` | `oidcc-backchannel-rp-initiated-logout-certification-test-plan`, with a pairwise client | as `backchannel` | 2 | Core |
+| `formpost-basic` | `oidcc-formpost-basic-certification-test-plan` | as `basic` | 35 | Every plan |
+| `implicit-id-token` | `oidcc-implicit-certification-test-plan` | `server_metadata=discovery`, `client_registration=static_client`; the tests of `response_type=id_token` | 25 | Every plan |
+| `hybrid-code-id-token` | `oidcc-hybrid-certification-test-plan` | `server_metadata=discovery`, `client_registration=static_client`; the tests of `response_type=code id_token` | 34 | Every plan |
 
-| Plan | Variant | Tests |
-|---|---|---|
-| `oidcc-implicit-certification-test-plan` | `server_metadata=discovery`, `client_registration=static_client`; the tests of `response_type=id_token` | 25 |
-| `oidcc-hybrid-certification-test-plan` | `server_metadata=discovery`, `client_registration=static_client`; the tests of `response_type=code id_token` | 34 |
+The core set is the five plans that ran on every pull request before the plans were split into jobs: the Basic, Config and Back-Channel plans that [Decision 0051](../decisions/0051-conformance-runs-and-certification.md) names for it, and the pairwise configuration of the Basic and Back-Channel plans, which is the acceptance of Issue-98 and stays on every pull request so that no check is lost. The Dynamic plan with `code`, which the decision also names, joins the core set when it runs, with Issue-137.
 
-They are the plans of the ID token through the browser, Issue-127 ([response types and modes](../architecture/contexts/oauth.md#response-types-and-modes)). Each plan holds the tests of every response type of its profile and sets the type of each test itself, so a variant cannot choose one: the script creates the whole plan and runs only the tests of `id_token`, and of `code id_token`. The other response types of the two profiles, `id_token token`, `code token` and `code id_token token`, return an access token through the browser and wait for Issue-128. With `id_token` the tests of the scopes find the person's claims in the ID token, as no access token comes with it; with `code id_token` the suite checks `c_hash` against the code, redeems it, and reads UserInfo with the access token.
+The Implicit and Hybrid plans are the plans of the ID token through the browser, Issue-127 ([response types and modes](../architecture/contexts/oauth.md#response-types-and-modes)). Each plan holds the tests of every response type of its profile and sets the type of each test itself, so a variant cannot choose one: the script creates the whole plan and runs only the tests of `id_token`, and of `code id_token`. The other response types of the two profiles, `id_token token`, `code token` and `code id_token token`, return an access token through the browser and wait for Issue-128. With `id_token` the tests of the scopes find the person's claims in the ID token, as no access token comes with it; with `code id_token` the suite checks `c_hash` against the code, redeems it, and reads UserInfo with the access token.
 
 The back-channel plan is the acceptance of Issue-100 ([back-channel logout](../architecture/contexts/oauth.md#back-channel-logout)). Its first test reads discovery, which must say `backchannel_logout_supported` and `backchannel_logout_session_supported`. Its second signs the person in, sends the browser to the end-session endpoint with the ID token as `id_token_hint`, and waits for both the browser at the post-logout redirect address and a logout token at its back-channel logout address, in either order; it checks the token's signature against the tenant's key set, its claims, that its `sub` and `sid` are those of the ID token, and then that a new request with `prompt=none` is answered `login_required`. A token that never arrives does not fail the test by itself: the test keeps waiting, and the script stops waiting after five minutes and counts the test as unfinished, which fails the run.
 
@@ -31,11 +31,34 @@ The back-channel plan is the acceptance of Issue-100 ([back-channel logout](../a
 
 **Pushed authorization requests** (Issue-121, [pushed authorization requests](../architecture/contexts/oauth.md#pushed-authorization-requests)) are tested by no plan that runs here. The Basic, Config, Back-Channel and Form Post plans never push a request; discovery names the endpoint for them as for any client, and says `require_pushed_authorization_requests` `false`, as the conformance tenant leaves it, so their requests that are not pushed are answered. The plans that push, FAPI 1.0 Advanced in its pushed variant and FAPI 2.0, also need tokens bound to a certificate or by DPoP, which are not built; they join the run with their milestones. Until then, pushing, the reference used once, its life, its client and its tenant are tried by the tests of the server.
 
-**The Form Post plan** of the code flow, `oidcc-formpost-basic-certification-test-plan`, is the acceptance of Issue-129 ([response modes](../architecture/contexts/oauth.md#response-modes)), and runs only when asked for, `CONFORMANCE_PLANS=formpost-basic`, until Issue-131 adds it to continuous integration. It is the Basic plan's 35 tests with `response_mode=form_post` on every request, against the same clients, configuration and variants: every answer and every error reaches the suite's redirect address posted by Hodor's page of `form_post`, and the suite reads it from the body of the post. Run against an image of the change that built the mode, it ended as the Basic plan did then: 26 passed, with three warnings, three skips and three reviews, in the same tests of either plan. The warnings and the skips have since gone from the Basic plan, with Issues 123 to 125; the Form Post plan has not been run again since.
+**The Form Post plan** of the code flow, `oidcc-formpost-basic-certification-test-plan`, is the acceptance of Issue-129 ([response modes](../architecture/contexts/oauth.md#response-modes)), and runs with every plan, or when asked for, `CONFORMANCE_PLANS=formpost-basic`. It is the Basic plan's 35 tests with `response_mode=form_post` on every request, against the same clients, configuration and variants: every answer and every error reaches the suite's redirect address posted by Hodor's page of `form_post`, and the suite reads it from the body of the post. Run against an image of the change that built the mode, it ended as the Basic plan did then: 26 passed, with three warnings, three skips and three reviews, in the same tests of either plan. The warnings and the skips have since gone from the Basic plan, with Issues 123 to 125; the Form Post plan has not been run again since.
 
 **Request objects at a client's address** (Issue-122, [request objects at a client's address](../architecture/contexts/oauth.md#request-objects-at-a-clients-address)) are tested by no plan that runs here either. The suite's tests of them, `oidcc-request-uri-unsigned` and `oidcc-request-uri-signed-rs256` and the Basic plan's `oidcc-request-uri-unsigned-supported-correctly-or-rejected-as-unsupported`, run only with a client the suite registers itself, which can name the suite's own address among its `request_uris`; with the static clients of this run they are not part of the plan. Discovery now says `request_uri_parameter_supported` and `require_request_uri_registration` `true`, which the Config plan reads without remark. They join the run with dynamic client registration ([Milestone 15](../product/epics.md#milestone-15-clients-that-register-themselves)); until then the registered address, the private network, the hash, the size, the time and the redirect are tried by the tests of the server.
 
 The suite is the image `registry.gitlab.com/openid/conformance-suite:release-v5.3.5`, with its web server `registry.gitlab.com/openid/conformance-suite/nginx:release-v5.3.5` and MongoDB 6.0.13: the releases of 2026-11-24, which [the target](#the-target) was read from, pinned by tag in `deploy/conformance/compose.yaml`. The stack moved to it from release 5.3.4 with Issue-126, the acceptance of Milestone 13.
+
+## When each plan runs
+
+[Decision 0051](../decisions/0051-conformance-runs-and-certification.md) says when each set runs; the workflow `.github/workflows/conformance.yml` does it.
+
+| When | What runs |
+|---|---|
+| Every pull request into `develop`, and every push to `develop` and `main` | The core set |
+| A pull request into `develop` labelled `conformance: full`, on the label being added and on every push while it is on | Every plan |
+| Every pull request into `main` | Every plan |
+| Every night at 03:17, Coordinated Universal Time, on the latest commit of `develop` | Every plan |
+
+**One plan, one job, one image.** The workflow's first job, `Choose the plans`, reads the event that started the run and prints the plans of the set it calls for, with `deploy/conformance/runs.mjs choose`. The job `Image for the conformance plans` builds the image once, from the commit that job chose, and keeps it as the artifact `hodor-conformance-image` for one day. Then each plan runs in a job of its own, `OpenID conformance (basic)` and so on, side by side: the job loads the image, starts its own stack from `deploy/conformance/compose.yaml`, runs its one plan with `CONFORMANCE_PLANS` set to its short name, and keeps its results as the artifact `conformance-results-basic` and so on, for 14 days. A plan that fails fails its own job, and the others go on. The job `Certification deployment against Hodor` starts Hodor alone from the same image, without the suite, and runs [the certification script](certification-deployment.md#how-it-is-tested) against it, whichever set runs.
+
+**The list of plans is data.** `deploy/conformance/plans.json` names each plan by its short name, with `core` true for the plans of the core set. The workflow names no plan: a plan added later is its runner in `run.mjs`, its entry in `plans.json` and its [expected results](#expected-results), and it gets its job in the next run. `runs.mjs` and the script refuse a `plans.json` with a name given twice, a name that is not lowercase words joined by hyphens, or no plan in the core set, and the script refuses a plan of `plans.json` it has no runner for, and a runner `plans.json` does not name. The tests of `runs.mjs`, `node --test deploy/conformance/test/`, run in the job `Choose the plans` before it chooses.
+
+**Every plan on a pull request.** A change that may break a plan outside the core set, such as one to the response types, the response modes or logout, runs every plan when someone with the right to triage the pull request gives it the label `conformance: full`. Adding the label starts every plan at once, in place of the core set if it is still running; while the label is on, each push runs every plan again; once it is removed, the next push runs the core set. Adding any other label runs nothing and stops nothing. A pull request into `main` runs every plan with or without the label, since it is the gate of a release ([releases](../development/conventions.md#releases)).
+
+**When the night's run fails**, its last job, `Report the nightly failure`, opens an issue titled "The nightly conformance run failed". The issue names each plan that failed and, for each, every test that did not end as [expected](#expected-results), with the result it ended with, or says that the plan ended before it wrote its results, as when its stack did not start; it links the run, whose jobs and artifacts hold the rest. While that issue is open, a later night that fails adds a comment to it rather than another issue; once it is fixed and closed, the next failure opens a new one. Only the night's run opens an issue: a pull request's failure is in its checks.
+
+**The night's run starts from `main`.** GitHub starts a scheduled workflow from the default branch, `main`, so the night's run begins once this workflow reaches `main` with the first release that carries it. It then checks out `develop`, so it runs the plans against what will be released next.
+
+**What it costs.** Every job starts its own stack and its own browser, which takes a few minutes before its plan begins, so the core set spends more runner minutes in five jobs than it did in one, and ends sooner, as its plans run side by side. The jobs are sized for GitHub's standard runners, one stack each.
 
 ## The target
 
@@ -127,7 +150,7 @@ HODOR_IMAGE=hodor:conformance docker compose -f deploy/conformance/compose.yaml 
 cd deploy/conformance && npm ci && npx playwright install chromium && node run.mjs
 ```
 
-The script waits for the suite to start, which takes a minute or two, makes what it needs in Hodor, runs the five plans and prints one line per test with the address of its log in the suite, `https://localhost.emobix.co.uk:8443/log-detail.html?log=…`, which a browser on the machine can open while the stack runs. `CONFORMANCE_ONLY=oidcc-server,oidcc-prompt-login` runs only the tests named; `CONFORMANCE_REPORT=results.json` writes the results to a file; `CONFORMANCE_PLANS=formpost-basic` runs only the plans named, by the short names of the script (`basic`, `config`, `backchannel`, `basic-pairwise`, `backchannel-pairwise`, `formpost-basic`, `implicit-id-token`, `hybrid-code-id-token`), the first five unless given, as in continuous integration; `CONFORMANCE_PLANS=implicit-id-token,hybrid-code-id-token` runs the plans of the ID token through the browser. `HODOR_IMAGE` must be set for the script as for Compose, since it runs `hodor-cli` through the same file.
+The script waits for the suite to start, which takes a minute or two, makes what it needs in Hodor, runs the plans of the core set and prints one line per test with the address of its log in the suite, `https://localhost.emobix.co.uk:8443/log-detail.html?log=…`, which a browser on the machine can open while the stack runs. `CONFORMANCE_ONLY=oidcc-server,oidcc-prompt-login` runs only the tests named; `CONFORMANCE_REPORT=results.json` writes the results to a file; `CONFORMANCE_PLANS=formpost-basic` runs only the plans named, by their short names in `deploy/conformance/plans.json` ([what runs](#what-runs)), the core set unless given; `CONFORMANCE_PLANS=implicit-id-token,hybrid-code-id-token` runs the plans of the ID token through the browser. `HODOR_IMAGE` must be set for the script as for Compose, since it runs `hodor-cli` through the same file.
 
 It ends in failure when a test ends in a result other than `PASSED` that [`deploy/conformance/expected.json`](#expected-results) does not name for it. A test that the suite left unfinished or interrupted is a failure.
 
@@ -135,16 +158,18 @@ It ends in failure when a test ends in a result other than `PASSED` that [`deplo
 HODOR_IMAGE=hodor:conformance docker compose -f deploy/conformance/compose.yaml down --volumes
 ```
 
-Continuous integration does the same in the job `OpenID conformance` of `.github/workflows/ci.yml`, and keeps the results as an artifact of the run.
+Continuous integration does the same for one plan in each job, as [when each plan runs](#when-each-plan-runs) says, and keeps each plan's results as an artifact of the run.
 
 ## Expected results
 
-Every test of the five plans, and of the Form Post plan when it runs, passes except those below, in each plan they belong to; so does every test of the Implicit and Hybrid plans, run against the image of Issue-127 before it was joined with Issues 129 and 130: of the 25 of `id_token`, 20 pass, four end in review and one is skipped; of the 34 of `code id_token`, 28 pass, four end in review, one in a warning and one is skipped, the same tests and for the same reasons as in the Basic plan. Each ends in a result the suite counts as allowed, and `deploy/conformance/expected.json` names it with the same reason; a test that ends otherwise fails the run.
+Every test of the core set and of the Form Post plan passes except those below, in the plans the table names; so does every test of the Implicit and Hybrid plans, run against the image of Issue-127 before it was joined with Issues 129 and 130: of the 25 of `id_token`, 20 pass, four end in review and one is skipped; of the 34 of `code id_token`, 28 pass, four end in review, one in a warning and one is skipped, the same tests and for the same reasons as in the Basic plan. Each ends in a result the suite counts as allowed, and `deploy/conformance/expected.json` names it with the same reason and the same plans; a test that ends otherwise fails the plan's job.
 
-| Test | Result | Why |
-|---|---|---|
-| `oidcc-prompt-login`, `oidcc-max-age-1` | Review | The test passes, and keeps a screenshot of the second sign-in page it made Hodor show, for a person to look at |
-| `oidcc-ensure-registered-redirect-uri` | Review | Hodor shows its own error page and never sends the browser to an address it cannot trust; the suite keeps a screenshot of that page for a person to look at |
+| Test | Result | Plans | Why |
+|---|---|---|---|
+| `oidcc-prompt-login`, `oidcc-max-age-1` | Review | `basic`, `basic-pairwise`, `formpost-basic`, `implicit-id-token`, `hybrid-code-id-token` | The test passes, and keeps a screenshot of the second sign-in page it made Hodor show, for a person to look at |
+| `oidcc-ensure-registered-redirect-uri` | Review | as above | Hodor shows its own error page and never sends the browser to an address it cannot trust; the suite keeps a screenshot of that page for a person to look at |
+
+**Per plan and variant.** `expected.json` names, for each test that may end other than passed, each result it may end with, why, and the plans it may end so in, by their short names, each a plan and its variant. A result named for one plan fails the test in any other: a review that the Basic plan's screenshot explains does not excuse the same test of a plan that has not been read. The script reads the file before it runs anything, and stops on a plan `plans.json` does not name, a result other than `REVIEW`, `WARNING` and `SKIPPED`, which are the results the Foundation counts toward a certification, or a result without its reason or its plans. A plan added later names itself beside each result it shares with the plans already there.
 
 **Nothing else is skipped or warned about.** No test of the Basic and Config plans, nor of the others that run, ends skipped or with a warning, as Issue-126 asks. The one test [the target](#the-target) names as skipped, the unsigned ID token's `oidcc-idtoken-unsigned`, is not among the Basic plan's 35 tests with static clients: the suite runs it with a client it registers itself, which Hodor will answer with [Milestone 15](../product/epics.md#milestone-15-clients-that-register-themselves), and it will be skipped there, as Hodor never offers `none` for ID tokens.
 
@@ -154,7 +179,7 @@ The tests of the scopes, `oidcc-scope-profile`, `oidcc-scope-email`, `oidcc-scop
 
 A result of **Review** is the suite saying that a person must look at the screenshots before the test can count toward a certification. Here nobody does: the screenshots are taken and given to the suite, and the run accepts the result. The pages they show are tested on their own by the browser tests of the hosted pages.
 
-A full run takes about 30 minutes on a laptop: about 29 for the 75 tests and one for the suite to start. In continuous integration, building the image adds its own time.
+The core set takes about 30 minutes on a laptop, one plan after the other: about 29 for its 75 tests and one for the suite to start. In continuous integration its plans run side by side, after the image is built, and the Basic plans, of 35 tests each, take the longest.
 
 ## What the suite found in Hodor
 
