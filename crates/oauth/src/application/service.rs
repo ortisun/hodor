@@ -148,6 +148,32 @@ fn request_address_forbidden() -> DomainError {
     )
 }
 
+/// What the guarded client said of a key set address, in the OAuth
+/// context's words.
+fn refused_jwks_address(error: DomainError) -> DomainError {
+    match error.code() {
+        "http.url_invalid" => DomainError::invalid(
+            "oauth.client_jwks_uri_invalid",
+            "a key set address is an HTTPS address of at most 2000 characters, with a host and \
+             without a name and password or a fragment, for a client using `private_key_jwt` only",
+        )
+        .with_detail("the guarded client cannot call the address"),
+        "http.destination_forbidden" => jwks_address_forbidden(),
+        "http.unreachable" => DomainError::invalid(
+            "oauth.client_jwks_uri_unresolvable",
+            "the address's name does not resolve to any address",
+        ),
+        _ => error,
+    }
+}
+
+fn jwks_address_forbidden() -> DomainError {
+    DomainError::invalid(
+        "oauth.client_jwks_uri_forbidden",
+        "the address leads somewhere Hodor may not call: it must be public",
+    )
+}
+
 fn sector_forbidden() -> DomainError {
     DomainError::invalid(
         "oauth.client_sector_identifier_uri_forbidden",
@@ -299,6 +325,17 @@ impl ApplicationService {
                 .map_err(refused_request_address)?;
         }
         Ok(())
+    }
+
+    /// Whether a key set address could be called now. Nothing is fetched:
+    /// a client may publish its keys after it is saved. See
+    /// `docs/architecture/contexts/oauth.md`, "Keys at the client's
+    /// address".
+    async fn check_jwks_address(&self, url: &str) -> Result<(), DomainError> {
+        let Some(destinations) = &self.destinations else {
+            return Err(jwks_address_forbidden());
+        };
+        destinations.check(url).await.map_err(refused_jwks_address)
     }
 
     /// Whether a back-channel logout address could be called now. See
@@ -518,6 +555,9 @@ impl ApplicationService {
         if let Some(url) = client.backchannel_logout_uri() {
             self.check_backchannel_address(url).await?;
         }
+        if let Some(url) = client.jwks_uri() {
+            self.check_jwks_address(url).await?;
+        }
         let settings = &client.snapshot().settings;
         self.check_request_addresses(&settings.request_uris.iter().collect::<Vec<_>>())
             .await?;
@@ -601,6 +641,12 @@ impl ApplicationService {
             .filter(|address| !current.snapshot().settings.request_uris.contains(address))
             .collect();
         self.check_request_addresses(&new_addresses).await?;
+        // So is only a new or changed key set address.
+        if let Some(url) = settings.jwks_uri.as_deref()
+            && current.jwks_uri() != Some(url)
+        {
+            self.check_jwks_address(url).await?;
+        }
         // The sector identifier document is fetched again only when what it
         // vouches for changes: its address, the redirect addresses it must
         // list, or the client becoming pairwise.

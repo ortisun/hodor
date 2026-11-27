@@ -7408,3 +7408,194 @@ async fn a_sub_asked_through_claims_never_names_the_same_person_of_another_tenan
     let identity = claims_of(tokens["id_token"].as_str().expect("an ID token"));
     assert_eq!(identity["sub"], acme.ana.to_string());
 }
+
+/// A P-256 key named `kid`: its PKCS #8 document, to sign with, and its
+/// public part as a JSON Web Key, to publish.
+fn published_key(kid: &str) -> (Vec<u8>, serde_json::Value) {
+    use aws_lc_rs::rand::SystemRandom;
+    use aws_lc_rs::signature::{ECDSA_P256_SHA256_FIXED_SIGNING, EcdsaKeyPair, KeyPair as _};
+    use base64::Engine as _;
+    use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+    let pkcs8 =
+        EcdsaKeyPair::generate_pkcs8(&ECDSA_P256_SHA256_FIXED_SIGNING, &SystemRandom::new())
+            .expect("key");
+    let pair =
+        EcdsaKeyPair::from_pkcs8(&ECDSA_P256_SHA256_FIXED_SIGNING, pkcs8.as_ref()).expect("pair");
+    let point = pair.public_key().as_ref();
+    let jwk = serde_json::json!({
+        "kty": "EC", "crv": "P-256", "kid": kid, "use": "sig",
+        "x": URL_SAFE_NO_PAD.encode(&point[1..33]),
+        "y": URL_SAFE_NO_PAD.encode(&point[33..65]),
+    });
+    (pkcs8.as_ref().to_vec(), jwk)
+}
+
+/// A client of `tenant` using `private_key_jwt` whose keys are at
+/// `address`, made through the administration interface.
+async fn client_at(world: &World, tenant: &Tenant, address: &str) -> String {
+    let (status, application) = world
+        .admin(
+            tenant,
+            &tenant.administrator_token,
+            Method::POST,
+            "/applications",
+            Some(serde_json::json!({ "name": "Payroll", "first_party": true })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::CREATED, "{application}");
+    let (status, client) = world
+        .admin(
+            tenant,
+            &tenant.administrator_token,
+            Method::POST,
+            &format!(
+                "/applications/{}/clients",
+                application["id"].as_str().expect("id")
+            ),
+            Some(serde_json::json!({
+                "name": "Payroll export",
+                "type": "confidential",
+                "authentication_method": "private_key_jwt",
+                "grant_types": ["client_credentials"],
+                "jwks_uri": address,
+            })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::CREATED, "{client}");
+    assert_eq!(client["jwks_uri"], address);
+    client["id"].as_str().expect("id").to_owned()
+}
+
+/// An assertion of `client` for `issuer`, signed with `key` and naming
+/// `kid`.
+fn assertion_of(client: &str, issuer: &str, kid: &str, key: &[u8]) -> String {
+    use aws_lc_rs::rand::SystemRandom;
+    use aws_lc_rs::signature::{ECDSA_P256_SHA256_FIXED_SIGNING, EcdsaKeyPair};
+    use base64::Engine as _;
+    use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("after 1970")
+        .as_secs();
+    let encode = |value: serde_json::Value| URL_SAFE_NO_PAD.encode(value.to_string());
+    let input = format!(
+        "{}.{}",
+        encode(serde_json::json!({"alg": "ES256", "kid": kid})),
+        encode(serde_json::json!({
+            "iss": client,
+            "sub": client,
+            "aud": issuer,
+            "exp": now + 60,
+            "jti": UserId::generate().to_string(),
+        }))
+    );
+    let pair = EcdsaKeyPair::from_pkcs8(&ECDSA_P256_SHA256_FIXED_SIGNING, key).expect("pair");
+    let signature = pair
+        .sign(&SystemRandom::new(), input.as_bytes())
+        .expect("signature");
+    format!("{input}.{}", URL_SAFE_NO_PAD.encode(signature.as_ref()))
+}
+
+/// The status of `tenant`'s introspection endpoint for a client that
+/// proves who it is with `assertion`, about a token nobody knows.
+async fn introspected_with(world: &World, tenant: &Tenant, assertion: &str) -> StatusCode {
+    Client::new()
+        .post(format!(
+            "{}/t/{}/oauth2/introspect",
+            world.server.base, tenant.slug
+        ))
+        .header("content-type", "application/x-www-form-urlencoded")
+        .body(
+            form_urlencoded::Serializer::new(String::new())
+                .extend_pairs([
+                    ("token", "unknown"),
+                    (
+                        "client_assertion_type",
+                        "urn:ietf:params:oauth:client-assertion-type:jwt-bearer",
+                    ),
+                    ("client_assertion", assertion),
+                ])
+                .finish(),
+        )
+        .send()
+        .await
+        .expect("response")
+        .status()
+}
+
+#[tokio::test]
+async fn one_tenants_client_keys_at_an_address_are_never_used_for_another_tenants_client() {
+    let endpoints = BundleEndpoints::default();
+    let address = endpoints.start().await;
+    let world = world_with(&[
+        ("HODOR_SECRET_KEYS", ROOT_KEY),
+        ("HODOR_OUTBOUND_DEVELOPMENT_HOSTS", address.as_str()),
+    ])
+    .await;
+    let (acme, globex) = (&world.acme, &world.globex);
+    // Both clients publish a key of the same `kid`, each its own.
+    let (acme_key, acme_jwk) = published_key("signing");
+    let (globex_key, globex_jwk) = published_key("signing");
+    endpoints.serve("/acme", &serde_json::json!({ "keys": [acme_jwk] }));
+    endpoints.serve("/globex", &serde_json::json!({ "keys": [globex_jwk] }));
+    let acme_client = client_at(&world, acme, &format!("http://{address}/acme")).await;
+    let globex_client = client_at(&world, globex, &format!("http://{address}/globex")).await;
+    assert!(endpoints.asked().is_empty(), "nothing fetched when saved");
+    let acme_issuer = "http://localhost:8080/t/acme";
+    let globex_issuer = "http://localhost:8080/t/globex";
+
+    // Acme's client proves who it is at Acme with its key, fetched from
+    // Acme's address alone.
+    let acme_assertion = assertion_of(&acme_client, acme_issuer, "signing", &acme_key);
+    assert_eq!(
+        introspected_with(&world, acme, &acme_assertion).await,
+        StatusCode::OK
+    );
+    assert_eq!(endpoints.asked(), ["/acme"]);
+
+    // At Globex, Acme's client is nobody, and no address is asked.
+    assert_eq!(
+        introspected_with(
+            &world,
+            globex,
+            &assertion_of(&acme_client, globex_issuer, "signing", &acme_key)
+        )
+        .await,
+        StatusCode::UNAUTHORIZED
+    );
+    assert!(endpoints.asked().is_empty());
+
+    // Globex's client is not proved by Acme's key, though it names the same
+    // `kid` and Acme's set is kept: Globex's own address is fetched, and
+    // its key alone proves the client.
+    assert_eq!(
+        introspected_with(
+            &world,
+            globex,
+            &assertion_of(&globex_client, globex_issuer, "signing", &acme_key)
+        )
+        .await,
+        StatusCode::UNAUTHORIZED
+    );
+    assert_eq!(endpoints.asked(), ["/globex"]);
+    assert_eq!(
+        introspected_with(
+            &world,
+            globex,
+            &assertion_of(&globex_client, globex_issuer, "signing", &globex_key)
+        )
+        .await,
+        StatusCode::OK
+    );
+    // And Globex's key proves nothing for Acme's client at Acme.
+    assert_eq!(
+        introspected_with(
+            &world,
+            acme,
+            &assertion_of(&acme_client, acme_issuer, "signing", &globex_key)
+        )
+        .await,
+        StatusCode::UNAUTHORIZED
+    );
+    assert!(endpoints.asked().is_empty(), "both sets are kept");
+}

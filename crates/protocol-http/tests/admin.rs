@@ -2784,6 +2784,124 @@ async fn keys_are_added_without_a_private_part_and_removed_by_their_kid() {
 }
 
 #[tokio::test]
+async fn a_client_publishes_its_keys_at_an_address_or_has_them_kept_never_both() {
+    let world = world().await;
+    let application = new_application(&world, "Reports", true).await;
+    let path = format!("/applications/{application}/clients");
+    let mut settings = web_client();
+    settings["authentication_method"] = "private_key_jwt".into();
+    settings["jwks_uri"] = "https://reports.example.com/jwks".into();
+    let created = world
+        .as_administrator(Method::POST, &path, Some(settings))
+        .await;
+    assert_eq!(created.status, StatusCode::CREATED, "{}", created.body);
+    assert_eq!(created.body["jwks_uri"], "https://reports.example.com/jwks");
+    assert_eq!(created.body["keys"].as_array().map(Vec::len), Some(0));
+    let client = created.body["id"].as_str().expect("client").to_owned();
+    let key = serde_json::json!({
+        "kty": "EC",
+        "crv": "P-256",
+        "kid": "2026-11",
+        "x": "f83OJ3D2xF1Bg8vub9tLe1gHMzV76e8Tus9uPHvRVEU",
+        "y": "x_FEzRu9m36HLN_tue659LNpXW6pCyStikYjKIWI5a0",
+    });
+    let refused = world
+        .as_administrator(
+            Method::POST,
+            &format!("/clients/{client}/keys"),
+            Some(serde_json::json!({ "jwk": key })),
+        )
+        .await;
+    assert_eq!(refused.status, StatusCode::UNPROCESSABLE_ENTITY);
+    assert_eq!(refused.code(), "oauth.client_keys_at_address");
+
+    for (address, code) in [
+        ("https://localhost/jwks", "oauth.client_jwks_uri_forbidden"),
+        (
+            "https://nowhere.example/jwks",
+            "oauth.client_jwks_uri_unresolvable",
+        ),
+        (
+            "http://reports.example.com/jwks",
+            "oauth.client_jwks_uri_invalid",
+        ),
+        (
+            "https://reports.example.com/jwks#now",
+            "oauth.client_jwks_uri_invalid",
+        ),
+    ] {
+        let refused = world
+            .as_administrator(
+                Method::PATCH,
+                &format!("/clients/{client}"),
+                Some(serde_json::json!({ "jwks_uri": address })),
+            )
+            .await;
+        assert_eq!(
+            refused.status,
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "{address}"
+        );
+        assert_eq!(refused.code(), code, "{address}");
+    }
+
+    // Without its address the client takes a key, and with a key no
+    // address.
+    let removed = world
+        .as_administrator(
+            Method::PATCH,
+            &format!("/clients/{client}"),
+            Some(serde_json::json!({ "jwks_uri": null })),
+        )
+        .await;
+    assert_eq!(removed.status, StatusCode::OK, "{}", removed.body);
+    assert_eq!(removed.body["jwks_uri"], serde_json::Value::Null);
+    let added = world
+        .as_administrator(
+            Method::POST,
+            &format!("/clients/{client}/keys"),
+            Some(serde_json::json!({ "jwk": key })),
+        )
+        .await;
+    assert_eq!(added.status, StatusCode::CREATED, "{}", added.body);
+    let both = world
+        .as_administrator(
+            Method::PATCH,
+            &format!("/clients/{client}"),
+            Some(serde_json::json!({ "jwks_uri": "https://reports.example.com/jwks" })),
+        )
+        .await;
+    assert_eq!(both.status, StatusCode::CONFLICT);
+    assert_eq!(both.code(), "oauth.client_jwks_uri_with_keys");
+
+    // A client of another method has no address, and loses it when it
+    // moves to one.
+    let mut secret = web_client();
+    secret["jwks_uri"] = "https://reports.example.com/jwks".into();
+    let refused = world
+        .as_administrator(Method::POST, &path, Some(secret))
+        .await;
+    assert_eq!(refused.status, StatusCode::UNPROCESSABLE_ENTITY);
+    assert_eq!(refused.code(), "oauth.client_jwks_uri_invalid");
+    let mut at_address = web_client();
+    at_address["authentication_method"] = "private_key_jwt".into();
+    at_address["jwks_uri"] = "https://reports.example.com/jwks".into();
+    let other = world
+        .as_administrator(Method::POST, &path, Some(at_address))
+        .await;
+    let other = other.body["id"].as_str().expect("client").to_owned();
+    let moved = world
+        .as_administrator(
+            Method::PATCH,
+            &format!("/clients/{other}"),
+            Some(serde_json::json!({ "authentication_method": "client_secret_basic" })),
+        )
+        .await;
+    assert_eq!(moved.status, StatusCode::OK, "{}", moved.body);
+    assert_eq!(moved.body["jwks_uri"], serde_json::Value::Null);
+}
+
+#[tokio::test]
 async fn what_breaks_a_rule_of_a_client_is_refused_with_its_code() {
     let world = world().await;
     let application = new_application(&world, "Billing", true).await;

@@ -16,6 +16,7 @@ const CHALLENGE: &str = "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM";
 
 fn objects() -> RequestObjectCheck<'static> {
     RequestObjectCheck {
+        keys: &[],
         issuer: ISSUER,
         now: MOMENT,
         verifier: &crate::testing::FakeVerifier,

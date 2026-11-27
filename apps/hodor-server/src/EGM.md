@@ -65,8 +65,15 @@ Routers, as assembled in `run`:
   addresses are checked by a `GuardedHttpClient` with the development
   exception; its `applications` is an `ApplicationService` given such a
   client too, with `with_destinations`, to check clients' back-channel
-  logout addresses and sector identifier addresses, and another with
-  `with_sector_documents`, to fetch the latter.
+  logout addresses, sector identifier addresses and key set addresses, and
+  another with `with_sector_documents`, to fetch sector identifier
+  addresses.
+- `client_key_sets` builds the one `ClientKeySets` of the server, over a
+  `GuardedHttpClient` with the development exception that reads at most
+  `MAX_KEY_SET_BYTES` of an answer, given to the authorization endpoint's
+  `AuthorizationCodeService` and to the `TokenService` of `token` with
+  `with_client_key_sets`, so that both endpoints share the keys kept from
+  clients' addresses (Issue-136, Decision 0079).
 - `/console/api` nests `hodor_protocol_http::console_routes`.
 - `/api/v1/authorization` nests `hodor_protocol_http::authorization_api_routes`
   with the `AuthorizationApiState` built by `authorization_api`, only when

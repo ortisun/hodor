@@ -54,7 +54,8 @@ A client is what talks to Hodor's endpoints. Its identifier is the `client_id` o
 | Linkerd identity | For a client using `linkerd_identity`, and for one using `tls_client_auth` without a SPIFFE identifier: the workload's Linkerd identity, such as `web.shop.serviceaccount.identity.linkerd.cluster.local`. See [an identity forwarded by a proxy](#an-identity-forwarded-by-a-proxy) |
 | Certificate-bound access tokens | Whether its access tokens are bound to the certificate its requests come with, its `tls_client_certificate_bound_access_tokens` of RFC 8705. `false` unless chosen. See [certificate-bound access tokens](#certificate-bound-access-tokens) |
 | Secrets | Its secrets, kept only as hashes. Only with `client_secret_basic` or `client_secret_post` |
-| Keys | Its public keys, for `private_key_jwt`. Only with that method |
+| Keys | Its public keys, for `private_key_jwt`, kept by Hodor. Only with that method, and never with a key set address |
+| Key set address | Optional, for a client using `private_key_jwt`: the address where the client publishes its keys itself, its `jwks_uri` of OpenID Connect Registration, in place of keys kept by Hodor. See [keys at the client's address](#keys-at-the-clients-address) |
 | Status | `enabled` or `disabled`. A disabled client gets no tokens |
 
 An application has at most 20 clients.
@@ -78,7 +79,8 @@ Every change to a client is checked against all of these at once; a change that 
 - **The token exchange grant needs a principal, which must be an agent, and at least one exchange rule; exchange rules need the grant.** Only an agent acts on a person's behalf ([Decision 0031](../../decisions/0031-workloads-are-users.md)). Each rule is a pair of audiences, the one a subject token must hold and the one the new token is for, each at most 255 printable characters, each pair once.
 - **A client using `spiffe_jwt` has a principal and a SPIFFE identifier** ([Decision 0055](../../decisions/0055-spiffe-jwt-client-authentication.md)), **and so does one using `spiffe_x509`; one using `linkerd_identity` has a principal and a Linkerd identity; one using `tls_client_auth` a principal and exactly one of the two** ([Decision 0056](../../decisions/0056-forwarded-client-identity.md)). A client of any other method has neither. Its principal must be a service account. Refused with `oauth.client_spiffe_id_invalid`, or `oauth.client_linkerd_identity_invalid` for a Linkerd identity that does not read or does not fit the method.
 - **A client using `linkerd_identity` does not ask for certificate-bound access tokens**: Linkerd forwards no certificate to bind them to ([Decision 0057](../../decisions/0057-certificate-bound-access-tokens.md)). Any other client may, a public one included. Refused with `oauth.client_certificate_bound_access_tokens_invalid`.
-- **Switching the authentication method drops what the old one used.** A client that moves away from a secret method loses its secrets, and one that moves away from `private_key_jwt` loses its keys. A client is given its identity in the change that moves it to a method that takes one, and the administration interface drops an identity the new method does not take.
+- **A client using `private_key_jwt` has its keys in one place**: keys kept by Hodor, or a key set address, never both, as RFC 7591 and OpenID Connect Registration say of `jwks` and `jwks_uri`. Only such a client has a key set address. A client with keys is refused an address with `oauth.client_jwks_uri_with_keys` until its keys are removed, and a client with an address is refused a key with `oauth.client_keys_at_address`.
+- **Switching the authentication method drops what the old one used.** A client that moves away from a secret method loses its secrets, and one that moves away from `private_key_jwt` loses its keys; the administration interface drops its key set address too. A client is given its identity in the change that moves it to a method that takes one, and the administration interface drops an identity the new method does not take.
 
 ### Redirect addresses
 
@@ -142,6 +144,28 @@ A client using `private_key_jwt` proves who it is by signing an assertion with i
 - at most 5 keys per client.
 
 How an assertion is checked against these keys is in [checking a client assertion](#checking-a-client-assertion).
+
+### Keys at the client's address
+
+Issue-136. A client using `private_key_jwt` may publish its keys itself, at an address of its own, instead of having an administrator give them to Hodor one by one: its `jwks_uri` of OpenID Connect Registration, an HTTPS address that answers a JSON Web Key Set ([RFC 7517, section 5](https://www.rfc-editor.org/rfc/rfc7517#section-5)). The client then rotates its keys without asking anyone: it adds the new key at its address, signs with it, and removes the old one. Any such client may have one, whether an administrator made it or, once the registration endpoint is built, it registered itself. How long Hodor keeps what it fetched is [Decision 0079](../../decisions/0079-keys-at-a-client-s-address-kept-in-memory.md).
+
+**The address** is checked as a [back-channel logout address](#the-back-channel-logout-address) is:
+
+- **Its form**: one absolute HTTPS address, with a host, without a name and password or a fragment, at most 2000 characters, all of them printable ASCII without spaces, kept exactly as it was given. Otherwise `oauth.client_jwks_uri_invalid`, which is also the answer for an address on a client that does not use `private_key_jwt`.
+- **Its destination, when it is set**, through the `DestinationCheck` port: an address that may not be called is refused with `oauth.client_jwks_uri_forbidden`, a name that resolves to nothing with `oauth.client_jwks_uri_unresolvable`. Only a new or changed address is checked. Nothing is fetched when the client is saved: a client may publish its keys after it is made.
+- **The development exception** (`HODOR_OUTBOUND_DEVELOPMENT_HOSTS`) is accepted over plain HTTP, when it is set and when it is called, as the guarded client accepts it. Nowhere real has any.
+
+**The fetch.** Hodor fetches the address when it needs the client's keys: to check a [client assertion](#checking-a-client-assertion) or a signed [request object](#request-objects), given by value, pushed, or [fetched at one of the client's request object addresses](#request-objects-at-a-clients-address), at every endpoint that checks one. The request object is fetched first, then the keys.
+
+- **Through the guarded outbound client**, with `GET` and `accept: application/jwk-set+json, application/json`, under the rules of [outbound HTTP](../../security/outbound-http.md): every address the name resolves to must be public, checked again on the resolution the client connects with. **No redirect is followed**: a status other than 200 to 299 is a failed fetch, a redirect included.
+- **5 seconds at most, 64 kibibytes at most.** No answer in time, a longer answer, or an answer that is not a JSON object with a list `keys` is a failed fetch.
+- **The keys read** are the first 20 of the list that are public signature keys as [keys](#keys) describes them, each checked as an administrator's key is: a key with `use` other than `sig`, a key of a kind Hodor does not accept, and a key with a private part are skipped, and a key with a private part is never kept. A key without a `kid` is kept too, and signs only what names no `kid`. A set in which no key is usable is a set of no keys, not a failed fetch.
+- **Kept for one hour at most**, in the memory of the server that fetched it, for the tenant, the client and the address together. A set older than an hour is never used: the next request that needs it fetches it again. So **a key removed from the address stops being accepted within the hour**.
+- **Fetched again for a key Hodor does not have**: when an assertion or a request object names a `kid` none of the kept keys has, or names none while none fits its algorithm, the address is fetched again before the signature is checked, and the new set replaces the kept one. **At most one fetch a minute per client**, whatever caused it: a burst of unknown `kid` values causes one fetch, and every other request of that minute is checked against the kept set. A fetch that is started is counted before it answers, so requests that arrive meanwhile do not fetch again.
+- **A failed fetch** changes nothing kept: a set younger than an hour is still used until its hour ends, and a client without one has no keys until a fetch succeeds. The request is refused as one signed by a key the client does not have, with `invalid_client` at the token endpoint and `invalid_request_object` for a request object.
+- **The keys are never stored**, and never shown: the administration interface shows the address, not what it answered.
+
+A client's address and the set fetched from it belong to the client of one tenant: the set is kept for the tenant and the client together, and a client's address is read from the client of the tenant the request is for. Changing the address takes effect at once on every server, since each reads the client at every request and keeps a set only for the address it was fetched from. **To stop a key at once**, without waiting for the hour, change the client's address, or disable the client.
 
 ### Token policy
 
@@ -225,7 +249,7 @@ Three of Hodor's own interfaces are resource servers a tenant registers like any
 | Change a client | Replaces its settings, all checked again |
 | Rotate a client's secret | Makes a new secret, returned once, and shortens or ends the old ones as [the rules](#secrets) say |
 | Revoke a client's secret | Ends one secret at once |
-| Add and remove a client's key | Only for `private_key_jwt` |
+| Add and remove a client's key | Only for `private_key_jwt`, and only without a key set address |
 | Enable and disable a client | |
 | Create and change a resource server | Name and scopes; the audience is fixed |
 | Read and list | An application, the tenant's applications, a client, an application's clients, a resource server by identifier or by audience, the tenant's resource servers |
@@ -243,7 +267,7 @@ For an operator who can reach the database, as for tenants and identity provider
 | `hodor-cli application add --tenant acme --name Billing [--first-party]` | Registers an application, enabled; third party unless `--first-party` is given. Prints its identifier |
 | `hodor-cli application list --tenant acme` | One line per application: identifier, status, first or third party, name |
 | `hodor-cli application disable --tenant acme --id …`, `enable` | |
-| `hodor-cli client add --tenant acme --application … --name … --type confidential --grant authorization_code --redirect-uri https://… --scope openid` | Creates a client. `--grant`, `--redirect-uri`, `--post-logout-redirect-uri` and `--scope` are given once per value; `--method` chooses the authentication method, `--secret-days` the lifetime of the first secret, `--without-pkce` lets a confidential client redeem a code without PKCE, `--id-token-algorithm` signs its ID tokens with `RS256`, `PS256` or `EdDSA` instead of `ES256`, `--userinfo-signed-response-alg` signs its [UserInfo answers](#signed-userinfo-answers) with one of the four, `--request-object-signing-alg` chooses its [request object algorithm](#request-objects), `ES256`, `RS256`, `PS256` or `none`, `--require-pushed-authorization-requests` has every request of it [pushed](#pushed-authorization-requests) first, `--request-uri`, once per value, gives it a [request object address](#request-object-addresses), checked with the development exception of `HODOR_OUTBOUND_DEVELOPMENT_HOSTS` as the server has it, `--backchannel-logout-uri` gives it a [back-channel logout address](#the-back-channel-logout-address), checked with the development exception of `HODOR_OUTBOUND_DEVELOPMENT_HOSTS` as the server has it, `--backchannel-logout-session-required` records that it needs `sid`, `--subject-type pairwise` makes it [pairwise](#pairwise-subject-identifiers), `--sector-identifier-uri` gives it a [sector identifier address](#the-sector-identifier-address), fetched through a guarded client with the same development exception, `--principal` binds it to a service account or an agent, `--exchange-rule '<subject audience>=><audience>'`, once per rule, gives an agent's client its exchange rules, `--spiffe-id` and `--linkerd-identity` bind a service account's client using `spiffe_jwt`, `spiffe_x509`, `tls_client_auth` or `linkerd_identity` to [its workload's identity](#an-identity-forwarded-by-a-proxy), and `--bound-tokens` asks for [certificate-bound access tokens](#certificate-bound-access-tokens). Prints the `client_id` and, for a client with a secret method, the secret, once |
+| `hodor-cli client add --tenant acme --application … --name … --type confidential --grant authorization_code --redirect-uri https://… --scope openid` | Creates a client. `--grant`, `--redirect-uri`, `--post-logout-redirect-uri` and `--scope` are given once per value; `--method` chooses the authentication method, `--secret-days` the lifetime of the first secret, `--without-pkce` lets a confidential client redeem a code without PKCE, `--id-token-algorithm` signs its ID tokens with `RS256`, `PS256` or `EdDSA` instead of `ES256`, `--userinfo-signed-response-alg` signs its [UserInfo answers](#signed-userinfo-answers) with one of the four, `--request-object-signing-alg` chooses its [request object algorithm](#request-objects), `ES256`, `RS256`, `PS256` or `none`, `--require-pushed-authorization-requests` has every request of it [pushed](#pushed-authorization-requests) first, `--request-uri`, once per value, gives it a [request object address](#request-object-addresses), checked with the development exception of `HODOR_OUTBOUND_DEVELOPMENT_HOSTS` as the server has it, `--backchannel-logout-uri` gives it a [back-channel logout address](#the-back-channel-logout-address), checked with the development exception of `HODOR_OUTBOUND_DEVELOPMENT_HOSTS` as the server has it, `--backchannel-logout-session-required` records that it needs `sid`, `--subject-type pairwise` makes it [pairwise](#pairwise-subject-identifiers), `--sector-identifier-uri` gives it a [sector identifier address](#the-sector-identifier-address), fetched through a guarded client with the same development exception, `--jwks-uri` gives a client using `private_key_jwt` its [key set address](#keys-at-the-clients-address), checked with the same development exception, `--principal` binds it to a service account or an agent, `--exchange-rule '<subject audience>=><audience>'`, once per rule, gives an agent's client its exchange rules, `--spiffe-id` and `--linkerd-identity` bind a service account's client using `spiffe_jwt`, `spiffe_x509`, `tls_client_auth` or `linkerd_identity` to [its workload's identity](#an-identity-forwarded-by-a-proxy), and `--bound-tokens` asks for [certificate-bound access tokens](#certificate-bound-access-tokens). Prints the `client_id` and, for a client with a secret method, the secret, once |
 | `hodor-cli client list --tenant acme --application …` | One line per client: `client_id`, status, type, authentication method, name |
 | `hodor-cli client rotate-secret --tenant acme --id … [--lifetime-days 365] [--keep-previous-days 7]` | Gives a client a new secret and prints it, once |
 | `hodor-cli client disable --tenant acme --id …`, `enable` | |
@@ -273,7 +297,7 @@ Changing a client's settings, ending one secret and managing keys are done throu
 | `ResourceServerStore` | Store, change and load resource servers; find one by audience |
 | `Digest` | SHA-256, from the kernel |
 | `RandomSource` | The random bytes of a secret, from the kernel |
-| `DestinationCheck` (kernel) | Checks a back-channel logout address and a sector identifier address when they are set; the guarded client |
+| `DestinationCheck` (kernel) | Checks a back-channel logout address, a sector identifier address and a key set address when they are set; the guarded client |
 | `HttpClient` (kernel) | Fetches a sector identifier address when it is set; the guarded client |
 
 ## Storage
@@ -317,6 +341,7 @@ Every table is a tenant table under row-level security, in the schema `oauth`. R
 | `default_acr_values` | `text[]` | The default assurance levels, in order; empty for a client made before it existed |
 | `require_auth_time` | `boolean` | `false` for a client made before it existed. A check constraint (`client_sign_in_defaults_need_code`) allows a default max age, default assurance levels and `true` here only with the `authorization_code` grant |
 | `sector_identifier_uri` | `text` | The [sector identifier address](#the-sector-identifier-address), or null. At most 2000 characters, `https://` or `http://`, compared byte for byte (`COLLATE "C"`); a check constraint allows it only for a pairwise client |
+| `jwks_uri` | `text` | The [key set address](#keys-at-the-clients-address), or null (migration 0122). At most 2000 characters, `https://` or `http://`, compared byte for byte (`COLLATE "C"`); a check constraint (`client_jwks_uri_needs_private_key_jwt`) allows it only with `private_key_jwt`. A client never has both an address and rows in `oauth.client_key`: every change and every key added is checked against it |
 | `access_token_seconds`, `id_token_seconds`, `refresh_token_seconds`, `refresh_idle_seconds`, `consent_seconds` | `integer` | The token policy |
 | `created_at`, `updated_at` | `timestamptz` | |
 | `version` | `integer` | For optimistic locking; secrets and keys are stored with the client under the same version |
@@ -422,7 +447,7 @@ Issue-120. A client may send its request as a **request object**: a JSON Web Tok
 | `ES256`, `RS256` or `PS256` | An object signed with that algorithm by one of the client's keys; any other is refused |
 | `none` | An unsigned object only: its header's `alg` is `none` and its signature is empty. A signed one is refused, as OpenID Connect Registration says of every algorithm a client names |
 
-The keys are the client's own [keys](#keys), which only a client with `private_key_jwt` has; keys at the client's `jwks_uri` come with dynamic client registration ([Milestone 15](../../product/epics.md#milestone-15-clients-that-register-themselves)). A client that proves who it is with a secret can therefore send only unsigned objects, and only once an administrator chose `none` for it. **An unsigned object protects nothing**: anyone who can send a browser to Hodor could have written it, so every check of the endpoint applies to what it holds, exactly as to a request without one.
+The keys are the client's own: its [keys](#keys) kept by Hodor, or those [at its address](#keys-at-the-clients-address), fetched again first when the object names a `kid` none of them has. Only a client with `private_key_jwt` has either. A client that proves who it is with a secret can therefore send only unsigned objects, and only once an administrator chose `none` for it. **An unsigned object protects nothing**: anyone who can send a browser to Hodor could have written it, so every check of the endpoint applies to what it holds, exactly as to a request without one.
 
 **Which client.** The object is checked for the client that `client_id` names outside it, looked up in the tenant the address names, as for every request. When `client_id` is not given outside, the object's own `client_id` is read first, only to know which client to check it for. A client of another tenant is unknown there, and its object is never checked: the answer is the page of an unknown client.
 
@@ -521,7 +546,7 @@ Issue-122. A client may also keep its request object at an address of its own an
 5. **The destination**, through the `DestinationCheck` port, as when it was registered: an address that may not be called now, a name that resolves to a private network included, is `invalid_request_uri`, and nothing is fetched.
 6. **The fetch**: `GET` of the address without its fragment, through the guarded outbound client, with `accept: application/oauth-authz-req+jwt, application/jwt`. **5 seconds at most, 16 kibibytes at most, no redirect followed.** No answer in time, a refused destination on the resolution the client connects with, a status other than 200 to 299 (a redirect included), or more than 16 kibibytes is `invalid_request_uri`.
 7. **The hash after `#`.** When the address has a fragment, it must be the SHA-256 of the content exactly as it was received, in base64url without padding, as OpenID Connect Registration asks a client to write it; any other fragment, an empty one included, is `invalid_request_uri`. An address without a fragment is read without a hash.
-8. **The content is the request object.** It must be text in UTF-8; spaces and line ends around it are ignored. It is then checked as [a request object given by value](#request-objects), with every check and answer there, `invalid_request_object` among them, and its parameters are the request, every check of the endpoint applying to them. Of the parameters outside, only `client_id` is read; `response_type` and `scope` repeated outside must say what the object says.
+8. **The content is the request object.** It must be text in UTF-8; spaces and line ends around it are ignored. It is then checked as [a request object given by value](#request-objects), with every check and answer there, `invalid_request_object` among them, and with the client's keys, those [at its key set address](#keys-at-the-clients-address) included, and its parameters are the request, every check of the endpoint applying to them. Of the parameters outside, only `client_id` is read; `response_type` and `scope` repeated outside must say what the object says.
 
 **Where a refusal is answered.** Until the content is read, a refusal goes to the `redirect_uri` outside when it is one of the client's redirect addresses, with the `state` given beside it, in the [response mode](#response-modes) named beside it, and otherwise to Hodor's own page, `oauth.authorization_request_uri_invalid`, as for a pushed reference. Once it is read, a refused object is answered as one given by value: at the `redirect_uri` outside, or at the object's own, or on Hodor's own page. No description repeats the address, what it resolved to or what it answered.
 
@@ -697,6 +722,7 @@ When a person is deprovisioned, every active grant of theirs, for every client, 
 | `KeyService` | The tenant's published keys, to check an `id_token_hint`; given with `with_id_token_hints`. Without it, a request with a hint is refused with `invalid_request`, never answered as if it had none |
 | `PairwiseSubjects` | Names the session's person as a pairwise client knows them, to compare with the hint's `sub`; given with `with_pairwise_subjects`. Without it, the hint of a pairwise client never matches, and the person signs in |
 | `DestinationCheck`, `HttpClient` (kernel) | Check and fetch a [request object at a client's address](#request-objects-at-a-clients-address); the guarded client, limited to 16 kibibytes. Without them, an address is answered `request_uri_not_supported` |
+| `ClientKeySets` | The keys [at a client's address](#keys-at-the-clients-address), fetched through the guarded client's `HttpClient` and kept; given with `with_client_key_sets`, one for the server, shared with the token endpoint. Without it, a client with an address has no keys, and its signed request objects are refused |
 
 ### Storage
 
@@ -761,7 +787,7 @@ An assertion is a compact JSON Web Signature of at most 8 kibibytes. When the fo
 |---|---|
 | Shape | It is not three base64url parts, or its header or claims are not JSON objects |
 | Algorithm | The header's `alg` is not `ES256`, `RS256` or `PS256`. `none` and the shared-secret algorithms can never be named |
-| Key | The header names a `kid` the client does not have, or names none while more than one of the client's keys fits the algorithm. The key must fit the algorithm: a P-256 key for `ES256`, an RSA key for `RS256` and `PS256`, and the key's own `alg` when it has one |
+| Key | The header names a `kid` the client does not have, or names none while more than one of the client's keys fits the algorithm. The key must fit the algorithm: a P-256 key for `ES256`, an RSA key for `RS256` and `PS256`, and the key's own `alg` when it has one. The client's keys are those kept by Hodor, or those [at its address](#keys-at-the-clients-address), fetched again first when the `kid` is not among them |
 | Signature | It does not verify over the first two parts, exactly as they arrived |
 | `iss` and `sub` | Either is not the client's identifier |
 | `aud` | It does not hold the tenant's issuer or the address of the token endpoint, `{issuer}/oauth2/token`. Both are accepted: RFC 7523 names the token endpoint, and the revision of OAuth 2.1 recommends the issuer. At the [pushed request endpoint](#pushed-authorization-requests), revocation and introspection, the address of the endpoint itself is accepted as well |
@@ -1052,6 +1078,7 @@ No event carries a token or its hash.
 | `PersonStanding` | Whether a session of the person is still active, whether the person may still sign in, and whether a principal is a service account or an agent that may act. The server implements it over the session and identity contexts |
 | `SecretBox` | Seals and opens a family's secret, from the kernel |
 | `SignatureVerifier` | Checks a client's assertion, from the kernel |
+| `ClientKeySets` | The keys [at a client's address](#keys-at-the-clients-address), to check its assertion; given with `with_client_key_sets`. Without it, a client with an address has no keys, and its assertions are refused |
 | `KeyService` | Signs the access token with the tenant's active key, from the keys context |
 
 ### Storage
@@ -2160,7 +2187,10 @@ Administrators reach them through [the administration interface](../../api/admin
 | Request object addresses from the console | With the console pages of clients |
 | A limit on the number of requests to the pushed request endpoint, per client | With the limits of the token endpoint ([limits](#limits)) |
 | Requiring pushed requests, and the tenant's life of a pushed request, from the console | With the console pages of clients and of the tenant's settings |
-| Request objects signed with a key at the client's `jwks_uri` | 0.5.0, [Milestone 15](../../product/epics.md#milestone-15-clients-that-register-themselves) |
+| A key set address for a client that registers itself: the registration endpoint is not built yet, and refuses `jwks_uri` in the branch that builds it until both are in | 0.5.0, Issue-133 |
+| A key set address for a client that does not use `private_key_jwt`, to sign its request objects only | When a client needs it |
+| The key set address in the console's client screens: it is set through the administration interface and the command-line tool | With the console pages of clients |
+| One kept key set for every server of an installation, so that a burst of unknown `kid` values causes one fetch a minute in all: each server keeps its own | Not planned ([Decision 0079](../../decisions/0079-keys-at-a-client-s-address-kept-in-memory.md)) |
 | Encrypted request objects | 0.6.0, [Milestone 18](../../product/epics.md#milestone-18-fapi-20-message-signing-and-fapi-10-advanced) ([Decision 0048](../../decisions/0048-encryption.md)) |
 | `exp`, `nbf` and `jti` required in a request object, and its `jti` remembered | 0.6.0, with [security profiles](../../decisions/0052-security-profiles.md) |
 | Choosing a client's request object algorithm from the console | With the console pages of clients |

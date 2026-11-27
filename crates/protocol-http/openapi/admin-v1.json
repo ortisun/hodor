@@ -13917,6 +13917,7 @@
           "backchannel_logout_session_required",
           "subject_type",
           "sector_identifier_uri",
+          "jwks_uri",
           "default_max_age",
           "default_acr_values",
           "require_auth_time",
@@ -14076,6 +14077,14 @@
             ],
             "maxLength": 2000,
             "description": "For a pairwise client only: an HTTPS address of at most 2000 characters, fetched when it is set, that must answer a JSON array holding every redirect address of the client. Its host is the client's sector. Refused if it leads to a private network."
+          },
+          "jwks_uri": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "maxLength": 2000,
+            "description": "For a client using `private_key_jwt` only: an HTTPS address of at most 2000 characters where the client publishes its keys as a JSON Web Key Set, in place of `keys`. Fetched when an assertion or a request object of the client is checked, never when it is set, through the guarded outbound client with no redirect followed; what it answers is kept for an hour at most and fetched again for an unknown `kid` at most once a minute, and is never shown. Refused if it leads to a private network, or given to a client that has keys."
           },
           "default_max_age": {
             "type": [
@@ -14362,6 +14371,11 @@
             "maxLength": 2000,
             "description": "For a pairwise client only: an HTTPS address of at most 2000 characters, fetched when it is set, that must answer a JSON array holding every redirect address of the client. Its host is the client's sector. Refused if it leads to a private network."
           },
+          "jwks_uri": {
+            "type": "string",
+            "maxLength": 2000,
+            "description": "For a client using `private_key_jwt` only: an HTTPS address of at most 2000 characters where the client publishes its keys as a JSON Web Key Set, in place of `keys`. Fetched when an assertion or a request object of the client is checked, never when it is set, through the guarded outbound client with no redirect followed; what it answers is kept for an hour at most and fetched again for an unknown `kid` at most once a minute, and is never shown. Refused if it leads to a private network, or given to a client that has keys."
+          },
           "default_max_age": {
             "type": [
               "integer",
@@ -14555,6 +14569,14 @@
             ],
             "maxLength": 2000,
             "description": "For a pairwise client only: an HTTPS address of at most 2000 characters, fetched when it is set, that must answer a JSON array holding every redirect address of the client. Its host is the client's sector. Refused if it leads to a private network. `null` removes it."
+          },
+          "jwks_uri": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "maxLength": 2000,
+            "description": "For a client using `private_key_jwt` only: an HTTPS address of at most 2000 characters where the client publishes its keys as a JSON Web Key Set, in place of `keys`. Fetched when an assertion or a request object of the client is checked, never when it is set, through the guarded outbound client with no redirect followed; what it answers is kept for an hour at most and fetched again for an unknown `kid` at most once a minute, and is never shown. Refused if it leads to a private network, or given to a client that has keys. `null` removes it, and so does a change to another method."
           },
           "default_max_age": {
             "type": [

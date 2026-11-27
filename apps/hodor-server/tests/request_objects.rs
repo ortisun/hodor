@@ -916,3 +916,143 @@ async fn a_request_object_at_an_address_that_must_be_refused_is_refused() {
         "the unregistered address was never fetched"
     );
 }
+
+/// Serves `set` as a JSON Web Key Set at `/jwks` on a port of this
+/// machine, and counts the requests; answers the host and port.
+async fn key_set_address(set: Value, asked: Arc<std::sync::atomic::AtomicUsize>) -> String {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("listener");
+    let address = listener.local_addr().expect("address").to_string();
+    let app = axum::Router::new().route(
+        "/jwks",
+        axum::routing::get(move || {
+            asked.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            let set = set.clone();
+            async move { axum::Json(set) }
+        }),
+    );
+    tokio::spawn(async move {
+        let _ = axum::serve(listener, app).await;
+    });
+    address
+}
+
+#[tokio::test]
+async fn a_client_whose_keys_are_at_its_address_signs_its_request_and_proves_who_it_is() {
+    use hodor_adapters_http::{GuardedHttpClient, OutboundPolicy};
+    let database = TestDatabase::start().await;
+    let acme = tenant(&database, "acme").await;
+    // The client's key, published at its own address.
+    let ec = EcdsaKeyPair::generate_pkcs8(&ECDSA_P256_SHA256_FIXED_SIGNING, &SystemRandom::new())
+        .expect("key")
+        .as_ref()
+        .to_vec();
+    let pair = EcdsaKeyPair::from_pkcs8(&ECDSA_P256_SHA256_FIXED_SIGNING, &ec).expect("pair");
+    let point = pair.public_key().as_ref();
+    let asked = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let host = key_set_address(
+        json!({"keys": [{
+            "kty": "EC", "crv": "P-256", "kid": "ec", "use": "sig",
+            "x": URL_SAFE_NO_PAD.encode(&point[1..33]),
+            "y": URL_SAFE_NO_PAD.encode(&point[33..65]),
+        }]}),
+        asked.clone(),
+    )
+    .await;
+    let applications = acme.applications.clone().with_destinations(Arc::new(
+        GuardedHttpClient::new(OutboundPolicy {
+            development_hosts: vec![host.clone()],
+            ..OutboundPolicy::default()
+        })
+        .expect("client"),
+    ));
+    let mut settings = ClientSettings::new(
+        "Payroll",
+        ClientType::Confidential,
+        vec![GrantType::AuthorizationCode],
+        vec![REDIRECT.to_owned()],
+    );
+    settings.authentication_method = AuthenticationMethod::PrivateKeyJwt;
+    settings.allowed_scopes = vec!["openid".to_owned(), "payroll:read".to_owned()];
+    settings.jwks_uri = Some(format!("http://{host}/jwks"));
+    let (client, _) = applications
+        .create_client(
+            &acme.context,
+            CreateClient {
+                application_id: acme.application,
+                client_type: ClientType::Confidential,
+                settings,
+                secret_lifetime: None,
+            },
+            Caller::system(),
+        )
+        .await
+        .expect("client");
+    let client = client.id();
+    let server = start_server_with(
+        &database,
+        &[
+            ("HODOR_SECRET_KEYS", ROOT_KEY),
+            ("HODOR_OUTBOUND_DEVELOPMENT_HOSTS", host.as_str()),
+        ],
+    )
+    .await;
+    assert_eq!(asked.load(std::sync::atomic::Ordering::SeqCst), 0);
+    let mut browser = Browser::not_following(&server);
+    let (_, signed_in) = browser.sign_in("acme", "ana@example.com", PASSWORD).await;
+    assert_eq!(signed_in["status"], "completed");
+
+    // The request object is checked with the key at the address, fetched
+    // once, and the assertion at the token endpoint with the same set.
+    let keys = Keys {
+        ec,
+        rsa: RsaKeyPair::generate(KeySize::Rsa2048).expect("RSA key"),
+    };
+    let answer = authorize(
+        &mut browser,
+        "acme",
+        client,
+        &es256(&keys, &claims("acme", client, "nonce-at-address")),
+        &[],
+    )
+    .await;
+    let code = answer.get("code").cloned().expect("a code");
+    let client_assertion = assertion("acme", client, &keys, "assertion-at-address");
+    let (status, tokens) = token(
+        &server,
+        "acme",
+        None,
+        &[
+            ("grant_type", "authorization_code"),
+            ("code", &code),
+            ("redirect_uri", REDIRECT),
+            ("code_verifier", VERIFIER),
+            ("client_assertion_type", ASSERTION_TYPE),
+            ("client_assertion", &client_assertion),
+        ],
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{tokens}");
+    let id_token = payload(tokens["id_token"].as_str().expect("an ID token"));
+    assert_eq!(id_token["nonce"], "nonce-at-address");
+    assert_eq!(asked.load(std::sync::atomic::Ordering::SeqCst), 1);
+
+    // An assertion signed by another key of the same `kid` is refused.
+    let other = Keys {
+        ec: EcdsaKeyPair::generate_pkcs8(&ECDSA_P256_SHA256_FIXED_SIGNING, &SystemRandom::new())
+            .expect("key")
+            .as_ref()
+            .to_vec(),
+        rsa: keys.rsa,
+    };
+    let code = authorize(
+        &mut browser,
+        "acme",
+        client,
+        &es256(&other, &claims("acme", client, "nonce-other")),
+        &[],
+    )
+    .await;
+    assert_eq!(code["error"], "invalid_request_object", "{code:?}");
+}

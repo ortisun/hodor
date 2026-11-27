@@ -32,6 +32,7 @@ pub mod api {
     pub use crate::application::claim_mapper::{
         ClaimMapperPorts, ClaimMapperService, ClaimMapping, MappedClaims, MappedToken,
     };
+    pub use crate::application::client_keys::{ClientKeySets, MAX_KEPT_KEY_SETS};
     pub use crate::application::consent::{
         AskedScope, ConsentPorts, ConsentQuestion, ConsentService, ListedConsent,
     };
@@ -121,6 +122,10 @@ pub mod api {
         active_access_token, active_refresh_token, inactive,
     };
     pub use crate::domain::key::{ClientKey, MAX_KEYS};
+    pub use crate::domain::key_set::{
+        KEY_SET_ACCEPT, KEY_SET_KEPT_FOR, KEY_SET_REFETCH_AFTER, KEY_SET_TIME_LIMIT,
+        MAX_JWKS_URI_LENGTH, MAX_KEY_SET_BYTES, MAX_PUBLISHED_KEYS, check_jwks_uri,
+    };
     pub use crate::domain::logout::{
         CurrentSession, IdTokenHint, KnownSession, LogoutDecision, LogoutParameters, LogoutRequest,
         MAX_LOGOUT_LOCALES_LENGTH, MAX_LOGOUT_STATE_LENGTH, ReturnAddress, check_id_token_hint,

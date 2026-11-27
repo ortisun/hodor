@@ -316,6 +316,89 @@ async fn a_client_is_given_a_back_channel_logout_address_checked_as_the_server_c
     assert_eq!(stored, (Some("http://relay:8080/logout".to_owned()), true));
 }
 
+#[tokio::test]
+async fn a_client_is_given_a_key_set_address_checked_and_not_fetched() {
+    let database = TestDatabase::start().await;
+    let created = run(
+        &database,
+        &["tenant", "create", "--slug", "acme", "--name", "Acme"],
+    );
+    assert!(created.status.success(), "{created:?}");
+    let added = run(
+        &database,
+        &[
+            "application",
+            "add",
+            "--tenant",
+            "acme",
+            "--name",
+            "Billing",
+            "--first-party",
+        ],
+    );
+    let application = value(&added, "application");
+    let client = |method: &str, address: &str, development_hosts: &str| {
+        Command::new(env!("CARGO_BIN_EXE_hodor-cli"))
+            .args([
+                "client",
+                "add",
+                "--tenant",
+                "acme",
+                "--application",
+                &application,
+                "--name",
+                "Billing web site",
+                "--type",
+                "confidential",
+                "--grant",
+                "authorization_code",
+                "--redirect-uri",
+                "https://billing.example.com/callback",
+                "--method",
+                method,
+                "--jwks-uri",
+                address,
+            ])
+            .env("HODOR_DATABASE_URL", database.app_url())
+            .env("HODOR_OUTBOUND_DEVELOPMENT_HOSTS", development_hosts)
+            .output()
+            .expect("the command-line tool should run")
+    };
+
+    let refused = client("private_key_jwt", "https://localhost/jwks", "");
+    assert!(!refused.status.success());
+    assert!(
+        text(&refused.stderr).contains("oauth.client_jwks_uri_forbidden"),
+        "{refused:?}"
+    );
+    let refused = client(
+        "client_secret_basic",
+        "https://billing.example.com/jwks",
+        "",
+    );
+    assert!(!refused.status.success());
+    assert!(
+        text(&refused.stderr).contains("oauth.client_jwks_uri_invalid"),
+        "{refused:?}"
+    );
+    // Nothing listens at the development exception's address: the address
+    // is checked, and not fetched.
+    let made = client("private_key_jwt", "http://127.0.0.1:9/jwks", "127.0.0.1:9");
+    assert!(made.status.success(), "{made:?}");
+    assert!(
+        !text(&made.stdout).contains("secret"),
+        "a client with keys gets no secret: {made:?}"
+    );
+    let id = value(&made, "client");
+    let stored: Option<String> =
+        sqlx::query_scalar("SELECT jwks_uri FROM oauth.client WHERE id = $1::uuid")
+            .bind(&id)
+            .fetch_one(database.owner())
+            .await
+            .expect("client");
+    assert_eq!(stored.as_deref(), Some("http://127.0.0.1:9/jwks"));
+}
+
 /// Answers every request on a port of this machine with `body` as JSON,
 /// as a sector identifier address would; answers the address.
 fn sector_document(body: &'static str) -> String {

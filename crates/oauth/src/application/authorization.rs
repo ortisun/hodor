@@ -1,6 +1,7 @@
 //! The use cases of the authorization endpoint: checking a request,
 //! keeping it while the person signs in, issuing a code, and redeeming one.
 
+use crate::application::client_keys::{ClientKeySets, keys_of};
 use crate::application::pairwise::{PairwiseSubjects, subject_for};
 use crate::application::ports::{
     ApplicationStore, AuthorizationCodeStore, AuthorizationRequestStore, ClientStore, GrantStore,
@@ -120,6 +121,7 @@ pub struct AuthorizationCodeService {
     hints: Option<KeyService>,
     pairwise: Option<PairwiseSubjects>,
     fetch: Option<RequestObjectFetch>,
+    client_keys: Option<ClientKeySets>,
 }
 
 impl std::fmt::Debug for AuthorizationCodeService {
@@ -138,6 +140,7 @@ impl AuthorizationCodeService {
             hints: None,
             pairwise: None,
             fetch: None,
+            client_keys: None,
         }
     }
 
@@ -173,6 +176,31 @@ impl AuthorizationCodeService {
     ) -> Self {
         self.fetch = Some(RequestObjectFetch { destinations, http });
         self
+    }
+
+    /// Checks the signed request objects of a client with a key set
+    /// address against the keys there, fetched and kept by `sets`. Without
+    /// it, such a client has no keys, and its signed objects are refused.
+    #[must_use]
+    pub fn with_client_key_sets(mut self, sets: ClientKeySets) -> Self {
+        self.client_keys = Some(sets);
+        self
+    }
+
+    /// The keys to check the request object of `parameters` with, if it
+    /// has one: those of `client`, Hodor's own or at its address.
+    async fn object_keys(
+        &self,
+        tenant: &TenantContext,
+        client: Option<&Client>,
+        parameters: &AuthorizationParameters,
+    ) -> Vec<crate::domain::key::ClientKey> {
+        match (client, parameters.once("request")) {
+            (Some(client), Some(object)) => {
+                keys_of(self.client_keys.as_ref(), tenant, client, Some(object)).await
+            }
+            _ => Vec::new(),
+        }
     }
 
     /// The time now, as the service sees it.
@@ -245,11 +273,11 @@ impl AuthorizationCodeService {
                 uow.commit().await?;
                 return Ok(self
                     .check_at_address(
+                        (tenant, issuer),
                         fetch,
                         parameters,
                         (client, application),
                         &servers,
-                        issuer,
                         policy.requires(Some(client)),
                     )
                     .await);
@@ -278,6 +306,10 @@ impl AuthorizationCodeService {
         } else {
             Vec::new()
         };
+        // Nothing was written: the reads end here, before a key set address
+        // is fetched.
+        drop(uow);
+        let keys = self.object_keys(tenant, client.as_ref(), parameters).await;
         Ok(check_request(
             parameters,
             client.as_ref(),
@@ -286,6 +318,7 @@ impl AuthorizationCodeService {
             RequestObjectCheck {
                 issuer,
                 now,
+                keys: &keys,
                 verifier: self.ports.verifier.as_ref(),
             },
             policy.requires(client.as_ref()),
@@ -362,15 +395,16 @@ impl AuthorizationCodeService {
     /// the address must be one it registered, may be called, and must
     /// answer a request object within the bounds, with the hash its
     /// fragment gives; what it answered is then checked as a request object
-    /// given by value. See `docs/architecture/contexts/oauth.md`, "Request
+    /// given by value, with the client's keys, those at its key set address
+    /// included. See `docs/architecture/contexts/oauth.md`, "Request
     /// objects at a client's address".
     async fn check_at_address(
         &self,
+        (tenant, issuer): (&TenantContext, &str),
         fetch: &RequestObjectFetch,
         parameters: &AuthorizationParameters,
         (client, application): (&Client, &crate::domain::application::Application),
         servers: &[ResourceServer],
-        issuer: &str,
         pushed_only: bool,
     ) -> Result<AuthorizationRequest, AuthorizationRefusal> {
         let address = address_to_fetch(parameters, client, pushed_only)?;
@@ -398,14 +432,17 @@ impl AuthorizationCodeService {
             self.ports.digest.as_ref(),
         )
         .map_err(|refusal| refused_fetch(parameters, client, refusal))?;
+        let parameters = with_fetched_object(parameters, object);
+        let keys = self.object_keys(tenant, Some(client), &parameters).await;
         check_request(
-            &with_fetched_object(parameters, object),
+            &parameters,
             Some(client),
             Some(application),
             servers,
             RequestObjectCheck {
                 issuer,
                 now: self.ports.clock.now(),
+                keys: &keys,
                 verifier: self.ports.verifier.as_ref(),
             },
             false,
@@ -440,6 +477,11 @@ impl AuthorizationCodeService {
             return Ok(Err(TokenError::invalid_client("the client is unknown")));
         };
         let servers = self.ports.resource_servers.list(uow.as_mut()).await?;
+        // Nothing was written: the reads end here, before a key set address
+        // is fetched, and the hint is checked after every other check, since
+        // the pushed request keeps only the `sub` it names.
+        drop(uow);
+        let keys = self.object_keys(tenant, Some(client), &parameters).await;
         let request = match check_pushed_request(
             parameters,
             client,
@@ -448,16 +490,13 @@ impl AuthorizationCodeService {
             RequestObjectCheck {
                 issuer,
                 now,
+                keys: &keys,
                 verifier: self.ports.verifier.as_ref(),
             },
         ) {
             Ok(request) => request,
             Err(refusal) => return Ok(Err(refusal)),
         };
-        // Nothing was written: the reads end here, and the hint is checked
-        // now, as every other check, since the pushed request keeps only
-        // the `sub` it names.
-        drop(uow);
         let request = match self.check_hint(tenant, issuer, request).await? {
             Ok(request) => request,
             Err((refusal, reason)) => {

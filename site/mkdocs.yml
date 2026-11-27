@@ -269,6 +269,7 @@ nav:
       - decisions/0075-the-registration-settings-of-a-tenant.md
       - decisions/0076-names-an-authority-leaves-to-its-meshes.md
       - decisions/0077-ext-authz-checks-the-audience.md
+      - decisions/0079-keys-at-a-client-s-address-kept-in-memory.md
   - Contributing:
       - development/conventions.md
       - development/documentation-site.md

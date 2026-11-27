@@ -53,6 +53,11 @@ clients, resource_servers, digest, random, clock })`:
   `oauth.client_request_uri_unresolvable` and
   `oauth.client_request_uri_invalid`; without it, a client with any is
   refused with `oauth.client_request_uri_forbidden`.
+- A key set address (`jwks_uri`) is checked through the same
+  `DestinationCheck` when it is set by `create_client`, or new or changed
+  by `change_client`, and never fetched then; the codes are
+  `oauth.client_jwks_uri_*`, and without the check any address is
+  `oauth.client_jwks_uri_forbidden`.
 - `with_sector_documents(http)` gives it the guarded outbound client: a
   pairwise client's sector identifier address is checked through the
   `DestinationCheck` and fetched with `GET` (`SECTOR_DOCUMENT_TIME_LIMIT`,
@@ -73,6 +78,21 @@ clients, resource_servers, digest, random, clock })`:
   for the client) and `application_with_resource_server(application_id)`
   (`NotFound` for the application).
 
+### Keys at a client's address (`client_keys.rs`)
+
+`ClientKeySets::new(http, clock)`, one for the server, given to
+`TokenService` and `AuthorizationCodeService` with `with_client_key_sets`
+(Issue-136, Decision 0079). It keeps, in memory, a `KeptSet` per tenant and
+client; `keys_of(sets, tenant, client, signed)` answers the client's own
+keys, or for a client with a `jwks_uri` those at its address: `next_step`
+decides, the attempt is counted under the lock before the fetch, the fetch
+is a `GET` with `KEY_SET_ACCEPT` within `KEY_SET_TIME_LIMIT` through the
+`HttpClient` (2xx only, so no redirect, at most `MAX_KEY_SET_BYTES`, read by
+`published_keys`), and a failure keeps what was kept. At most
+`MAX_KEPT_KEY_SETS` (10 000) clients: `make_room` drops the sets past their
+hour and not asked lately, then the one asked longest ago. Without the
+sets, such a client has no keys.
+
 ### Authorization endpoint (`authorization.rs`)
 
 `AuthorizationCodeService::new(AuthorizationCodePorts { units_of_work,
@@ -86,8 +106,10 @@ memberships, verifier, digest, random, clock })`:
   (`ReferenceHash::of_presented`) and its pushed request taken for that
   client (`take_pushed`), committed whatever comes next, and
   `check_reference` answers. Otherwise it loads the tenant's resource
-  servers and runs `check_request`, a request object checked against
-  `issuer`, the clock and `verifier`, the kernel's `SignatureVerifier`, with
+  servers, ends its reads, and runs `check_request`, a request object
+  checked against `issuer`, the clock, the client's keys (`keys_of`, at its
+  address through the `ClientKeySets` of `with_client_key_sets`) and
+  `verifier`, the kernel's `SignatureVerifier`, with
   `pushed_only` when `policy` (`PushedRequestPolicy`, the tenant's) or the
   client requires pushed requests. A `request_uri` that is an address
   (`Reference::Address`), when the service was given
@@ -99,7 +121,8 @@ memberships, verifier, digest, random, clock })`:
   the client's `request_uris`), the `DestinationCheck`, a `GET` through the
   `HttpClient` with `REQUEST_OBJECT_ACCEPT` within
   `REQUEST_OBJECT_TIME_LIMIT`, `fetched_object` (2xx, 16 kibibytes, the
-  fragment's hash, text), then `check_request` on `with_fetched_object`;
+  fragment's hash, text), then `check_request` on `with_fetched_object`,
+  with the client's keys from `keys_of` for the object fetched;
   every failure before the content is read is `invalid_request_uri`
   (`refused_fetch`). Without the outbound client an address is answered
   `request_uri_not_supported` by `check_reference`. The outer `Result` is
@@ -233,8 +256,10 @@ certificates; without them every JWT-SVID, and every client of
     credentials or, without either, the assertion's `iss`; it and its
     application must be enabled; the request's method must be the one it
     was registered with; then the secret (`Client::accepts_secret`), or the
-    assertion (`check_assertion`) whose `jti` is remembered and committed at
-    once, or the JWT-SVID: the client named by `client_id` alone, its
+    assertion (`check_assertion`, with the client's keys from `keys_of`:
+    for a client with a key set address, the unit of work is closed while
+    the address is fetched and a new one remembers the `jti`) whose `jti`
+    is remembered and committed at once, or the JWT-SVID: the client named by `client_id` alone, its
     SPIFFE identifier's trust domain found by name in the tenant through
     the `TrustDomainService` (in a unit of work of its own) and its bundle,
     `check_svid` against it and the tenant's issuer, and its `mark`

@@ -264,6 +264,7 @@ fn check(assertion: &str, client: &Client) -> Result<CheckedAssertion, &'static 
     check_assertion(
         assertion,
         client,
+        &client.snapshot().keys,
         AssertionAudience {
             issuer: ISSUER,
             token_endpoint: ENDPOINT,
