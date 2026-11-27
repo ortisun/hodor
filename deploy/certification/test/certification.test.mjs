@@ -3,7 +3,7 @@
 // mail server, served here, which share what was made through one file.
 // docs/operations/certification-deployment.md, "How it is tested".
 //
-//   node --test deploy/certification/test/
+//   node --test deploy/certification/test/certification.test.mjs
 
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";

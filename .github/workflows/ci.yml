@@ -385,7 +385,7 @@ jobs:
         with:
           node-version: 24
       - name: Test the script
-        run: node --test deploy/certification/test/
+        run: node --test deploy/certification/test/certification.test.mjs
       - name: Compose reads the override with the installation
         run: |
           sed -e 's|^HODOR_PUBLIC_URL=$|HODOR_PUBLIC_URL=https://hodor-certification.example.org|' \
