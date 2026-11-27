@@ -131,7 +131,7 @@ Explicit prohibitions:
 - `authorization` does not depend on `identity`.
 - No context depends on `audit`.
 - `protocol-http` does not depend on `adapters-*`.
-- `hodor-ext-authz` depends on no crate of the workspace but `hodor-observability`. It asks Hodor over the Authorization API like any application, so it holds no decision of its own and is released, scaled and upgraded apart ([Decision 0058](../decisions/0058-hodor-ext-authz.md#what-hodor-ext-authz-does)).
+- `hodor-ext-authz` depends on no crate of the workspace but `hodor-observability`. It asks Hodor over the Authorization API like any application, so it holds no decision of its own and is released, scaled and upgraded apart ([Decision 0058](../decisions/0058-hodor-ext-authz.md#what-hodor-ext-authz-does)). It checks the signature of a bearer token itself, with `aws-lc-rs` directly and a small reading of JSON Web Signatures of its own, not with the keys or OAuth contexts ([Decision 0082](../decisions/0082-ext-authz-checks-the-signature.md)).
 - `hodor-cert-manager-issuer` depends on no crate of the workspace but `hodor-observability`. It reaches Hodor over its token endpoint and the signing operation of the administration interface, as any program of the tenant would, and is released and run apart, in the clusters of the meshes ([Decision 0074](../decisions/0074-hodor-cert-manager-issuer.md)).
 - Only `saml` depends on an XML library. It holds what Hodor does with SAML as computation on text, with no input or output: reading and checking a response, writing a request and metadata. When Hodor becomes a SAML identity provider, in Phase 6, that side is added to it.
 
