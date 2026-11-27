@@ -105,7 +105,6 @@ spec:
       audiences:
         - https://orders.example.com
       forwardOriginalToken: true
-      outputPayloadToHeader: x-hodor-token-claims
 ```
 
 A request with a token that fails is refused by the proxy. A request with no token goes through, and Istio's own `AuthorizationPolicy` decides whether that is allowed. To refuse it at the proxy:
@@ -129,7 +128,9 @@ spec:
 
 Leave that policy out when other workloads call Orders with their mesh identity alone and `hodor-ext-authz` decides on it, as below.
 
-**Check the token at the ingress gateway too, for `hodor-ext-authz`.** A sidecar asks external authorization before it checks a token: Istio 1.30 puts the filter of an `AuthorizationPolicy` of action `CUSTOM` ahead of the one of `RequestAuthentication`, and both ahead of `ALLOW` and `DENY`. So the claims Orders' own sidecar writes into `x-hodor-token-claims` do not exist yet when `hodor-ext-authz` is asked, and it decides on the caller's identity instead, which for a person behind the gateway is the gateway's. The ingress gateway checks the token before it forwards anything, so give it a `RequestAuthentication` that writes the claims, and Orders' sidecar passes them to the check with the token:
+**A sidecar asks external authorization before it checks a token**: Istio 1.30 puts the filter of an `AuthorizationPolicy` of action `CUSTOM` ahead of the one of `RequestAuthentication`, and both ahead of `ALLOW` and `DENY`. `hodor-ext-authz` does not rely on that check: with `token: bearer` it reads the bearer token itself and checks its signature against the tenant's key set ([Decision 0082](../decisions/0082-ext-authz-checks-the-signature.md)). A token nobody signed is denied with `403` before Hodor is asked, whether it came through the gateway or from a workload inside the mesh, and Hodor records nothing.
+
+**Checking the token at the ingress gateway too is defence in depth.** The gateway then refuses a bad token with `401` at the edge, before any check is asked. Forward the token, so that Orders' sidecar and `hodor-ext-authz` see it:
 
 ```yaml
 apiVersion: security.istio.io/v1
@@ -145,12 +146,11 @@ spec:
     - issuer: https://login.example.com/t/acme
       jwksUri: https://login.example.com/t/acme/oauth2/jwks
       forwardOriginalToken: true
-      outputPayloadToHeader: x-hodor-token-claims
 ```
 
 - **The gateway checks every token that goes through it**, for every host it serves. It names no audience here: `hodor-ext-authz` and Orders' own `RequestAuthentication` check that. A bearer token that is not a JSON Web Token of this issuer, such as an administrator's token for Hodor's own interface, is refused at the gateway: serve the protected applications from a gateway of their own when such tokens pass through it.
 - **Orders' own `RequestAuthentication` stays**, and refuses a token that fails, once the check is done.
-- **From inside the mesh, the check comes before any token is checked.** A workload that calls Orders directly, not through the gateway, with claims beside a token it made up, is refused by Orders' `RequestAuthentication` after `hodor-ext-authz` has asked Hodor: Hodor records a decision about claims nobody checked, and whether the answer is `403` or `401` tells the caller what it was. [What is missing](#what-is-missing) has it.
+- **From inside the mesh, the check still comes first**, and a workload that calls Orders directly with a token it made up is denied by `hodor-ext-authz` with the same `403` as any other denial: Hodor is not asked, and nothing is recorded.
 
 ### Asking Hodor's decisions
 
@@ -162,8 +162,7 @@ mesh:
 extAuthz:
   enabled: true
   tenant: acme
-  token:
-    header: x-hodor-token-claims
+  token: bearer
   applications:
     - destination: spiffe://cluster.local/ns/shop/sa/orders
       clientId: 0193f1c2-6a1d-7c55-b0c8-6b1f2c9d4e01
@@ -205,7 +204,7 @@ spec:
 ```
 
 - **The application asked about** is the one whose `destination` is the identity of the workload the request is for, `destination.principal`, which Orders' sidecar fills with its own certificate's identity.
-- **The subject** is the `sub` of the checked token, read from `x-hodor-token-claims`, which the ingress gateway wrote, and believed only because it equals the claims of the bearer token the proxy forwarded. With no token, it is the caller's identity, which Hodor resolves to the service account bound to it.
+- **The subject** is the `sub` of the bearer token, once `hodor-ext-authz` has checked its signature against the tenant's key set, which it reads at Hodor's own address, and its issuer, audience and expiry. With no token, it is the caller's identity, which Hodor resolves to the service account bound to it.
 - **Failing closed.** `hodor-ext-authz` answers denied on every failure, and Istio's own `failOpen` is `false` unless set, so a request is refused when `hodor-ext-authz` cannot be reached. Stopping Hodor denies every request.
 - **Let only the proxies of the protected applications reach it**, with `extAuthz.networkPolicy.ingressFrom` naming the namespace `shop`.
 
@@ -247,8 +246,8 @@ networkPolicy:
 | A token with `client_id` alone, `spiffe_x509` under `cluster.local` checked by the mesh, bound to the sidecar's certificate and refused without it | **Continuous integration**, by the demonstration of Milestone 10 |
 | `X-Forwarded-Client-Cert` written by a caller outside the mesh, ignored | **Continuous integration**, by the demonstration of Milestone 10 |
 | `mesh.provider: istio` with `gatewayIdentities` and the network policy on, the namespace with no label | **Continuous integration**, by the demonstration of Milestone 11: Hodor's pods and `hodor-ext-authz`'s with their sidecar, the stand-ins beside them without; two clients outside the mesh behind the ingress gateway limited apart, one locked out while the other signs in and is known by its own address; a workload of the mesh writing `X-Forwarded-For` known by the sidecar's `127.0.0.6`. **Tried by hand on kind**: a workload forging its address on every request limited as one |
-| `RequestAuthentication` against the tenant's key set, at the ingress gateway with `forwardOriginalToken` and `outputPayloadToHeader`, and at Orders with `audiences` | **Continuous integration**, by the demonstration of Milestone 11: a token of another tenant refused with `401`. Its first run in continuous integration showed the order of the filters: with Orders' `RequestAuthentication` alone, every person was refused, `hodor-ext-authz` deciding on the gateway's identity |
-| `hodor-ext-authz` as Istio's provider, in its own sidecar, with an `AuthorizationPolicy` of action `CUSTOM` | **Continuous integration**, by the demonstration of Milestone 11: a person who holds the role let through and one who does not refused with `403`, both decisions in Hodor's record; no token, `403`; Hodor stopped, `403`. **Tested against the real server**: its decision equal to `evaluate`'s, and each denial |
+| `RequestAuthentication` against the tenant's key set, at the ingress gateway with `forwardOriginalToken`, and at Orders with `audiences` | **Continuous integration**, by the demonstration of Milestone 11: a token of another tenant refused with `401`. Its first run in continuous integration showed the order of the filters: with Orders' `RequestAuthentication` alone, and `hodor-ext-authz` reading a header of claims Orders' sidecar had not written yet, every person was refused, `hodor-ext-authz` deciding on the gateway's identity; with `token: bearer` it reads the token itself |
+| `hodor-ext-authz` as Istio's provider, in its own sidecar, with an `AuthorizationPolicy` of action `CUSTOM` and `token: bearer` | **Continuous integration**, by the demonstration of Milestone 11: a person who holds the role let through and one who does not refused with `403`, both decisions in Hodor's record; no token, `403`; Hodor stopped, `403`. **Tested against the real server**: its decision equal to `evaluate`'s, each denial, and forged tokens denied with no decision recorded. A workload of the mesh calling Orders directly with a forged token: **not tried** in a mesh |
 | What the sidecar and the ingress gateway hand Hodor; `REGISTRY_ONLY` and the `Sidecar` that lets Hodor out | **Tried by hand on kind** |
 | A gateway made from the Gateway API, Istio with the way out restricted by the network policy, classic sidecars, `failOpen` | **Not tried** |
 
@@ -282,7 +281,6 @@ spec:
       audiences:
         - https://orders.example.com
       forwardOriginalToken: true
-      outputPayloadToHeader: x-hodor-token-claims
 ---
 apiVersion: security.istio.io/v1
 kind: AuthorizationPolicy
@@ -470,7 +468,7 @@ EnvoyExtensions = [
 ```
 
 - **The destination** is the service's identity, `spiffe://<trust domain>/ns/default/dc/<datacenter>/svc/orders`: name it in `extAuthz.applications[].destination`.
-- **The checked token's claims** reach `hodor-ext-authz` only in the request's metadata, under the namespace of Envoy's JWT filter, and only when the extension forwards that namespace to the check. Whether Consul's extension does was not confirmed. Without the claims, `hodor-ext-authz` decides on the caller's identity, which is what calls between services need, and denies a request with neither.
+- **The token** reaches `hodor-ext-authz` in `Authorization`, which it checks itself with `token: bearer`, when Consul's proxy forwards it to the check; a JWT filter that runs first must keep it, with `forward: true`. Whether Consul's extension sends the header was not confirmed. Without a token, `hodor-ext-authz` decides on the caller's identity, which is what calls between services need, and denies a request with neither.
 - **`hodor-ext-authz` proves who it is only with its mesh identity**, so Hodor must run behind a proxy of the same Consul mesh, reading `X-Forwarded-Client-Cert`, for the adapter to get its tokens. That is the next part, and it is not a value of the chart.
 
 ### Giving workloads their identity at Hodor, and running Hodor inside
@@ -517,10 +515,10 @@ spec:
 ```
 
 - **The key set is fetched over HTTPS only.** `remoteJWKS` takes an `https` address. The demonstration's Hodor answers in plain HTTP inside the cluster, so it gives the key set inline instead, with `localJWKS` of type `Inline`, which must then be replaced when the tenant's keys change.
-- **A request without a good token is refused by Envoy Gateway**, with `401`, before anything is asked, unless the `jwt` section says `optional: true`. Keep it required: the next point relies on it.
+- **A request without a good token is refused by Envoy Gateway**, with `401`, unless the `jwt` section says `optional: true`, once the token is checked first as below. Without a token, `hodor-ext-authz` would decide on the gateway's own identity.
 - **A reference to a service of another namespace needs a `ReferenceGrant`** in the namespace `hodor`, from the `SecurityPolicy` of the namespace `shop`, as the Gateway API requires.
 
-**The claims reach `hodor-ext-authz` from the caller.** Envoy Gateway 1.10.0 checks the token and forwards it, and writes its claims into the request's metadata, but sends `hodor-ext-authz` none of that metadata, and writes no header of the claims as Istio does. So the caller sends the claims of the token it presents in `x-hodor-token-claims`, the token's middle part as it is, and `hodor-ext-authz` reads them with `token.header`. They are believed only when they are exactly the claims of the bearer token, which Envoy Gateway has just checked: a caller that sends another token's claims beside its own token is refused with `403`, and one that sends no token never reaches the check. This is sound only while the route's `SecurityPolicy` requires a token, and only once the token is checked before `hodor-ext-authz` is asked. **Envoy Gateway asks external authorization before it checks a token**, in its default order of filters: unchanged, Hodor would be asked, and would record a decision, about the claims of a token nobody has checked yet, and whether the answer is `403` or `401` would tell the caller what Hodor decided about them. Put the JWT check first with the `filterOrder` of the `EnvoyProxy`, as below.
+**`hodor-ext-authz` reads the token itself.** Envoy Gateway 1.10.0 checks the token and forwards it, and writes its claims into the request's metadata, but sends `hodor-ext-authz` none of that metadata and writes no header of the claims. With `token: bearer`, `hodor-ext-authz` needs neither: it reads the bearer token Envoy Gateway forwards and checks its signature against the tenant's key set itself ([Decision 0082](../decisions/0082-ext-authz-checks-the-signature.md)), so the caller sends nothing but its token. **Envoy Gateway asks external authorization before it checks a token**, in its default order of filters; a token nobody signed is then denied by `hodor-ext-authz` with `403`, and Hodor is not asked. Putting the JWT check first with the `filterOrder` of the `EnvoyProxy`, as below, is defence in depth: a bad token is refused with `401` at the gateway, and a request without a token too, before anything is asked.
 
 **At a gateway, the destination is the gateway's listener.** Envoy fills `destination.principal` from the certificate of the listener that received the request: its first URI name, or else its first DNS name. So the listener for Orders serves TLS, with a certificate for `orders.example.com`, and the application's entry in `hodor-ext-authz`'s configuration names `orders.example.com` as its `destination`. A listener without TLS gives no destination, and every check is denied. One application per listener, then, unless the route sends the resource and the action as context per route, `hodor_resource_type`, `hodor_action` and `hodor_resource_id`, which `hodor-ext-authz` reads in place of its rules; the `SecurityPolicy` of Envoy Gateway 1.10.0 has `contextExtensions` for it, which was not tried.
 
@@ -528,8 +526,7 @@ spec:
 extAuthz:
   enabled: true
   tenant: acme
-  token:
-    header: x-hodor-token-claims
+  token: bearer
   applications:
     - destination: orders.example.com
       clientId: 0193f1c2-6a1d-7c55-b0c8-6b1f2c9d4e01
@@ -552,7 +549,7 @@ metadata:
   name: meshed
   namespace: envoy-gateway-system
 spec:
-  # The token is checked before hodor-ext-authz is asked.
+  # The token is checked before hodor-ext-authz is asked: a bad token is refused with 401 at the gateway.
   filterOrder:
     - name: envoy.filters.http.jwt_authn
       before: envoy.filters.http.ext_authz
@@ -568,7 +565,7 @@ spec:
             config.linkerd.io/skip-inbound-ports: "8080,8443"
 ```
 
-- **Check the token before asking `hodor-ext-authz`**, with `filterOrder`: Envoy Gateway's own order asks external authorization first.
+- **Check the token before asking `hodor-ext-authz`**, with `filterOrder`: Envoy Gateway's own order asks external authorization first. `hodor-ext-authz` checks the token's signature either way; the order keeps a bad token, and a request without one, at the gateway with `401`.
 
 - **Leave the listeners' ports out of Linkerd's proxy on the way in**, with `config.linkerd.io/skip-inbound-ports`. Through the proxy, every client would reach Envoy from the pod's own address, and Envoy would forward that one address for everybody. Envoy listens on the listeners' own ports when they are 1024 or more; below, it adds 10000 unless `useListenerPortAsContainerPort` is set.
 - **Name the gateway's service account**, with `envoyServiceAccount`, so that its identity is known before it runs: here `edge-gateway.envoy-gateway-system.serviceaccount.identity.linkerd.cluster.local`, in `gatewayIdentities`. Otherwise Envoy Gateway makes up a name, which `kubectl get pod --namespace envoy-gateway-system <pod> --output jsonpath='{.spec.serviceAccountName}'` reads.
@@ -579,7 +576,7 @@ Outside a mesh, name the range Envoy Gateway's pods get their addresses from in 
 
 | Example | What ran it |
 |---|---|
-| The `SecurityPolicy` with `jwt`, the key set inline, and `extAuth` to `hodor-ext-authz`, the token checked first by `filterOrder` | **Continuous integration**, by the demonstration of Milestone 11: a person who holds the role let through and one who does not refused with `403`; no token `401`; a token of another tenant `401`; another token's claims beside the bearer token `403`; Hodor stopped, `403` |
+| The `SecurityPolicy` with `jwt`, the key set inline, and `extAuth` to `hodor-ext-authz`, the token checked first by `filterOrder` | **Continuous integration**, by the demonstration of Milestone 11: a person who holds the role let through and one who does not refused with `403`; no token `401`; a token of another tenant `401`; Hodor stopped, `403`; the caller sending nothing but its token, with `token: bearer` |
 | The destination named by the listener's certificate | **Continuous integration**, by the demonstration of Milestone 11 |
 | Envoy Gateway meshed by Linkerd in front of Hodor, named in `gatewayIdentities` | **Continuous integration**, by the demonstration of Milestone 11 |
 | `remoteJWKS`, context per route, Envoy Gateway outside a mesh or in front of Istio | **Not tried** |
@@ -604,8 +601,6 @@ helm install cert-manager oci://quay.io/jetstack/charts/cert-manager --namespace
 
 | Missing | Until then |
 |---|---|
-| `hodor-ext-authz` checking a token's signature itself | Istio's sidecar asks it before checking the token, so claims from inside the mesh reach Hodor unchecked, and Orders' own `RequestAuthentication` refuses them only after. Check tokens at the ingress gateway, and keep the proxy's own check ([Istio, with sidecars](#istio-with-sidecars)) |
-| Envoy Gateway handing `hodor-ext-authz` the claims it checked | The caller sends them in `x-hodor-token-claims`, believed only when they are the claims of the token Envoy Gateway checked first, with the JWT check put before external authorization ([Envoy Gateway](#envoy-gateway)) |
 | A value of the chart for Consul and for Istio's ambient mode | `trustedProxies`, `clientIdentityHeader`, `gatewayIdentities`, the pod annotations and a network policy of your own |
 | The proxies checking a token's binding to a certificate | A bound token checked only by a proxy is a bearer token there. Hodor checks the binding wherever it accepts a token |
 | A revoked token refused by the proxies | They accept it until it expires, five minutes by default, as any resource server that checks tokens by itself does ([Decision 0004](../decisions/0004-token-formats.md)) |
@@ -631,6 +626,6 @@ The adapter adds about a quarter of a millisecond. **Whether the target is met i
 | Istio, ambient | Not tried | Not tried | A JWT-SVID needs no mesh; nothing else reaches Hodor | What ztunnel and a waypoint hand Hodor tried by hand on kind |
 | Linkerd | Not possible: Envoy Gateway in front, in continuous integration | Continuous integration: Envoy Gateway in front, and the policies of `hodor-cli mesh linkerd-policy` applied. The application asking tested against the real server | Continuous integration: `hodor-ext-authz`'s, with `linkerd_identity` | Continuous integration with `mesh.provider`, Envoy Gateway in front and the network policy |
 | Consul | Not tried | Not tried | Not tried | Not tried |
-| Envoy Gateway | Continuous integration, in front of Linkerd, the key set inline | Continuous integration, in front of Linkerd, the claims sent by the caller | Not a mesh | Continuous integration, meshed by Linkerd |
+| Envoy Gateway | Continuous integration, in front of Linkerd, the key set inline | Continuous integration, in front of Linkerd, the token checked by `hodor-ext-authz` too | Not a mesh | Continuous integration, meshed by Linkerd |
 
 Never tried anywhere: a cluster of several nodes, a network plugin other than kind's, Istio's classic sidecars, Istio's gateways made from the Gateway API, Istio with the way out restricted by the network policy, Kuma, Cilium and any mesh not named here. A mesh built on Envoy that forwards `X-Forwarded-Client-Cert` and speaks Envoy's external authorization should work as Istio and Consul do, but none was tried.

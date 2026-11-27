@@ -1,6 +1,6 @@
-//! What a check asks: the application, the subject, the resource and the
-//! action, read from Envoy's `CheckRequest`, or why it is denied before
-//! Hodor is asked.
+//! What a check asks: the bearer token whose signature is to be checked,
+//! then the application, the subject, the resource and the action, read
+//! from Envoy's `CheckRequest`, or why it is denied before Hodor is asked.
 //!
 //! Specified in `docs/operations/hodor-ext-authz.md`, "What a check
 //! becomes".
@@ -11,8 +11,7 @@ use base64::Engine as _;
 use base64::engine::general_purpose::{URL_SAFE, URL_SAFE_NO_PAD};
 use envoy_types::pb::envoy::service::auth::v3::CheckRequest;
 use envoy_types::pb::envoy::service::auth::v3::attribute_context::HttpRequest;
-use envoy_types::pb::google::protobuf::{Struct, Value as ProtoValue, value::Kind};
-use serde_json::{Map, Number, Value, json};
+use serde_json::{Map, Value, json};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 /// Context per route that names the resource type.
@@ -35,13 +34,80 @@ pub struct Question {
     pub body: Value,
 }
 
-/// The question a check asks, or why it is denied.
+/// The bearer token whose signature is to be checked, when the settings
+/// read tokens and the request carries one; `None` otherwise. The forms
+/// `header` and `metadata`, written before, add their rule: a claims
+/// header must be exactly the token's claims part, and claims in the
+/// metadata without a token deny.
+///
+/// # Errors
+///
+/// Returns the [`Denial`] of a request that breaks the rule of its form.
+pub fn bearer<'a>(settings: &Settings, check: &'a CheckRequest) -> Result<Option<&'a str>, Denial> {
+    let Some(source) = &settings.token else {
+        return Ok(None);
+    };
+    let Some(http) = check
+        .attributes
+        .as_ref()
+        .and_then(|attributes| attributes.request.as_ref())
+        .and_then(|request| request.http.as_ref())
+    else {
+        return Ok(None);
+    };
+    let token = header(http, "authorization").and_then(|value| {
+        let (scheme, token) = value.split_once(' ')?;
+        let token = token.trim();
+        (scheme.eq_ignore_ascii_case("bearer") && !token.is_empty()).then_some(token)
+    });
+    match source {
+        TokenSource::Bearer => Ok(token),
+        TokenSource::Header(name) => {
+            let Some(written) = header(http, name) else {
+                return Ok(token);
+            };
+            let written = decode(written).ok_or(Denial("the claims header is not base64url"))?;
+            let token = token.ok_or(Denial("the claims header comes without a bearer token"))?;
+            let mut parts = token.split('.');
+            let claims = match (parts.next(), parts.next(), parts.next(), parts.next()) {
+                (Some(_), Some(payload), Some(_), None) => decode(payload),
+                _ => None,
+            }
+            .ok_or(Denial("the bearer token is not a JSON Web Token"))?;
+            if claims != written {
+                return Err(Denial("the claims header is not the bearer token's claims"));
+            }
+            Ok(Some(token))
+        }
+        TokenSource::Metadata { namespace, key } => {
+            let written = check
+                .attributes
+                .as_ref()
+                .and_then(|attributes| attributes.metadata_context.as_ref())
+                .and_then(|metadata| metadata.filter_metadata.get(namespace))
+                .is_some_and(|filter| filter.fields.contains_key(key));
+            if written && token.is_none() {
+                return Err(Denial(
+                    "the proxy checked a token and did not forward it to the check",
+                ));
+            }
+            Ok(token)
+        }
+    }
+}
+
+/// The question a check asks, or why it is denied. `claims` are those of
+/// the bearer token whose signature held, if there is one.
 ///
 /// # Errors
 ///
 /// Returns the [`Denial`] of a check that names no known destination, no
 /// rule, no subject, or claims that fail.
-pub fn question(settings: &Settings, check: &CheckRequest) -> Result<Question, Denial> {
+pub fn question(
+    settings: &Settings,
+    check: &CheckRequest,
+    claims: Option<&Map<String, Value>>,
+) -> Result<Question, Denial> {
     let attributes = check
         .attributes
         .as_ref()
@@ -112,8 +178,8 @@ pub fn question(settings: &Settings, check: &CheckRequest) -> Result<Question, D
         .as_ref()
         .map(|peer| peer.principal.as_str())
         .unwrap_or_default();
-    let subject = match claims(settings, check, http)? {
-        Some(claims) => subject_of(settings, &settings.applications[application], &claims)?,
+    let subject = match claims {
+        Some(claims) => subject_of(settings, &settings.applications[application], claims)?,
         None if !source.is_empty() => json!({ "type": "workload_identity", "id": source }),
         None => {
             return Err(Denial(
@@ -187,60 +253,6 @@ fn holds(aud: Option<&Value>, audience: &str) -> bool {
     }
 }
 
-/// The claims of the token the proxy checked, from where the settings say,
-/// or `None` when there are none.
-fn claims(
-    settings: &Settings,
-    check: &CheckRequest,
-    http: &HttpRequest,
-) -> Result<Option<Map<String, Value>>, Denial> {
-    match &settings.token {
-        None => Ok(None),
-        Some(TokenSource::Metadata { namespace, key }) => {
-            let found = check
-                .attributes
-                .as_ref()
-                .and_then(|attributes| attributes.metadata_context.as_ref())
-                .and_then(|metadata| metadata.filter_metadata.get(namespace))
-                .and_then(|filter| filter.fields.get(key));
-            match found.and_then(|value| value.kind.as_ref()) {
-                None => Ok(None),
-                Some(Kind::StructValue(claims)) => Ok(Some(object(claims))),
-                Some(_) => Err(Denial(
-                    "the token's claims in the metadata are not an object",
-                )),
-            }
-        }
-        Some(TokenSource::Header(name)) => {
-            let Some(written) = header(http, name) else {
-                return Ok(None);
-            };
-            let written = decode(written).ok_or(Denial("the claims header is not base64url"))?;
-            let token = header(http, "authorization")
-                .and_then(|value| {
-                    let (scheme, token) = value.split_once(' ')?;
-                    scheme
-                        .eq_ignore_ascii_case("bearer")
-                        .then_some(token.trim())
-                })
-                .ok_or(Denial("the claims header comes without a bearer token"))?;
-            let mut parts = token.split('.');
-            let checked = match (parts.next(), parts.next(), parts.next(), parts.next()) {
-                (Some(_), Some(payload), Some(_), None) => decode(payload),
-                _ => None,
-            }
-            .ok_or(Denial("the bearer token is not a JWT"))?;
-            if checked != written {
-                return Err(Denial("the claims header is not the bearer token's claims"));
-            }
-            match serde_json::from_slice(&written) {
-                Ok(Value::Object(claims)) => Ok(Some(claims)),
-                _ => Err(Denial("the token's claims are not a JSON object")),
-            }
-        }
-    }
-}
-
 /// A header of the request, whichever of Envoy's two forms carries it.
 fn header<'a>(http: &'a HttpRequest, name: &str) -> Option<&'a str> {
     if let Some(value) = http.headers.get(name) {
@@ -267,34 +279,13 @@ fn decode(text: &str) -> Option<Vec<u8>> {
         .ok()
 }
 
-fn object(fields: &Struct) -> Map<String, Value> {
-    fields
-        .fields
-        .iter()
-        .map(|(name, value)| (name.clone(), json_of(value)))
-        .collect()
-}
-
-fn json_of(value: &ProtoValue) -> Value {
-    match &value.kind {
-        None | Some(Kind::NullValue(_)) => Value::Null,
-        Some(Kind::NumberValue(number)) => {
-            Number::from_f64(*number).map_or(Value::Null, Value::Number)
-        }
-        Some(Kind::StringValue(text)) => Value::String(text.clone()),
-        Some(Kind::BoolValue(flag)) => Value::Bool(*flag),
-        Some(Kind::StructValue(fields)) => Value::Object(object(fields)),
-        Some(Kind::ListValue(list)) => Value::Array(list.values.iter().map(json_of).collect()),
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use envoy_types::pb::envoy::config::core::v3::Metadata;
     use envoy_types::pb::envoy::service::auth::v3::AttributeContext;
     use envoy_types::pb::envoy::service::auth::v3::attribute_context::{Peer, Request};
-    use envoy_types::pb::google::protobuf::ListValue;
+    use envoy_types::pb::google::protobuf::{Struct, Value as ProtoValue, value::Kind};
     use std::collections::HashMap;
 
     const ORDERS: &str = "spiffe://cluster.local/ns/shop/sa/orders";
@@ -356,31 +347,17 @@ mod tests {
             .expect("http")
     }
 
-    fn proto(value: &Value) -> ProtoValue {
-        let kind = match value {
-            Value::Null => Kind::NullValue(0),
-            Value::Bool(flag) => Kind::BoolValue(*flag),
-            Value::Number(number) => Kind::NumberValue(number.as_f64().expect("number")),
-            Value::String(text) => Kind::StringValue(text.clone()),
-            Value::Array(values) => Kind::ListValue(ListValue {
-                values: values.iter().map(proto).collect(),
-            }),
-            Value::Object(fields) => Kind::StructValue(Struct {
-                fields: fields
-                    .iter()
-                    .map(|(name, value)| (name.clone(), proto(value)))
-                    .collect(),
-            }),
-        };
-        ProtoValue { kind: Some(kind) }
-    }
-
-    fn in_metadata(check: &mut CheckRequest, claims: &Value) {
+    fn in_metadata(check: &mut CheckRequest) {
         attributes(check).metadata_context = Some(Metadata {
             filter_metadata: HashMap::from([(
                 "envoy.filters.http.jwt_authn".to_owned(),
                 Struct {
-                    fields: HashMap::from([("hodor".to_owned(), proto(claims))]),
+                    fields: HashMap::from([(
+                        "hodor".to_owned(),
+                        ProtoValue {
+                            kind: Some(Kind::StructValue(Struct::default())),
+                        },
+                    )]),
                 },
             )]),
             ..Metadata::default()
@@ -395,6 +372,12 @@ mod tests {
             + 300
     }
 
+    fn object(claims: &Value) -> Map<String, Value> {
+        claims.as_object().expect("an object").clone()
+    }
+
+    /// A token of `claims`, and its claims part. Its signature is not
+    /// checked here.
     fn jwt(claims: &Value) -> (String, String) {
         let payload = URL_SAFE_NO_PAD.encode(serde_json::to_vec(claims).expect("json"));
         (
@@ -403,13 +386,19 @@ mod tests {
         )
     }
 
+    fn asked_about(settings: &Settings, claims: &Value) -> Result<Question, Denial> {
+        question(settings, &check("GET", "/orders/1"), Some(&object(claims)))
+    }
+
+    const BEARER: &str = r#""token": "bearer","#;
     const METADATA: &str = r#""token": { "metadata": { "key": "hodor" } },"#;
     const HEADER: &str = r#""token": { "header": "x-hodor-token-claims" },"#;
 
     #[test]
     fn a_route_rule_names_the_resource_and_the_action() {
         let settings = settings("");
-        let asked = question(&settings, &check("POST", "/orders/42/approve?x=1")).expect("asked");
+        let asked =
+            question(&settings, &check("POST", "/orders/42/approve?x=1"), None).expect("asked");
         assert_eq!(asked.application, 0);
         assert_eq!(
             asked.body,
@@ -419,7 +408,7 @@ mod tests {
                 "action": "approve"
             })
         );
-        let listed = question(&settings, &check("GET", "/orders")).expect("asked");
+        let listed = question(&settings, &check("GET", "/orders"), None).expect("asked");
         assert_eq!(listed.body["resource"], json!({ "type": "order" }));
         assert_eq!(listed.body["action"], "list");
     }
@@ -434,7 +423,7 @@ mod tests {
             ("GET", "/orders/../admin"),
         ] {
             assert!(
-                question(&settings, &check(method, path)).is_err(),
+                question(&settings, &check(method, path), None).is_err(),
                 "{method} {path}"
             );
         }
@@ -449,15 +438,15 @@ mod tests {
             ..Peer::default()
         });
         assert_eq!(
-            question(&settings, &unknown),
+            question(&settings, &unknown, None),
             Err(Denial(
                 "no application of the configuration has this destination"
             ))
         );
         let mut none = check("GET", "/orders");
         attributes(&mut none).destination = None;
-        assert!(question(&settings, &none).is_err());
-        assert!(question(&settings, &CheckRequest::default()).is_err());
+        assert!(question(&settings, &none, None).is_err());
+        assert!(question(&settings, &CheckRequest::default(), None).is_err());
     }
 
     #[test]
@@ -469,7 +458,7 @@ mod tests {
             (CONTEXT_ACTION.to_owned(), "write".to_owned()),
             (CONTEXT_RESOURCE_ID.to_owned(), "r-1".to_owned()),
         ]);
-        let asked = question(&settings, &named).expect("asked");
+        let asked = question(&settings, &named, None).expect("asked");
         assert_eq!(
             asked.body["resource"],
             json!({ "type": "report", "id": "r-1" })
@@ -478,33 +467,36 @@ mod tests {
         let mut half = check("GET", "/orders");
         attributes(&mut half).context_extensions =
             HashMap::from([(CONTEXT_ACTION.to_owned(), "read".to_owned())]);
-        assert!(question(&settings, &half).is_err(), "one without the other");
+        assert!(
+            question(&settings, &half, None).is_err(),
+            "one without the other"
+        );
     }
 
     #[test]
-    fn the_checked_token_in_the_metadata_names_the_subject() {
-        let settings = settings(METADATA);
-        let mut person = check("GET", "/orders/1");
-        in_metadata(
-            &mut person,
-            &json!({ "iss": ISSUER, "aud": ORDERS_AUDIENCE, "sub": "user-1", "client_id": "app", "exp": later() }),
-        );
+    fn the_verified_token_names_the_subject() {
+        let settings = settings(BEARER);
         assert_eq!(
-            question(&settings, &person).expect("asked").body["subject"],
+            asked_about(
+                &settings,
+                &json!({ "iss": ISSUER, "aud": ORDERS_AUDIENCE, "sub": "user-1", "client_id": "app", "exp": later() }),
+            )
+            .expect("asked")
+            .body["subject"],
             json!({ "type": "user", "id": "user-1" })
         );
-        let mut itself = check("GET", "/orders/1");
-        in_metadata(
-            &mut itself,
-            &json!({ "iss": ISSUER, "aud": [ISSUER, ORDERS_AUDIENCE], "sub": "app", "client_id": "app" }),
-        );
         assert_eq!(
-            question(&settings, &itself).expect("asked").body["subject"],
+            asked_about(
+                &settings,
+                &json!({ "iss": ISSUER, "aud": [ISSUER, ORDERS_AUDIENCE], "sub": "app", "client_id": "app" }),
+            )
+            .expect("asked")
+            .body["subject"],
             json!({ "type": "client", "id": "app" })
         );
-        // No claims: the caller's identity.
+        // No token: the caller's identity.
         assert_eq!(
-            question(&settings, &check("GET", "/orders/1"))
+            question(&settings, &check("GET", "/orders/1"), None)
                 .expect("asked")
                 .body["subject"]["type"],
             "workload_identity"
@@ -513,7 +505,7 @@ mod tests {
 
     #[test]
     fn claims_that_fail_are_denied_and_never_replaced_by_the_identity() {
-        let settings = settings(METADATA);
+        let settings = settings(BEARER);
         for claims in [
             json!({ "iss": "https://login.example.com/t/other", "aud": ORDERS_AUDIENCE, "sub": "user-1" }),
             json!({ "aud": ORDERS_AUDIENCE, "sub": "user-1" }),
@@ -522,17 +514,37 @@ mod tests {
             json!({ "iss": ISSUER, "aud": ORDERS_AUDIENCE }),
             json!({ "iss": ISSUER, "aud": ORDERS_AUDIENCE, "sub": "" }),
         ] {
-            let mut failing = check("GET", "/orders/1");
-            in_metadata(&mut failing, &claims);
-            assert!(question(&settings, &failing).is_err(), "{claims}");
+            assert!(asked_about(&settings, &claims).is_err(), "{claims}");
         }
-        let mut not_an_object = check("GET", "/orders/1");
-        in_metadata(&mut not_an_object, &json!("a text"));
-        assert!(question(&settings, &not_an_object).is_err());
     }
 
     #[test]
-    fn the_claims_header_is_believed_only_as_the_bearer_tokens_claims() {
+    fn the_bearer_token_is_read_only_when_tokens_are_read() {
+        let (token, _) = jwt(&json!({ "sub": "user-1" }));
+        let mut carried = check("GET", "/orders/1");
+        http(&mut carried).headers =
+            HashMap::from([("authorization".to_owned(), format!("Bearer {token}"))]);
+        assert_eq!(
+            bearer(&settings(BEARER), &carried),
+            Ok(Some(token.as_str()))
+        );
+        assert_eq!(bearer(&settings(""), &carried), Ok(None));
+
+        // Another scheme is no bearer token, nor is an empty one.
+        for value in ["Basic dXNlcjpwYXNz", "Bearer", "Bearer  ", "DPoP abc"] {
+            let mut other = check("GET", "/orders/1");
+            http(&mut other).headers =
+                HashMap::from([("authorization".to_owned(), value.to_owned())]);
+            assert_eq!(bearer(&settings(BEARER), &other), Ok(None), "{value}");
+        }
+        assert_eq!(
+            bearer(&settings(BEARER), &check("GET", "/orders/1")),
+            Ok(None)
+        );
+    }
+
+    #[test]
+    fn a_claims_header_must_still_be_the_bearer_tokens_claims() {
         let settings = settings(HEADER);
         let claims =
             json!({ "iss": ISSUER, "aud": ORDERS_AUDIENCE, "sub": "user-1", "exp": later() });
@@ -542,10 +554,12 @@ mod tests {
             ("x-hodor-token-claims".to_owned(), payload.clone()),
             ("authorization".to_owned(), format!("Bearer {token}")),
         ]);
-        assert_eq!(
-            question(&settings, &forwarded).expect("asked").body["subject"],
-            json!({ "type": "user", "id": "user-1" })
-        );
+        assert_eq!(bearer(&settings, &forwarded), Ok(Some(token.as_str())));
+        // Not needed: the token alone is read.
+        let mut alone = check("GET", "/orders/1");
+        http(&mut alone).headers =
+            HashMap::from([("authorization".to_owned(), format!("Bearer {token}"))]);
+        assert_eq!(bearer(&settings, &alone), Ok(Some(token.as_str())));
 
         // Written by the caller, with no token or with another token.
         let forged = URL_SAFE_NO_PAD.encode(
@@ -554,27 +568,48 @@ mod tests {
             )
             .expect("json"),
         );
-        let mut alone = check("GET", "/orders/1");
-        http(&mut alone).headers =
+        let mut without = check("GET", "/orders/1");
+        http(&mut without).headers =
             HashMap::from([("x-hodor-token-claims".to_owned(), forged.clone())]);
-        assert!(question(&settings, &alone).is_err());
+        assert!(bearer(&settings, &without).is_err());
         let mut beside = check("GET", "/orders/1");
         http(&mut beside).headers = HashMap::from([
             ("x-hodor-token-claims".to_owned(), forged),
             ("authorization".to_owned(), format!("Bearer {token}")),
         ]);
-        assert!(question(&settings, &beside).is_err());
+        assert!(bearer(&settings, &beside).is_err());
         let mut garbled = check("GET", "/orders/1");
         http(&mut garbled).headers = HashMap::from([
             ("x-hodor-token-claims".to_owned(), "%%%".to_owned()),
             ("authorization".to_owned(), format!("Bearer {token}")),
         ]);
-        assert!(question(&settings, &garbled).is_err());
+        assert!(bearer(&settings, &garbled).is_err());
+    }
+
+    #[test]
+    fn claims_in_the_metadata_without_a_token_are_denied() {
+        let settings = settings(METADATA);
+        let (token, _) = jwt(&json!({ "sub": "user-1" }));
+        let mut removed = check("GET", "/orders/1");
+        in_metadata(&mut removed);
+        assert_eq!(
+            bearer(&settings, &removed),
+            Err(Denial(
+                "the proxy checked a token and did not forward it to the check"
+            ))
+        );
+        let mut forwarded = check("GET", "/orders/1");
+        in_metadata(&mut forwarded);
+        http(&mut forwarded).headers =
+            HashMap::from([("authorization".to_owned(), format!("Bearer {token}"))]);
+        assert_eq!(bearer(&settings, &forwarded), Ok(Some(token.as_str())));
+        // Nothing in the metadata, no token: the caller's identity.
+        assert_eq!(bearer(&settings, &check("GET", "/orders/1")), Ok(None));
     }
 
     #[test]
     fn a_token_for_another_audience_is_denied() {
-        let metadata = settings(METADATA);
+        let settings = settings(BEARER);
         let held =
             |aud: Value| json!({ "iss": ISSUER, "aud": aud, "sub": "user-1", "exp": later() });
         for (aud, allowed) in [
@@ -598,31 +633,21 @@ mod tests {
             (json!(42), false),
             (json!({ "aud": ORDERS_AUDIENCE }), false),
         ] {
-            let mut asked = check("GET", "/orders/1");
-            in_metadata(&mut asked, &held(aud.clone()));
-            assert_eq!(question(&metadata, &asked).is_ok(), allowed, "{aud}");
+            assert_eq!(
+                asked_about(&settings, &held(aud.clone())).is_ok(),
+                allowed,
+                "{aud}"
+            );
         }
-        let mut without = check("GET", "/orders/1");
-        in_metadata(
-            &mut without,
-            &json!({ "iss": ISSUER, "sub": "user-1", "exp": later() }),
-        );
         assert_eq!(
-            question(&metadata, &without),
+            asked_about(
+                &settings,
+                &json!({ "iss": ISSUER, "sub": "user-1", "exp": later() })
+            ),
             Err(Denial(
                 "the token is not for the audience of the application's resource server"
             ))
         );
-
-        // Through the header too, and never replaced by the caller's identity.
-        let through_header = settings(HEADER);
-        let (token, payload) = jwt(&held(json!("https://invoices.example.com")));
-        let mut forwarded = check("GET", "/orders/1");
-        http(&mut forwarded).headers = HashMap::from([
-            ("x-hodor-token-claims".to_owned(), payload),
-            ("authorization".to_owned(), format!("Bearer {token}")),
-        ]);
-        assert!(question(&through_header, &forwarded).is_err());
     }
 
     #[test]
@@ -630,6 +655,6 @@ mod tests {
         let settings = settings("");
         let mut anonymous = check("GET", "/orders");
         attributes(&mut anonymous).source = None;
-        assert!(question(&settings, &anonymous).is_err());
+        assert!(question(&settings, &anonymous, None).is_err());
     }
 }

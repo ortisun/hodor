@@ -551,7 +551,7 @@ def ext_authz_values(mesh, admin, setup, cluster):
     image_id = cluster.run("docker", "image", "inspect", "--format", "{{.Id}}", EXT_AUTHZ_IMAGE).stdout.strip()
     return {"extAuthz": {
         "enabled": True, "replicas": 1, "tenant": admin.tenant,
-        "token": {"header": "x-hodor-token-claims"},
+        "token": "bearer",
         "podDisruptionBudget": {"enabled": False},
         "podAnnotations": {"hodor.example/image": image_id},
         "applications": [{
@@ -566,10 +566,11 @@ def protected(cluster, mesh, admin):
     if mesh.istio:
         step("Orders protected by its sidecar: RequestAuthentication, and an AuthorizationPolicy of action CUSTOM")
         cluster.apply(templated("istio-orders.yaml", issuer=issuer))
-        # A sidecar asks external authorization before it checks a token: the
-        # ingress gateway checks it first and writes the claims for the check.
-        shown(f"tokens of {issuer} checked at the gateway, which writes their claims, and at Orders for {ORDERS}; "
-              "every request asked of hodor-ext-authz")
+        # A sidecar asks external authorization before it checks a token;
+        # hodor-ext-authz checks the token's signature itself, and the
+        # gateway checks it first as well.
+        shown(f"tokens of {issuer} checked at the gateway and at Orders for {ORDERS}; every request asked of "
+              "hodor-ext-authz, which checks the token's signature itself")
     else:
         step("Orders protected by Envoy Gateway: one SecurityPolicy that checks the token and asks hodor-ext-authz")
         key_set = request("GET", f"{issuer.replace(INSIDE, SERVER)}/oauth2/jwks").text
@@ -577,15 +578,13 @@ def protected(cluster, mesh, admin):
         shown(f"tokens of {issuer} for {ORDERS}, the key set inline, and every request asked of hodor-ext-authz")
 
 
-def at_orders(cluster, mesh, authority, token=None, claims=None, visitor="visitor-a"):
+def at_orders(cluster, mesh, authority, token=None, visitor="visitor-a"):
     """GET /orders/42 from a client outside the mesh, through the gateway."""
     # The host without its port: Envoy Gateway matches a route's host name
     # against the whole Host header, and its listeners are not on port 80.
     headers = {"Host": "orders.example.com"}
     if token is not None:
         headers["Authorization"] = f"Bearer {token}"
-    if claims is not None:
-        headers["x-hodor-token-claims"] = claims
     return in_pod(cluster, "outside", visitor, {
         "do": "request", "url": f"{mesh.orders}/orders/42", "headers": headers,
         "resolve": {"orders.example.com": mesh.gateway_service}, "authority": authority})
@@ -601,26 +600,20 @@ def last_decisions(admin):
 def through_the_gateway(cluster, mesh, admin, authority, people, other_token):
     step(f"Through {mesh.gateway}, Orders as a person who holds its role and as one who does not")
     ana, bruno = people["ana"]["token"], people["bruno"]["token"]
-    # Envoy Gateway checks the token and forwards it, but writes no header of
-    # its claims and sends hodor-ext-authz none of its metadata: the caller
-    # sends the claims of the token it presents, which hodor-ext-authz
-    # believes only when they are that token's own.
-    ana_claims = None if mesh.istio else payload_of(ana)
-    bruno_claims = None if mesh.istio else payload_of(bruno)
 
     def allowed():
-        answer = at_orders(cluster, mesh, authority, ana, ana_claims)
+        answer = at_orders(cluster, mesh, authority, ana)
         return answer if answer["status"] == 200 else None
 
     try:
         answer = until("Ana's request let through, once the proxy has the tenant's keys", allowed, seconds=120)
     except Failed as failure:
-        answer = at_orders(cluster, mesh, authority, ana, ana_claims)
+        answer = at_orders(cluster, mesh, authority, ana)
         raise Failed(f"{failure}: answered {answer['status']} {answer['text'][:300]}; Hodor's last decisions: "
                      f"{json.dumps(last_decisions(admin))}; Ana is {people['ana']['user']}, her token's sub "
                      f"{claims_of(ana).get('sub')}") from failure
     check("GET /orders/42" in answer["text"], "Ana reads order 42: hodor-ext-authz asked Hodor, which allowed")
-    answer = at_orders(cluster, mesh, authority, bruno, bruno_claims)
+    answer = at_orders(cluster, mesh, authority, bruno)
     check(answer["status"] == 403, f"Bruno is refused with 403 (answered {answer['status']})")
     if mesh.istio:
         answer = at_orders(cluster, mesh, authority)
@@ -629,10 +622,7 @@ def through_the_gateway(cluster, mesh, admin, authority, people, other_token):
     else:
         answer = at_orders(cluster, mesh, authority)
         check(answer["status"] == 401, f"with no token, Envoy Gateway refuses: 401 (answered {answer['status']})")
-        answer = at_orders(cluster, mesh, authority, ana, bruno_claims)
-        check(answer["status"] == 403, "Ana's token with Bruno's claims beside it: 403, the claims are not the "
-                                       f"token's own (answered {answer['status']})")
-    answer = at_orders(cluster, mesh, authority, other_token, None if mesh.istio else payload_of(other_token))
+    answer = at_orders(cluster, mesh, authority, other_token)
     check(answer["status"] == 401, f"a token of another tenant, for the same audience: 401, the proxy refuses its "
                                    f"issuer (answered {answer['status']})")
 
@@ -662,7 +652,7 @@ def hodor_stopped(cluster, mesh, authority, people, forwards):
 
     until("the server's pods stopped", gone, seconds=180)
     ana = people["ana"]["token"]
-    answer = at_orders(cluster, mesh, authority, ana, None if mesh.istio else payload_of(ana))
+    answer = at_orders(cluster, mesh, authority, ana)
     check(answer["status"] == 403, f"Ana, who was let through a moment ago, is refused: 403 (answered "
                                    f"{answer['status']})")
     cluster.kubectl("scale", "deployment", "--namespace", "hodor", "hodor-server", "--replicas=1")

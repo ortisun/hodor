@@ -277,14 +277,17 @@ extAuthz:
   issuer: ""
   # How long one call to Hodor may take before the request is denied, from 1 to 60000.
   timeoutMilliseconds: 1000
-  # Where the claims of the token the proxy checked are. Empty: none is read, and the subject is always the
-  # caller's identity. Either
+  # Whether tokens are read. bearer: the bearer token in Authorization, whose signature hodor-ext-authz checks
+  # itself against the tenant's key set, read at hodorUrl, and whose claims name the subject. Empty: none is
+  # read, and the subject is always the caller's identity. Written before, and still read as bearer with one
+  # more rule each (docs/operations/hodor-ext-authz.md, "The subject"):
   #   metadata:
   #     namespace: envoy.filters.http.jwt_authn
   #     key: hodor
   # or
   #   header: x-hodor-token-claims
-  token: {}
+  # Null by default, not {}, so that the text bearer replaces it without a warning from Helm.
+  token: null
   # One entry per protected application:
   #   - destination: spiffe://cluster.local/ns/shop/sa/orders
   #     clientId: <the application's client, bound to the identity of this service account>

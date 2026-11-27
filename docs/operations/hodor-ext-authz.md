@@ -2,7 +2,7 @@
 
 `hodor-ext-authz` lets the proxies of a service mesh ask Hodor whether a request may go through. It serves [Envoy's external authorization](https://www.envoyproxy.io/docs/envoy/latest/configuration/http/http_filters/ext_authz_filter) over gRPC, `envoy.service.auth.v3.Authorization`, and turns each check into one call of [the Authorization API](../api/api-spec.md#authorization-api)'s `evaluate`. Istio, Consul, Envoy Gateway and Envoy itself can call it. Linkerd cannot ask an outside decision, and reaches it through a gateway in front ([Decision 0029](../decisions/0029-hodor-in-a-service-mesh.md#linkerd-gets-three-paths-since-it-can-ask-no-outside-decision)).
 
-It is a binary of its own, in an image of its own, and runs in the mesh next to the proxies, not inside `hodor-server`. It holds no decision of its own and keeps none: Hodor decides, records every decision with the client that asked, and `hodor-ext-authz` answers what Hodor said. Why it is built this way is in [Decision 0029](../decisions/0029-hodor-in-a-service-mesh.md#decisions-are-asked-through-hodor-ext-authz-a-binary-of-its-own) and [Decision 0058](../decisions/0058-hodor-ext-authz.md).
+It is a binary of its own, in an image of its own, and runs in the mesh next to the proxies, not inside `hodor-server`. It holds no decision of its own and keeps none: Hodor decides, records every decision with the client that asked, and `hodor-ext-authz` answers what Hodor said. It checks the signature of a bearer token itself, against the tenant's published key set, so that Hodor is never asked about a token nobody signed. Why it is built this way is in [Decision 0029](../decisions/0029-hodor-in-a-service-mesh.md#decisions-are-asked-through-hodor-ext-authz-a-binary-of-its-own), [Decision 0058](../decisions/0058-hodor-ext-authz.md) and [Decision 0082](../decisions/0082-ext-authz-checks-the-signature.md).
 
 ```mermaid
 sequenceDiagram
@@ -11,9 +11,10 @@ sequenceDiagram
     participant Adapter as hodor-ext-authz
     participant Hodor
     Caller->>Proxy: GET /orders/42, with a token or a mesh identity
-    Proxy->>Proxy: checks the token (RequestAuthentication)
-    Proxy->>Adapter: Check: the checked claims, source and destination identities, method, path
-    Adapter->>Adapter: destination → client; route → resource and action; claims or identity → subject
+    Proxy->>Adapter: Check: the bearer token, source and destination identities, method, path
+    Adapter->>Hodor: GET /t/acme/oauth2/jwks, when no set is kept or the token's key is not in it
+    Hodor-->>Adapter: the tenant's published key set, kept five minutes
+    Adapter->>Adapter: the token's signature; destination → client; route → resource and action; claims or identity → subject
     Adapter->>Hodor: POST /t/acme/api/v1/authorization/evaluate, as the destination's client
     Hodor-->>Adapter: ALLOW or DENY, recorded
     Adapter-->>Proxy: OK, or PERMISSION_DENIED with 403
@@ -27,30 +28,39 @@ Each check Envoy sends is one `evaluate`. Every part of it comes from the check,
 | Part of `evaluate` | Where it comes from | When it is missing |
 |---|---|---|
 | The client that asks, and so the application and its resource server | `destination.principal`, the identity of the workload the request is for, looked up exactly among the configuration's applications | Denied |
-| `subject` | The checked token's `sub`, as `user`, or as `client` when `sub` equals `client_id`. With no token, `source.principal`, the caller's identity, as `workload_identity`, which Hodor resolves to the service account bound to it | Denied |
+| `subject` | The bearer token's `sub`, once its signature and its claims hold, as `user`, or as `client` when `sub` equals `client_id`. With no token, `source.principal`, the caller's identity, as `workload_identity`, which Hodor resolves to the service account bound to it | Denied |
 | `resource.type`, `resource.id` and `action` | The first route rule of the application that matches the method and the path; or the proxy's context for the route, `context_extensions` | Denied |
 
 `asserted`, `resource.attributes`, `context` and `organization` are never sent.
 
 ### The subject
 
-**A token the proxy checked.** The proxy checks the tenant's access tokens itself, as any resource server does ([Decision 0029](../decisions/0029-hodor-in-a-service-mesh.md#the-proxies-check-hodors-tokens-themselves)): Istio with `RequestAuthentication`, Envoy with its JWT filter, Envoy Gateway with a `SecurityPolicy`. `hodor-ext-authz` reads the claims the proxy checked from one of two places, which `token` in the configuration names:
+**A bearer token, checked by `hodor-ext-authz` itself.** When `token` in the configuration is set, the token is the bearer token in `Authorization`, and `hodor-ext-authz` checks its signature before anything else, against the tenant's published key set ([Decision 0082](../decisions/0082-ext-authz-checks-the-signature.md)). It does not rely on the proxy having checked it: Istio's sidecar asks external authorization before its own `RequestAuthentication`, and Envoy Gateway does too in its default order of filters, so a workload inside the mesh can reach the check with a token it made. The proxy still checks the tenant's tokens as any resource server does ([Decision 0029](../decisions/0029-hodor-in-a-service-mesh.md#the-proxies-check-hodors-tokens-themselves)), and refuses a bad one itself when it checks first.
 
-- **`metadata`**: the request's metadata, where Envoy's JWT filter writes the claims when `payload_in_metadata` is set. The configuration names the namespace, `envoy.filters.http.jwt_authn` by default, and the key, the value of `payload_in_metadata`. A caller cannot write metadata, so this is the place to prefer.
-- **`header`**: a header the proxy writes the claims into, base64url-encoded, as Istio's `outputPayloadToHeader` does. A caller can send such a header too, so it is believed only when it is exactly the claims part of the bearer token in `Authorization`, which the proxy has then checked and must forward (`forwardOriginalToken: true` in Istio). A header without a token, or with another token, is denied. Envoy Gateway 1.10.0 writes no such header and passes no metadata of its token check: behind it, the caller sends the claims of its own token in the header, and the gateway must require a token on the route and check it before it asks `hodor-ext-authz`, which it does not do in its own order ([Envoy Gateway](service-mesh.md#envoy-gateway)).
+- **The key set** is the tenant's published one, the set its discovery document names as `jwks_uri`, `<issuer>/oauth2/jwks`. `hodor-ext-authz` reads it at Hodor's own address, `hodor.url` followed by `/t/<slug>/oauth2/jwks`, where it already asks for tokens and calls `evaluate`, since the issuer's public address may not be reachable from inside the mesh.
+- **It is kept in memory for five minutes**, the time Hodor's answer allows, so a key Hodor revokes stops being accepted within five minutes. A token whose `kid` the kept set lacks, or the first one after the five minutes, fetches the set again, at most once every ten seconds, whatever caused it. Checks that arrive while a fetch runs wait for it. A fetch takes at most `hodor.timeout_milliseconds`, reads at most 64 kibibytes and 32 keys, and follows no redirect; one that fails keeps the set that was kept, until its five minutes end, and then every token is denied until a fetch answers.
+- **Only the algorithms Hodor signs with are accepted**: `ES256`, `RS256`, `PS256` and `EdDSA`. The header must name a `kid` of the set, whose key has that same algorithm. `none`, `HS256` and every other algorithm are refused before a key is looked for; so is a header with `crit`.
+- **A token whose signature fails is denied before Hodor is asked anything**, so Hodor records no decision about it. A bearer token that is not a JSON Web Token is denied too; an `Authorization` header of another scheme, such as `Basic`, is no token.
 
-The claims must then hold:
+The proxy must pass `Authorization` to the check. Istio's sidecar does, since it asks before it checks; a proxy whose JWT filter runs first must forward the token, with `forward: true` in Envoy's JWT filter and `forwardOriginalToken: true` in Istio's `RequestAuthentication`.
+
+`token` is `"bearer"`. Two forms written before Decision 0082 are still read, and mean the same, with one more rule each. Neither place is read for claims any more:
+
+- **`{"header": "<name>"}`**: a header the proxy, or behind Envoy Gateway the caller, wrote the claims into, base64url-encoded, as Istio's `outputPayloadToHeader` does. It is not needed: Envoy Gateway 1.10.0 writes no such header and passes no metadata of its own token check, so behind it the caller had to send its claims itself, and `"bearer"` asks nothing of it. A request that carries it is denied unless it is exactly the claims part of the bearer token, and when it comes without a bearer token.
+- **`{"metadata": {"namespace": …, "key": …}}`**: the request's metadata, where Envoy's JWT filter writes the claims it checked with `payload_in_metadata`, under the namespace `envoy.filters.http.jwt_authn` by default. A request whose metadata holds claims without a bearer token is denied: the filter checked a token and removed it, which it does without `forward: true`.
+
+The token's claims must then hold:
 
 - `iss`, exactly the tenant's issuer. **A token of another tenant is denied**, even if the proxy accepted it.
 - `aud`, holding the audience of the application's resource server, `audience` in the application's entry: one text equal to it, or a list with it among its values. **A token for another application of the same tenant is denied**, and so is an ID token, whose audience is a client, even if the proxy accepted them.
 - `exp`, if present, in the future.
 - `sub`, the subject: a person, a service account or an agent by their user identifier, or the client itself when `sub` equals `client_id`. The `sub` of a [pairwise client](../architecture/contexts/oauth.md#pairwise-subject-identifiers) names nobody Hodor knows, and its decisions deny.
 
-Claims that are present but fail any of these are denied. The caller's identity is never used in their place.
+A token that is present but fails its signature or any of these is denied. The caller's identity is never used in its place.
 
 **Why the audience, when Hodor decides by the roles of each application.** `evaluate` is asked about the resource server of the destination's application, so the roles that count are the ones the subject holds there. They say what Ana may do on Orders; they do not say that the token was given to Orders. Without the check, a token issued for Invoices when Ana signed in there, replayed at Orders by Invoices or by anyone who read it there, would act as Ana on Orders, with every role she holds on Orders, and the scopes she consented to for Invoices would stand for consent she never gave Orders. The audience is what binds a token to the resource server it was issued for ([RFC 9068, section 4](https://www.rfc-editor.org/rfc/rfc9068#section-4), [Threat-OAuth-07](../security/threat-model.md#oauth-2x)), so `hodor-ext-authz` checks it whatever the proxy does ([Decision 0077](../decisions/0077-ext-authz-checks-the-audience.md)). A token Hodor issues names the resource servers of the request as its audiences, and the issuer too when it carries `openid` ([the access token](../architecture/contexts/oauth.md#the-access-token)), so a token issued for several applications is good at each of them.
 
-**No token: the caller's identity.** With no claims, the subject is `source.principal`, the identity of the workload that called, a SPIFFE identifier or a Linkerd identity. `hodor-ext-authz` sends it as `{"type": "workload_identity", "id": "…"}`, and Hodor resolves it to the service account whose clients are bound to it ([the Authorization API](../api/api-spec.md#authorization-api)). An identity no client binds is a subject Hodor does not know, and is denied by the native engine. With no claims and no identity, the request is denied.
+**No token: the caller's identity.** With no bearer token, the subject is `source.principal`, the identity of the workload that called, a SPIFFE identifier or a Linkerd identity. `hodor-ext-authz` sends it as `{"type": "workload_identity", "id": "…"}`, and Hodor resolves it to the service account whose clients are bound to it ([the Authorization API](../api/api-spec.md#authorization-api)). An identity no client binds is a subject Hodor does not know, and is denied by the native engine. With no token and no identity, the request is denied.
 
 ### Route rules
 
@@ -80,7 +90,7 @@ grant_type=client_credentials&client_id=…&resource=urn%3Ahodor%3Aauthorization
 
 Its sidecar presents its certificate to Hodor's, and Hodor's proxy forwards the identity, which Hodor reads as [the caller's identity from a proxy](../api/api-spec.md#the-callers-identity-from-a-proxy) says. Every client of the configuration is bound to that one identity, with `tls_client_auth`, `spiffe_x509` or `linkerd_identity`, and acts as the same service account ([Decision 0058](../decisions/0058-hodor-ext-authz.md#an-identity-binds-the-clients-of-one-service-account)).
 
-It keeps each client's access token until 30 seconds before it expires, and asks for a new one when `evaluate` answers `401`, once. It keeps no decision.
+It keeps each client's access token until 30 seconds before it expires, and asks for a new one when `evaluate` answers `401`, once. It keeps the tenant's key set for five minutes, as [the subject](#the-subject) says. It keeps no decision.
 
 ### Setting it up in Hodor
 
@@ -114,7 +124,7 @@ The file:
     "issuer": "https://login.example.com/t/acme",
     "timeout_milliseconds": 1000
   },
-  "token": { "metadata": { "namespace": "envoy.filters.http.jwt_authn", "key": "hodor" } },
+  "token": "bearer",
   "applications": [
     {
       "destination": "spiffe://cluster.local/ns/shop/sa/orders",
@@ -134,9 +144,9 @@ The file:
 |---|---|
 | `hodor.url` | Where `hodor-ext-authz` reaches Hodor, `http` or `https`, with no path. Inside a mesh, the plain address of Hodor's Service: the sidecar adds mutual TLS |
 | `hodor.tenant` | The tenant's slug |
-| `hodor.issuer` | The tenant's issuer, as tokens name it in `iss`: Hodor's public address followed by `/t/<slug>`. Default: `hodor.url` followed by `/t/<slug>`, right only when the two addresses are the same |
-| `hodor.timeout_milliseconds` | How long one call to Hodor may take, from 1 to 60000, default 1000. Keep it under the proxy's own timeout for the check |
-| `token` | Where the checked token's claims are: `{"metadata": {"namespace": …, "key": …}}` or `{"header": "<name>"}`. Left out: no token is read, and the subject is always the caller's identity |
+| `hodor.issuer` | The tenant's issuer, as tokens name it in `iss`: Hodor's public address followed by `/t/<slug>`. Default: `hodor.url` followed by `/t/<slug>`, right only when the two addresses are the same. The key set is read at `hodor.url` whatever the issuer is |
+| `hodor.timeout_milliseconds` | How long one call to Hodor may take, the fetch of the key set included, from 1 to 60000, default 1000. Keep it under the proxy's own timeout for the check |
+| `token` | `"bearer"`: the bearer token in `Authorization` is read, and its signature checked against the tenant's key set. `{"header": "<name>"}` and `{"metadata": {"namespace": …, "key": …}}`, written before, mean the same with one more rule each ([the subject](#the-subject)). Left out: no token is read, and the subject is always the caller's identity |
 | `applications[].destination` | The protected workload's identity, as Envoy gives it in `destination.principal`. Each one once |
 | `applications[].client_id` | The application's client, bound to the adapter's identity |
 | `applications[].audience` | The audience of the application's resource server, as tokens for it name it in `aud`. Required, and not empty, even with no `token`, so that reading claims later never skips the check: claims whose `aud` does not hold it are denied |
@@ -146,9 +156,9 @@ The file is read once when the process starts. A file that does not read, or bre
 
 ## When it denies
 
-**Every failure is a denial.** Hodor unreachable, or slower than `timeout_milliseconds`; an answer that is not `200`, or not JSON with a `decision`; a decision other than `ALLOW`, `INDETERMINATE` included; a destination with no entry, a route with no rule, claims that fail, no subject. Failing open stays what it is in Hodor: a choice per action of [the engine binding](../architecture/contexts/authorization.md#bindings), made and recorded there ([Threat-Mesh-06](../security/threat-model.md#service-meshes-and-certificates)).
+**Every failure is a denial.** Hodor unreachable, or slower than `timeout_milliseconds`; an answer that is not `200`, or not JSON with a `decision`; a decision other than `ALLOW`, `INDETERMINATE` included; a destination with no entry, a route with no rule, a token whose signature fails, a key set that cannot be fetched, claims that fail, no subject. Failing open stays what it is in Hodor: a choice per action of [the engine binding](../architecture/contexts/authorization.md#bindings), made and recorded there ([Threat-Mesh-06](../security/threat-model.md#service-meshes-and-certificates)).
 
-**The answer to the proxy is always a well-formed check response**: `OK` to allow, `PERMISSION_DENIED` with an HTTP `403` and no body to deny, never a gRPC error. Set the proxy's own failure mode to deny all the same, for when `hodor-ext-authz` itself cannot be reached: `failOpen: false` in Istio, the default; `failure_mode_allow: false` in Envoy, the default.
+**The answer to the proxy is always a well-formed check response**: `OK` to allow, `PERMISSION_DENIED` with an HTTP `403` and no body to deny, never a gRPC error. Every denial is the same answer, whether Hodor denied or the token failed before Hodor was asked, so the answer tells a caller nothing of why. Set the proxy's own failure mode to deny all the same, for when `hodor-ext-authz` itself cannot be reached: `failOpen: false` in Istio, the default; `failure_mode_allow: false` in Envoy, the default.
 
 The reason of each denial is logged, at `info` for a denial and at `warn` when Hodor gave no decision, with the destination and the decision identifier when Hodor gave one, never the token. It is never sent to the caller. The metric `hodor.ext_authz.checks` counts checks by `outcome`, `allowed`, `denied` or `failed`, and `hodor.ext_authz.check.duration` measures them, in seconds.
 
@@ -197,7 +207,7 @@ meshConfig:
         timeout: 2s
 ```
 
-The token checked by the proxy. A sidecar asks external authorization before it checks a token, so the claims for `hodor-ext-authz` (`"token": {"header": "x-hodor-token-claims"}`) are written by the ingress gateway, whose `RequestAuthentication` the guide shows ([Istio, with sidecars](service-mesh.md#istio-with-sidecars)); the one of Orders refuses a token that fails, after the check:
+The token checked by the proxy. `hodor-ext-authz` checks it too, with `"token": "bearer"`, since the sidecar asks it before `RequestAuthentication` runs:
 
 ```yaml
 apiVersion: security.istio.io/v1
@@ -215,10 +225,9 @@ spec:
       audiences:
         - https://orders.example.com
       forwardOriginalToken: true
-      outputPayloadToHeader: x-hodor-token-claims
 ```
 
-`audiences` makes the proxy refuse a token for another application too, before the check is asked. `hodor-ext-authz` checks the audience either way, so leaving it out lets no such token in.
+`audiences` makes the proxy refuse a token for another application too. `hodor-ext-authz` checks the signature and the audience either way, so leaving either out lets no such token in; `forwardOriginalToken` passes the token on to Orders and to a check asked after it.
 
 Every request to Orders asked through `hodor-ext-authz`:
 
@@ -244,7 +253,6 @@ spec:
 | Missing | Until then |
 |---|---|
 | A cache of decisions | Every check is one `evaluate` (Decision 0029) |
-| Checking a token's signature itself | It believes claims that are the bearer token's own, and the proxy checks the token. Istio's sidecar and, in its own order, Envoy Gateway ask it before they check the token: check tokens at the ingress gateway, as [the service mesh guide](service-mesh.md#istio-with-sidecars) says |
 | A JWT-SVID as its credential | It proves who it is with the certificate its sidecar presents, or the identity Linkerd asserts |
 | The request's attributes, such as the address or the headers, as `context` | Policies decide on the subject, the resource and the action |
 | Reloading the configuration without a restart | A change takes a restart |

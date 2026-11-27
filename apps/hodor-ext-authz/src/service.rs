@@ -1,13 +1,15 @@
 //! Envoy's `envoy.service.auth.v3.Authorization`, answered by Hodor.
 //!
-//! Every check is one `evaluate`; every failure is a denial, answered as a
-//! well-formed `CheckResponse` and never as a gRPC error, so that the
-//! proxy's own failure mode is never reached. Specified in
+//! Every check is one `evaluate`, once the bearer token's signature holds;
+//! every failure is a denial, answered as the same well-formed
+//! `CheckResponse` and never as a gRPC error, so that the proxy's own
+//! failure mode is never reached and the answer tells nothing of why. Specified in
 //! `docs/operations/hodor-ext-authz.md`, "When it denies".
 
-use crate::check::{Denial, question};
+use crate::check::{Denial, Question, bearer, question};
 use crate::config::Settings;
 use crate::hodor::Hodor;
+use crate::key_set::KeySet;
 use envoy_types::ext_authz::v3::pb::{
     Authorization, AuthorizationServer, CheckRequest, CheckResponse, HttpStatusCode,
 };
@@ -50,6 +52,7 @@ struct Metrics {
 struct Inner {
     settings: Settings,
     hodor: Hodor,
+    keys: KeySet,
     metrics: Metrics,
 }
 
@@ -66,7 +69,8 @@ impl std::fmt::Debug for ExtAuthz {
 }
 
 impl ExtAuthz {
-    /// The adapter for `settings`, reaching Hodor through `http`.
+    /// The adapter for `settings`, reaching Hodor and the tenant's key set
+    /// through `http`, which should follow no redirect.
     #[must_use]
     pub fn new(settings: Settings, http: reqwest::Client) -> Self {
         let meter = opentelemetry::global::meter("hodor-ext-authz");
@@ -81,11 +85,13 @@ impl ExtAuthz {
                 .with_description("How long a check took, Hodor's answer included")
                 .build(),
         };
-        let hodor = Hodor::new(&settings, http);
+        let hodor = Hodor::new(&settings, http.clone());
+        let keys = KeySet::new(&settings, http);
         Self {
             inner: Arc::new(Inner {
                 settings,
                 hodor,
+                keys,
                 metrics,
             }),
         }
@@ -97,10 +103,11 @@ impl ExtAuthz {
         AuthorizationServer::new(self)
     }
 
-    /// How a check ends, without the answer to the proxy.
+    /// How a check ends, without the answer to the proxy. A bearer token
+    /// whose signature fails is denied before Hodor is asked anything.
     pub async fn decide(&self, check: &CheckRequest) -> Outcome {
         let inner = &self.inner;
-        let asked = match question(&inner.settings, check) {
+        let asked = match self.question(check).await {
             Ok(asked) => asked,
             Err(Denial(reason)) => {
                 tracing::info!(reason, "denied before asking Hodor");
@@ -129,10 +136,21 @@ impl ExtAuthz {
             }
         }
     }
+
+    /// The question of a check: its bearer token's claims once the
+    /// signature holds, then the rest of what it asks.
+    async fn question(&self, check: &CheckRequest) -> Result<Question, Denial> {
+        let inner = &self.inner;
+        let claims = match bearer(&inner.settings, check)? {
+            Some(token) => Some(inner.keys.verify(token).await?),
+            None => None,
+        };
+        question(&inner.settings, check, claims.as_ref())
+    }
 }
 
 /// The answer to the proxy: `OK`, or `PERMISSION_DENIED` with an HTTP 403
-/// and no body.
+/// and no body, the same for every denial.
 fn response(outcome: Outcome) -> CheckResponse {
     if outcome == Outcome::Allowed {
         let mut response = CheckResponse::with_status(Status::ok("allowed"));
