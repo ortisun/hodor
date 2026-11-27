@@ -42,10 +42,13 @@ Each check Envoy sends is one `evaluate`. Every part of it comes from the check,
 The claims must then hold:
 
 - `iss`, exactly the tenant's issuer. **A token of another tenant is denied**, even if the proxy accepted it.
+- `aud`, holding the audience of the application's resource server, `audience` in the application's entry: one text equal to it, or a list with it among its values. **A token for another application of the same tenant is denied**, and so is an ID token, whose audience is a client, even if the proxy accepted them.
 - `exp`, if present, in the future.
 - `sub`, the subject: a person, a service account or an agent by their user identifier, or the client itself when `sub` equals `client_id`. The `sub` of a [pairwise client](../architecture/contexts/oauth.md#pairwise-subject-identifiers) names nobody Hodor knows, and its decisions deny.
 
 Claims that are present but fail any of these are denied. The caller's identity is never used in their place.
+
+**Why the audience, when Hodor decides by the roles of each application.** `evaluate` is asked about the resource server of the destination's application, so the roles that count are the ones the subject holds there. They say what Ana may do on Orders; they do not say that the token was given to Orders. Without the check, a token issued for Invoices when Ana signed in there, replayed at Orders by Invoices or by anyone who read it there, would act as Ana on Orders, with every role she holds on Orders, and the scopes she consented to for Invoices would stand for consent she never gave Orders. The audience is what binds a token to the resource server it was issued for ([RFC 9068, section 4](https://www.rfc-editor.org/rfc/rfc9068#section-4), [Threat-OAuth-07](../security/threat-model.md#oauth-2x)), so `hodor-ext-authz` checks it whatever the proxy does ([Decision 0077](../decisions/0077-ext-authz-checks-the-audience.md)). A token Hodor issues names the resource servers of the request as its audiences, and the issuer too when it carries `openid` ([the access token](../architecture/contexts/oauth.md#the-access-token)), so a token issued for several applications is good at each of them.
 
 **No token: the caller's identity.** With no claims, the subject is `source.principal`, the identity of the workload that called, a SPIFFE identifier or a Linkerd identity. `hodor-ext-authz` sends it as `{"type": "workload_identity", "id": "…"}`, and Hodor resolves it to the service account whose clients are bound to it ([the Authorization API](../api/api-spec.md#authorization-api)). An identity no client binds is a subject Hodor does not know, and is denied by the native engine. With no claims and no identity, the request is denied.
 
@@ -87,7 +90,7 @@ For a tenant `acme` and an application Orders whose workload has the identity `s
 2. **Trust the mesh's trust domain**, `cluster.local`, by its bundle or as checked by the mesh ([trust domains](../architecture/contexts/keys.md#trust-domains)), and run Hodor behind its proxy with `HODOR_CLIENT_IDENTITY_HEADER` ([the identity of a workload](install-on-kubernetes.md#the-identity-of-a-workload)).
 3. **A service account for the adapter**, `POST /service-accounts`, which holds no role.
 4. **One client per protected application**: in the application Orders, a confidential client with the grant `client_credentials`, the method `spiffe_x509`, the service account as `principal`, the adapter's identity, here `spiffe://cluster.local/ns/hodor/sa/hodor-ext-authz`, as `spiffe_id`, and `authz:evaluate` among its scopes. The application has a resource server of its own, whose permissions and roles decide.
-5. **The application's entry in the configuration**, with the workload's identity as `destination`, the client's `client_id` and the route rules.
+5. **The application's entry in the configuration**, with the workload's identity as `destination`, the client's `client_id`, the audience of the application's resource server as `audience`, and the route rules.
 
 ## Configuration
 
@@ -116,6 +119,7 @@ The file:
     {
       "destination": "spiffe://cluster.local/ns/shop/sa/orders",
       "client_id": "0193f1c2-6a1d-7c55-b0c8-6b1f2c9d4e01",
+      "audience": "https://orders.example.com",
       "routes": [
         { "methods": ["GET"], "path": "/orders", "resource_type": "order", "action": "list" },
         { "methods": ["GET"], "path": "/orders/{id}", "resource_type": "order", "action": "read" },
@@ -135,6 +139,7 @@ The file:
 | `token` | Where the checked token's claims are: `{"metadata": {"namespace": …, "key": …}}` or `{"header": "<name>"}`. Left out: no token is read, and the subject is always the caller's identity |
 | `applications[].destination` | The protected workload's identity, as Envoy gives it in `destination.principal`. Each one once |
 | `applications[].client_id` | The application's client, bound to the adapter's identity |
+| `applications[].audience` | The audience of the application's resource server, as tokens for it name it in `aud`. Required, and not empty, even with no `token`, so that reading claims later never skips the check: claims whose `aud` does not hold it are denied |
 | `applications[].routes` | The route rules, in order. May be empty when every route sends context per route |
 
 The file is read once when the process starts. A file that does not read, or breaks a rule above, stops the process with a message saying why, before it listens. A change takes a restart.
@@ -207,9 +212,13 @@ spec:
   jwtRules:
     - issuer: https://login.example.com/t/acme
       jwksUri: https://login.example.com/t/acme/oauth2/jwks
+      audiences:
+        - https://orders.example.com
       forwardOriginalToken: true
       outputPayloadToHeader: x-hodor-token-claims
 ```
+
+`audiences` makes the proxy refuse a token for another application too, before the check is asked. `hodor-ext-authz` checks the audience either way, so leaving it out lets no such token in.
 
 Every request to Orders asked through `hodor-ext-authz`:
 
