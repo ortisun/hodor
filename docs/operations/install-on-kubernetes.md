@@ -332,7 +332,7 @@ On kind, with Kubernetes 1.37, Istio 1.31.4 and Linkerd edge-26.11.1:
 - **The limits.** Behind Istio's ingress gateway, two clients outside the mesh were each limited on their own, whatever `X-Forwarded-For` they wrote. A workload of the mesh that wrote a new address on every request was limited as one client, and so was a caller outside the mesh that reached Hodor's sidecar directly. With Linkerd, the same, with a meshed pod writing `X-Forwarded-For` in the gateway's place.
 - **What each proxy hands an application**: the address and the headers, the gateway's identity among them, with sidecars, ztunnel and a waypoint. The network policy with Linkerd's port 4143 and ambient mode's port 15008. Going out with Istio's `ALLOW_ANY` and `REGISTRY_ONLY`, and Linkerd's delay on port 587.
 
-Not tried: a cluster of several nodes, a network plugin other than kind's, a real ingress in front of Linkerd such as Envoy Gateway, Istio's gateways made from the Gateway API, Istio with the way out restricted by the network policy, classic sidecars, and the probes' address in ambient mode under a network plugin that enforces it. The service mesh guide (Issue-113) tries the rest.
+Not tried: a cluster of several nodes, a network plugin other than kind's, a real ingress in front of Linkerd such as Envoy Gateway, Istio's gateways made from the Gateway API, Istio with the way out restricted by the network policy, classic sidecars, and the probes' address in ambient mode under a network plugin that enforces it. [The service mesh guide](service-mesh.md#what-was-tried-and-what-was-not) gathers what was tried for every mesh, and the demonstration of Milestone 11 (Issue-114) is to run the examples for Istio and Linkerd on kind.
 
 ### The identity of a workload
 
@@ -534,6 +534,7 @@ kind delete cluster --name hodor
 | Missing | Until then |
 |---|---|
 | Istio's ambient mode as a value of the chart | `trustedProxies` and a network policy of your own, as [inside a service mesh](#inside-a-service-mesh) says |
+| `mesh.provider` putting `hodor-ext-authz` and `hodor-cert-manager-issuer` in the mesh | It injects the server, the worker and the migration job only. Label the namespace for Istio, or set `extAuthz.podAnnotations` and `certManagerIssuer.podAnnotations` for Linkerd, as [the service mesh guide](service-mesh.md#what-is-missing) says (Issue-114) |
 | Autoscaling on request concurrency | The autoscaler follows processor use only |
 | Dashboards and alerts | Metrics and traces are sent where `telemetry` says; what is drawn and alerted from them is yours |
 | The Open Policy Agent sidecar and Redis | Neither is used by Hodor yet: both belong to later phases of the [roadmap](../product/roadmap.md) |
