@@ -6,6 +6,10 @@
 // nothing: checking a delivery's signature is the part of the receiver the
 // demonstrations play themselves.
 //
+// It also keeps what a PUT gives it and answers it to every GET of the same
+// path, so that the demonstration of Milestone 13 has a client's address
+// for request objects that Hodor can fetch, and it remembers each such GET.
+//
 // One file, no dependencies: Node.js and its standard library.
 // See docs/development/local-setup.md.
 
@@ -19,6 +23,10 @@ const LARGEST = 128 * 1024;
 
 /** What was received, oldest first. */
 const received = [];
+/** What a PUT gave, by path, answered to every GET of that path. */
+const kept = new Map();
+/** The GETs of what a PUT gave, oldest first. */
+const fetched = [];
 
 const HEADERS = ["content-type", "webhook-id", "webhook-timestamp", "webhook-signature"];
 
@@ -60,6 +68,31 @@ const server = createServer(async (request, response) => {
         (item) => (path === null || item.path === path) && (id === null || item.headers["webhook-id"] === id),
       );
       json(response, 200, { items });
+      return;
+    }
+    if (request.method === "GET" && url.pathname === "/fetched") {
+      const path = url.searchParams.get("path");
+      json(response, 200, { items: fetched.filter((item) => path === null || item.path === path) });
+      return;
+    }
+    if (request.method === "PUT") {
+      const body = await read(request);
+      kept.delete(url.pathname);
+      kept.set(url.pathname, body);
+      if (kept.size > KEPT) {
+        kept.delete(kept.keys().next().value);
+      }
+      response.writeHead(204);
+      response.end();
+      return;
+    }
+    if (request.method === "GET" && kept.has(url.pathname)) {
+      fetched.push({ path: url.pathname, accept: request.headers.accept ?? null, fetched_at: new Date().toISOString() });
+      if (fetched.length > KEPT) {
+        fetched.shift();
+      }
+      response.writeHead(200, { "content-type": "application/oauth-authz-req+jwt", "cache-control": "no-store" });
+      response.end(kept.get(url.pathname));
       return;
     }
     if (request.method === "POST") {

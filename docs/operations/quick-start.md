@@ -404,6 +404,34 @@ kind delete cluster --name hodor-milestone-12-istio
 kind delete cluster --name hodor-milestone-12-linkerd
 ```
 
+## The demonstration of Milestone 13
+
+[Milestone 13](../product/epics.md#milestone-13-requests-that-say-what-they-need) lets an application say what it needs in a signed request, by value, pushed to Hodor first or kept at an address of its own, and ask for exactly the claims it wants; a person has the standard claims of OpenID Connect, and every parameter of a request is honored. Its demonstration plays an administrator, three applications and two people, against the development stack:
+
+```bash
+python3 deploy/demo/requests_and_claims.py
+```
+
+| Step | What it shows |
+|---|---|
+| Two tenants, their administrators, and two people | Two tenants, each with a signing key and a first administrator made with the command-line tool; Ana and Bruno in the first, each choosing a password through a recovery link |
+| What discovery says a request may say | Request objects by value, signed with `ES256` among others; the pushed request endpoint, which the tenant does not require; request objects at a client's address, which must be registered; the `claims` parameter; the scopes `address` and `phone` |
+| Her standard claims, on the account page | Ana signs in and gives, as the profile page does, a given name, a family name, a telephone number and a postal address. The number is kept as E.164, `+5511912345678`, and not verified: she cannot vouch for it herself |
+| Two applications that sign their requests | Through the administration interface, Billing and Payroll, each of the tenant's own, each with a client that proves who it is with `private_key_jwt`, signs its request objects with `ES256`, keeps them under an address of its own at the stack's receiver, and has a P-256 key the script makes |
+| A request object, signed | Billing sends Ana's browser with its request as a request object signed with its key, asking through `claims` for her names, her number and her address in the ID token. It gets a code at once, redeems it with an assertion signed by the same key, and the ID token, checked against the tenant's key set, holds each claim under its own name |
+| A pushed request | Billing pushes its request, proving who it is with its key, and gets a reference that lives 60 seconds. The browser brought with the reference alone gets a code, whose ID token carries the pushed `nonce`; brought again, the reference is `invalid_request_uri` |
+| A request object at the application's own address | Billing keeps a signed object at its address at the receiver, and sends the browser with that address and the SHA-256 of the object after `#`. Hodor fetches it once and it is the request. An address under Payroll's, which Billing did not register, is `invalid_request_uri` and never fetched; Billing's own address with the hash of other content is `invalid_request_uri` |
+| What must be refused, refused | Billing's request signed by Payroll's key is `invalid_request_object`. A reference Payroll pushed, brought for Billing, and a reference the second tenant's own application pushed there, brought to the first tenant for Billing, are each `invalid_request_uri`. Each is answered at Billing's redirect address, never with a code |
+| A claim of a scope she did not agree to | Travel, an application of another company, asks for the scope `openid` alone and, through `claims`, for her email address as essential, in the ID token and at UserInfo. The consent page asks about `openid` alone; she agrees, and neither the ID token nor UserInfo holds her address |
+| An essential `acr` steps her up | Ana sets up an authenticator application. Billing asks, in a signed request object, for `acr` as essential with the multi-factor level: the session of her password is not enough, only the application's code is asked for, and the ID token says `urn:hodor:acr:mfa` with `pwd`, `otp` and `mfa` |
+| The ID token of another person, as a hint | Billing sends Ana's ID token as `id_token_hint` with `prompt=none`: in her own browser it is answered with a code, asking nothing; in a browser signed in as Bruno it is answered `login_required` |
+
+The applications are played by the script, as in [the demonstration of Milestone 4](#the-demonstration-of-milestone-4): they register redirect addresses nobody listens on, and read where the browser is sent. Their keys are P-256 keys made by the script, with the arithmetic done by hand, for the demonstration only. The address where Billing and Payroll keep their request objects is a path of the stack's receiver of webhooks, `http://webhook-receiver:9600/request-objects/…`, which answers what the script puts there and tells what Hodor fetched ([the development receiver](../development/local-setup.md#the-development-receiver-of-webhooks)); its host is named in the server's `HODOR_OUTBOUND_DEVELOPMENT_HOSTS`, so it may be plain HTTP and inside the stack. Nowhere real has either.
+
+The OpenID conformance suite's Basic plan, the last part of the milestone's demonstration script, is run by [the conformance job](conformance.md) rather than here: every test of the Basic and Config plans passes, but three that keep a screenshot for review ([expected results](conformance.md#expected-results)), and none is skipped.
+
+It ends with `The demonstration of Milestone 13 passed.` It can be run again and again, and runs in continuous integration after the demonstration of Milestone 9 and before that of Milestone 6, whose second worker removes the delivered messages this one reads. The variables of [the first demonstration](#the-demonstration) tell it where the stack is, and `HODOR_WEBHOOK_RECEIVER_URL` where the receiver is, `http://localhost:9600` unless given.
+
 ## Stop
 
 Stop the stack and delete its data:
