@@ -574,6 +574,24 @@ def linkerd_on_the_root(cluster, admin, root, state):
              "--set", f"identityTrustDomain={WEST}", "--set-file", f"identityTrustAnchorsPEM={anchors}")
     check(cluster.exists("--namespace", "linkerd", "deployment/linkerd-identity"),
           f"Linkerd {LINKERD_VERSION}, whose trust domain is {WEST}, its issuer the one cert-manager keeps")
+    # Linkerd's injector lets a pod through unchanged while it cannot answer,
+    # so its deployments being ready is not enough: wait until it injects a
+    # pod asked for on a dry run, before ledger's pods are made.
+    probe = json.dumps({"apiVersion": "v1", "kind": "Pod",
+                        "metadata": {"name": "injected", "namespace": "default",
+                                     "annotations": {"linkerd.io/inject": "enabled"}},
+                        "spec": {"containers": [{"name": "app", "image": "python:3.13.9-alpine"}]}})
+
+    def injects():
+        done = cluster.run("kubectl", "create", "--dry-run=server", "--output", "json", "--filename", "-",
+                           given=probe, allowed=(0, 1))
+        if done.returncode != 0:
+            return False
+        spec = json.loads(done.stdout)["spec"]
+        return any(container["name"] == "linkerd-proxy"
+                   for container in spec.get("initContainers", []) + spec["containers"])
+
+    until("Linkerd's proxy injector injecting pods", injects, seconds=180)
     cluster.apply((HERE / "linkerd-workloads.yaml").read_text())
     cluster.rolled_out("ledger", "deployment/ledger")
     containers = cluster.kubectl("get", "pods", "--namespace", "ledger", "--output",
