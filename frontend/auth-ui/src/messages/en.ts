@@ -136,7 +136,7 @@ export const en = {
   signOutQuestion: (tenant: string) => `An application asked to sign you out of ${tenant}. Sign out here too?`,
   staySignedIn: "Stay signed in",
   signedOutTitle: "Signing you out",
-  signedOutTelling: "Telling the applications you signed in to that you signed out. This takes a few seconds at most.",
+  signedOutTelling: "Telling the applications you used that your session here has ended. This takes a few seconds at most.",
   signedOutFrameTitle: "Telling an application that you signed out",
   securityLink: "Second factors and recovery codes",
   profileLink: "Your name, addresses and telephone number",

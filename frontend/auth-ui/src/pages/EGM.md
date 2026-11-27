@@ -124,9 +124,10 @@ address.
   that calls `client.withdrawConsent(clientId)` and says so
   (`consentWithdrawn`), links to the
   profile page (`text.profileLink`) and the security page, and a sign-out `Action` that calls
-  `client.signOut()` and `leave`s to `/t/{tenant}/account/signed-out`,
+  `client.signOut()`, then `client.signedOutFrames()` (a failure counts
+  as none): with frames it `leave`s to `/t/{tenant}/account/signed-out`,
   whose frames tell the session's applications before it goes on to the
-  sign-in page.
+  sign-in page; without, it goes straight to `go("sign-in", "signed-out")`.
 - `ProfilePage.tsx:ProfilePage(PageProps)` - the person's display name and
   standard claims. `client.session()` (none means `go("sign-in")`), then
   `client.profile()`. One form: the display name (`autocomplete="name"`),
@@ -161,9 +162,9 @@ address.
   logout asks. `client.session()`: none means `leave` to
   `/t/{tenant}/oauth2/logout/finish` at once; else it shows
   `signOutQuestion(tenant)` with a primary `signOut` `Action` (calls
-  `client.signOut()`, then `leave` to
-  `/t/{tenant}/account/signed-out?continue=logout`, which goes on to the
-  finish; a 401 counts as signed out and `leave`s to the finish at once)
+  `client.signOut()`, then `client.signedOutFrames()`: with frames `leave`
+  to `/t/{tenant}/account/signed-out?continue=logout`, which goes on to the
+  finish, and without `leave` to the finish at once; a 401 counts as signed out and `leave`s to the finish at once)
   and `staySignedIn` (`go("account")`). It never learns the return
   address: the server keeps it.
 - `SignedOutPage.tsx:SignedOutPage({ ...PageProps, continuesLogout,

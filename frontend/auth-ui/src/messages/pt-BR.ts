@@ -139,7 +139,7 @@ export const ptBR: Messages = {
   signOutQuestion: (tenant) => `Uma aplicação pediu para você sair de ${tenant}. Sair aqui também?`,
   staySignedIn: "Continuar conectado",
   signedOutTitle: "Saindo",
-  signedOutTelling: "Avisando os aplicativos em que você entrou que você saiu. Isso leva no máximo alguns segundos.",
+  signedOutTelling: "Avisando os aplicativos que você usou de que a sua sessão aqui terminou. Isso leva no máximo alguns segundos.",
   signedOutFrameTitle: "Avisando um aplicativo de que você saiu",
   securityLink: "Segundos fatores e códigos de recuperação",
   profileLink: "Seu nome, endereços e telefone",

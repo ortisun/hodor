@@ -824,17 +824,33 @@ describe("the account page", () => {
     await waitFor(() => expect(go).toHaveBeenCalledWith("sign-in"));
   });
 
-  it("signs out and goes to tell the applications, which then says so on the sign-in page", async () => {
-    const { props, sent, leave, user } = page({
+  it("signs out and says so on the sign-in page when no application is to be told", async () => {
+    const { props, sent, go, leave, user } = page({
       "GET /session": [session],
       "GET /consents": [json(200, { consents: [] })],
       "DELETE /session": [empty(204)],
+      "GET /signed-out": [json(200, { frames: [] })],
+    });
+    render(<AccountPage {...props} />);
+    await user.click(await screen.findByRole("button", { name: en.signOut }));
+
+    await waitFor(() => expect(go).toHaveBeenCalledWith("sign-in", "signed-out"));
+    expect(leave).not.toHaveBeenCalled();
+    expect(sent.at(-2)).toMatchObject({ method: "DELETE", path: "/session", csrfToken: "of-the-session" });
+  });
+
+  it("signs out and goes to tell the applications first when the server kept frames", async () => {
+    const { props, go, leave, user } = page({
+      "GET /session": [session],
+      "GET /consents": [json(200, { consents: [] })],
+      "DELETE /session": [empty(204)],
+      "GET /signed-out": [json(200, { frames: ["https://payroll.example.com/fc?iss=x&sid=y"] })],
     });
     render(<AccountPage {...props} />);
     await user.click(await screen.findByRole("button", { name: en.signOut }));
 
     await waitFor(() => expect(leave).toHaveBeenCalledWith("/t/acme/account/signed-out"));
-    expect(sent.at(-1)).toMatchObject({ method: "DELETE", path: "/session", csrfToken: "of-the-session" });
+    expect(go).not.toHaveBeenCalled();
   });
 
   it("lists the applications the person let in and withdraws one", async () => {
@@ -1130,15 +1146,31 @@ describe("the sign-out page", () => {
     expect(screen.queryByRole("button", { name: en.signOut })).toBeNull();
   });
 
-  it("asks, signs out and goes on to tell the applications before the finish", async () => {
-    const { props, sent, leave, user } = page({ "GET /session": [session], "DELETE /session": [empty(204)] });
+  it("asks, signs out and goes on to the finish when no application is to be told", async () => {
+    const { props, sent, leave, user } = page({
+      "GET /session": [session],
+      "DELETE /session": [empty(204)],
+      "GET /signed-out": [json(200, { frames: [] })],
+    });
     render(<SignOutPage {...props} />);
     expect(await screen.findByText(en.signOutQuestion("acme"))).toBeTruthy();
     expect(leave).not.toHaveBeenCalled();
 
     await user.click(screen.getByRole("button", { name: en.signOut }));
+    await waitFor(() => expect(leave).toHaveBeenCalledWith(finish));
+    expect(sent.at(-2)).toMatchObject({ method: "DELETE", path: "/session", csrfToken: "of-the-session" });
+  });
+
+  it("goes on to tell the applications before the finish when the server kept frames", async () => {
+    const { props, leave, user } = page({
+      "GET /session": [session],
+      "DELETE /session": [empty(204)],
+      "GET /signed-out": [json(200, { frames: ["https://payroll.example.com/fc?iss=x&sid=y"] })],
+    });
+    render(<SignOutPage {...props} />);
+    await user.click(await screen.findByRole("button", { name: en.signOut }));
     await waitFor(() => expect(leave).toHaveBeenCalledWith(signedOut));
-    expect(sent.at(-1)).toMatchObject({ method: "DELETE", path: "/session", csrfToken: "of-the-session" });
+    expect(leave).toHaveBeenCalledTimes(1);
   });
 
   it("stays signed in when the person says so, and the application is not told", async () => {

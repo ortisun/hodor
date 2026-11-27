@@ -54,9 +54,15 @@ export function AccountPage({ tenant, client, text, go, leave, path }: PageProps
     setFailure(null);
     try {
       await client.signOut();
-      // The applications of the session are told through the browser
-      // first; that page then goes on to the sign-in page.
-      leave(`/t/${tenant}/account/signed-out`);
+      // When the server kept frames for this sign-out, the applications of
+      // the session are told through the browser first, and that page then
+      // goes on to the sign-in page; otherwise the person goes there at once.
+      const frames = await client.signedOutFrames().catch((): string[] => []);
+      if (frames.length > 0) {
+        leave(`/t/${tenant}/account/signed-out`);
+      } else {
+        go("sign-in", "signed-out");
+      }
     } catch (thrown) {
       const failed = asFailure(thrown);
       if (failed.status === 401) {

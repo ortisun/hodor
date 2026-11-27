@@ -411,7 +411,7 @@ Answers who is signed in:
 
 `DELETE /interaction/session` ends the session this browser holds and removes the session cookie. The answer is `204`.
 
-When a client the person signed in to with the session has a [front-channel logout address](../architecture/contexts/oauth.md#front-channel-logout), the answer also sets the cookie `__Secure-hodor_signed_out`, which names the frames the server made and kept for the signed-out page; when none has, the answer tells the browser to forget that cookie. The pages then go to `/account/signed-out`, which loads the frames and goes on ([the hosted pages](../architecture/hosted-pages.md#the-pages)).
+When a client the person signed in to with the session has a [front-channel logout address](../architecture/contexts/oauth.md#front-channel-logout), the answer also sets the cookie `__Secure-hodor_signed_out`, which names the frames the server made and kept for the signed-out page; when none has, the answer tells the browser to forget that cookie. The pages then ask [`GET /interaction/signed-out`](#the-frames-of-a-sign-out) for the frames, and go to `/account/signed-out`, which loads them and goes on, only when there are some ([the hosted pages](../architecture/hosted-pages.md#the-pages)).
 
 The session is ended on the server, not merely forgotten by the browser: a copy of the token made earlier stops working at the same moment. The next request with it gets `401`.
 

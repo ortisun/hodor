@@ -54,7 +54,10 @@ export function SignOutPage({ tenant, client, text, go, leave }: PageProps) {
     setFailure(null);
     try {
       await client.signOut();
-      leave(signedOut);
+      // Without frames to load there is nothing to wait for: straight on to
+      // the finish.
+      const frames = await client.signedOutFrames().catch((): string[] => []);
+      leave(frames.length > 0 ? signedOut : finish);
     } catch (thrown) {
       const failed = asFailure(thrown);
       if (failed.status === 401) {

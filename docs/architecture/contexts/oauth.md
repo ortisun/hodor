@@ -1601,7 +1601,7 @@ The person is asked whenever the request does not prove that it comes from the s
 1. The checked request is kept in the cookie `__Secure-hodor_logout`: the client, the return address and `state`. It holds nothing secret; it only says where to go afterwards, and it is checked again when it is used. It is `HttpOnly`, `Secure`, `SameSite=Strict`, with `Path=/t/{slug}` and a `Max-Age` of 600 seconds.
 2. The browser is sent to the hosted pages, `/t/{slug}/account/sign-out`, with `ui_locales` when the request had it.
 3. The page asks who is signed in. When nobody is, it goes on to the [finish](#finishing) at once. Otherwise it asks "Sign out of {tenant}?", with two buttons:
-   - **Sign out** ends the session through the interaction interface, as the account page does, and goes on to the [signed-out page](#the-signed-out-page) with `continue=logout`, which loads the frames of [front-channel logout](#front-channel-logout), if there are any, and then goes on to the finish.
+   - **Sign out** ends the session through the interaction interface, as the account page does, and goes on to the finish: through the [signed-out page](#the-signed-out-page) with `continue=logout`, which loads the frames of [front-channel logout](#front-channel-logout), when the server kept some for the sign-out, and straight there otherwise.
    - **Stay signed in** goes to the account page. The application is not told: the person stays signed in to Hodor and can sign in to the application again.
 
 ### Finishing
@@ -1865,6 +1865,7 @@ A session that ends with no client to frame keeps no row, and its answer tells t
 
 `/t/{slug}/account/signed-out` is a page of [the hosted pages](../hosted-pages.md#the-pages).
 
+- The browser comes to it only when there are frames to load: the end-session endpoint sends it there when it kept some, and the account page and the sign-out page ask `GET /interaction/signed-out` first and go on without it when the answer is empty.
 - It asks `GET /interaction/signed-out` for its frames, and loads each address in a frame of its own. A frame is invisible, takes no clicks (`pointer-events: none`) and is sandboxed with `allow-scripts allow-same-origin` only: the client's page may run its script and reach its own cookies, but may not navigate Hodor's page, open a window or submit a form.
 - It says, while it waits, that the person's applications are being told they signed out.
 - It goes on when every frame has loaded or **five seconds** have passed, whichever comes first. A frame that never loads does not keep the person waiting longer.
