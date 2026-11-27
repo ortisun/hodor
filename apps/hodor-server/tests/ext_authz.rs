@@ -335,7 +335,13 @@ impl World {
     fn settings(&self, url: &str) -> Settings {
         Settings::from_json(
             &json!({
-                "hodor": { "url": url, "tenant": "acme", "issuer": self.issuer() },
+                // Thirty seconds, not the default one: these tests are
+                // about decisions, and a busy machine, its database in a
+                // virtual machine, must not turn a slow answer into a
+                // denial. `every_failure_is_a_denial` sets its own timeout
+                // where the timeout itself is tested.
+                "hodor": { "url": url, "tenant": "acme", "issuer": self.issuer(),
+                           "timeout_milliseconds": 30000 },
                 "token": "bearer",
                 "applications": [
                     { "destination": ORDERS, "client_id": self.orders_client, "audience": ORDERS_AUDIENCE, "routes": [
@@ -479,6 +485,18 @@ async fn world() -> World {
         _database: database,
     };
     world.admin(Method::POST, "/keys/sig:rotate", None).await;
+    // The first read of a new tenant's published key set makes its RS256,
+    // PS256 and EdDSA keys, two of them RSA, which takes hundreds of
+    // milliseconds, and more than the adapter's timeout on a busy machine:
+    // its first check would then be denied, and every check for the next
+    // ten seconds. A tenant's keys are made by the worker before anyone
+    // reads them; read the set once here, as that tenant would be.
+    let published = Client::new()
+        .get(format!("{}/oauth2/jwks", world.issuer()))
+        .send()
+        .await
+        .expect("the key set");
+    assert_eq!(published.status(), StatusCode::OK);
     world
         .admin(
             Method::POST,
