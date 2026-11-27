@@ -566,7 +566,10 @@ def protected(cluster, mesh, admin):
     if mesh.istio:
         step("Orders protected by its sidecar: RequestAuthentication, and an AuthorizationPolicy of action CUSTOM")
         cluster.apply(templated("istio-orders.yaml", issuer=issuer))
-        shown(f"tokens of {issuer} for {ORDERS}, and every request asked of hodor-ext-authz")
+        # A sidecar asks external authorization before it checks a token: the
+        # ingress gateway checks it first and writes the claims for the check.
+        shown(f"tokens of {issuer} checked at the gateway, which writes their claims, and at Orders for {ORDERS}; "
+              "every request asked of hodor-ext-authz")
     else:
         step("Orders protected by Envoy Gateway: one SecurityPolicy that checks the token and asks hodor-ext-authz")
         key_set = request("GET", f"{issuer.replace(INSIDE, SERVER)}/oauth2/jwks").text

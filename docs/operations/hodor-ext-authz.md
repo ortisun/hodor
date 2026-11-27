@@ -197,7 +197,7 @@ meshConfig:
         timeout: 2s
 ```
 
-The token checked by the proxy, with its claims for `hodor-ext-authz` (`"token": {"header": "x-hodor-token-claims"}`):
+The token checked by the proxy. A sidecar asks external authorization before it checks a token, so the claims for `hodor-ext-authz` (`"token": {"header": "x-hodor-token-claims"}`) are written by the ingress gateway, whose `RequestAuthentication` the guide shows ([Istio, with sidecars](service-mesh.md#istio-with-sidecars)); the one of Orders refuses a token that fails, after the check:
 
 ```yaml
 apiVersion: security.istio.io/v1
@@ -244,6 +244,7 @@ spec:
 | Missing | Until then |
 |---|---|
 | A cache of decisions | Every check is one `evaluate` (Decision 0029) |
+| Checking a token's signature itself | It believes claims that are the bearer token's own, and the proxy checks the token. Istio's sidecar and, in its own order, Envoy Gateway ask it before they check the token: check tokens at the ingress gateway, as [the service mesh guide](service-mesh.md#istio-with-sidecars) says |
 | A JWT-SVID as its credential | It proves who it is with the certificate its sidecar presents, or the identity Linkerd asserts |
 | The request's attributes, such as the address or the headers, as `context` | Policies decide on the subject, the resource and the action |
 | Reloading the configuration without a restart | A change takes a restart |
