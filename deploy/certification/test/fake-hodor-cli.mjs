@@ -86,7 +86,14 @@ if (group === "--version") {
     redirectUris: all("redirect-uri"), postLogoutRedirectUris: all("post-logout-redirect-uri"),
     responseTypes: all("response-type"), backchannelLogoutUri: one("backchannel-logout-uri"),
     frontchannelLogoutUri: one("frontchannel-logout-uri"), withoutPkce: flag("without-pkce"),
+    browserAccessTokens: flag("browser-access-tokens"),
   };
+  // As Hodor refuses it: a type that returns an access token needs the
+  // mark (Issue-128).
+  if (made.clients[id].responseTypes.some((type) => type.split(" ").includes("token"))
+    && !made.clients[id].browserAccessTokens) {
+    fail("oauth.client_response_types_invalid");
+  }
   output = `client ${id}\nsecret ${secret}\nexpires 2027-11-27T00:00:00Z`;
 } else if (group === "client" && command === "disable") {
   const client = tenant(one("tenant")).clients[one("id")];

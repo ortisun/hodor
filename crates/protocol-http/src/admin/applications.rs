@@ -19,11 +19,12 @@ use axum::{Extension, Json};
 use hodor_identity::api::{UserKind, UserStatus};
 use hodor_kernel::{DomainError, ErrorKind, TenantContext, UserId};
 use hodor_oauth::api::{
-    Application, ApplicationId, ApplicationSettings, ApplicationType, AuthenticationMethod, Client,
-    ClientId, ClientSecret, ClientSecretId, ClientSettings, ClientType, CreateClient,
-    CreateResourceServer, ExchangeRule, GrantType, IdTokenAlgorithm, LinkerdIdentity,
-    RequestObjectAlgorithm, ResourceServer, ResourceServerId, ResourceServerSettings, ResponseType,
-    RotateSecret, ScopeDefinition, SpiffeId, Status, SubjectType, TokenPolicy, response_types_kept,
+    Application, ApplicationId, ApplicationSettings, ApplicationType, AuthenticationMethod,
+    BrowserAccessTokens, Client, ClientId, ClientSecret, ClientSecretId, ClientSettings,
+    ClientType, CreateClient, CreateResourceServer, ExchangeRule, GrantType, IdTokenAlgorithm,
+    LinkerdIdentity, RequestObjectAlgorithm, ResourceServer, ResourceServerId,
+    ResourceServerSettings, ResponseType, RotateSecret, ScopeDefinition, SpiffeId, Status,
+    SubjectType, TokenPolicy, response_types_kept,
 };
 use serde::{Deserialize, Serialize};
 use time::Duration;
@@ -450,6 +451,9 @@ struct ClientBody {
     tos_uri: Option<String>,
     /// Whether it registered itself at the registration endpoint.
     registered: bool,
+    /// The mark for access tokens through the browser, with its scopes,
+    /// who set it and when, or `null`.
+    browser_access_tokens: Option<serde_json::Value>,
     token_policy: TokenPolicyBody,
     /// What identifies each secret and when it expires: never the secret
     /// or its hash.
@@ -520,6 +524,10 @@ impl From<&Client> for ClientBody {
             policy_uri: settings.policy_uri.clone(),
             tos_uri: settings.tos_uri.clone(),
             registered: client.is_registered(),
+            browser_access_tokens: settings
+                .browser_access_tokens
+                .as_ref()
+                .map(BrowserAccessTokens::to_json),
             token_policy: TokenPolicyBody {
                 access_token_seconds: policy.access_token.whole_seconds(),
                 id_token_seconds: policy.id_token.whole_seconds(),
@@ -596,6 +604,22 @@ struct NewClientBody {
     spiffe_id: Option<String>,
     linkerd_identity: Option<String>,
     tls_client_certificate_bound_access_tokens: Option<bool>,
+    browser_access_tokens: Option<MarkBody>,
+}
+
+/// The mark for access tokens through the browser, as an administrator
+/// gives it: who set it and when are the server's to write.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct MarkBody {
+    #[serde(default)]
+    scopes: Vec<String>,
+}
+
+impl From<MarkBody> for BrowserAccessTokens {
+    fn from(mark: MarkBody) -> Self {
+        Self::asked(mark.scopes)
+    }
 }
 
 /// One exchange rule, as the interface writes it.
@@ -670,6 +694,11 @@ struct ClientChangesBody {
     #[serde(default, deserialize_with = "present")]
     linkerd_identity: Option<Option<String>>,
     tls_client_certificate_bound_access_tokens: Option<bool>,
+    /// Left out: unchanged, unless the change takes `authorization_code`
+    /// away; `null`: removed; a mark: replaced, keeping who set it when
+    /// its scopes are the same.
+    #[serde(default, deserialize_with = "present")]
+    browser_access_tokens: Option<Option<MarkBody>>,
 }
 
 /// The identities a change leaves a client bound to. A field left out keeps
@@ -894,6 +923,7 @@ async fn create_client(
             settings.certificate_bound_access_tokens = new
                 .tls_client_certificate_bound_access_tokens
                 .unwrap_or_default();
+            settings.browser_access_tokens = new.browser_access_tokens.map(Into::into);
             if let Some(principal) = &new.principal {
                 settings.principal = Some(
                     principal_of(
@@ -982,13 +1012,27 @@ async fn change_client(
                 Some(given) => grant_types(&given)?,
                 None => now.grant_types.clone(),
             };
+            // A client that loses `authorization_code` loses its mark with
+            // its response types, unless the change names it.
+            let browser_access_tokens = match changes.browser_access_tokens {
+                Some(given) => given.map(Into::into),
+                None if !grants.contains(&GrantType::AuthorizationCode) => None,
+                None => now.browser_access_tokens.clone(),
+            };
             let settings = ClientSettings {
                 name: changes.name.unwrap_or(now.name),
                 authentication_method: method,
+                // Without the mark, the types that return an access token
+                // go, unless the change names the types.
                 response_types: match &changes.response_types {
                     Some(given) => response_types(given)?,
-                    None => response_types_kept(&now.response_types, &grants),
+                    None => response_types_kept(
+                        &now.response_types,
+                        &grants,
+                        browser_access_tokens.is_some(),
+                    ),
                 },
+                browser_access_tokens,
                 grant_types: grants.clone(),
                 redirect_uris: changes.redirect_uris.unwrap_or(now.redirect_uris),
                 post_logout_redirect_uris: changes

@@ -17,11 +17,11 @@ use hodor_identity::api::UserKind;
 use hodor_kernel::{DomainError, ErrorKind, SystemClock, TenantContext, UserId};
 use hodor_oauth::api::{
     Application, ApplicationId, ApplicationPorts, ApplicationService, ApplicationSettings,
-    AuthenticationMethod, ClaimMapper, ClaimMapperId, ClaimMapperPorts, ClaimMapperService,
-    ClaimMapperSettings, ClaimSource, ClaimTarget, Client, ClientId, ClientSettings, ClientType,
-    CreateClient, CreateResourceServer, ExchangeRule, GrantType, IdTokenAlgorithm, LinkerdIdentity,
-    RequestObjectAlgorithm, ResourceServerSettings, ResponseType, RotateSecret, ScopeDefinition,
-    SpiffeId, Status, SubjectType,
+    AuthenticationMethod, BrowserAccessTokens, ClaimMapper, ClaimMapperId, ClaimMapperPorts,
+    ClaimMapperService, ClaimMapperSettings, ClaimSource, ClaimTarget, Client, ClientId,
+    ClientSettings, ClientType, CreateClient, CreateResourceServer, ExchangeRule, GrantType,
+    IdTokenAlgorithm, LinkerdIdentity, RequestObjectAlgorithm, ResourceServerSettings,
+    ResponseType, RotateSecret, ScopeDefinition, SpiffeId, Status, SubjectType,
 };
 use hodor_tenant::api::TenantService;
 use std::fmt::Write as _;
@@ -95,8 +95,10 @@ pub(crate) enum ClientCommand {
         #[arg(long = "grant", required = true)]
         grants: Vec<String>,
         /// A response type the authorization endpoint may answer it with:
-        /// `code`, `id_token`, `code id_token` or `none`; given once per
-        /// type. `code` alone unless given, for a client with
+        /// `code`, `id_token`, `code id_token` or `none`, and with
+        /// `--browser-access-tokens` `token`, `id_token token`,
+        /// `code token` or `code id_token token`; given once per type.
+        /// `code` alone unless given, for a client with
         /// `authorization_code`.
         #[arg(long = "response-type")]
         response_types: Vec<String>,
@@ -193,6 +195,19 @@ pub(crate) enum ClientCommand {
         /// `tls_client_certificate_bound_access_tokens` of RFC 8705.
         #[arg(long)]
         bound_tokens: bool,
+        /// Mark it for access tokens through the browser, which the
+        /// response types that return one need; recorded as set by Hodor
+        /// and shown on the tenant's security posture.
+        #[arg(long)]
+        browser_access_tokens: bool,
+        /// A scope the access token through the browser may carry beyond
+        /// those of OpenID Connect; given once per scope, only with
+        /// `--browser-access-tokens`.
+        #[arg(
+            long = "browser-access-token-scope",
+            requires = "browser_access_tokens"
+        )]
+        browser_access_token_scopes: Vec<String>,
     },
     /// List an application's clients.
     List {
@@ -526,6 +541,8 @@ pub(crate) async fn run_client(
             spiffe_id,
             linkerd_identity,
             bound_tokens,
+            browser_access_tokens,
+            browser_access_token_scopes,
         } => {
             let (tenant, service) = open(database, &tenant).await?;
             // The addresses are checked, and a sector identifier address
@@ -592,6 +609,8 @@ pub(crate) async fn run_client(
                 .map(LinkerdIdentity::parse)
                 .transpose()?;
             settings.certificate_bound_access_tokens = bound_tokens;
+            settings.browser_access_tokens = browser_access_tokens
+                .then(|| BrowserAccessTokens::asked(browser_access_token_scopes));
             if let Some(principal) = principal {
                 // Only an agent acts on a person's behalf, and only a
                 // service account proves who it is with its identity.

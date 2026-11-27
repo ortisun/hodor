@@ -208,13 +208,18 @@ describe("the certification script, as plans.json stands", () => {
   });
 
   it("has the plans built on develop ready, and nothing else", () => {
+    const eachType = (plan) => PLANS.allResponseTypes.map((type) => `${plan} ${type}`);
     assert.deepEqual(printed.plans.map(runName).sort(), [
-      "oidcc-backchannel-rp-initiated-logout-certification-test-plan code",
+      ...eachType("oidcc-backchannel-rp-initiated-logout-certification-test-plan"),
       "oidcc-basic-certification-test-plan",
       "oidcc-config-certification-test-plan",
       "oidcc-formpost-basic-certification-test-plan",
-      "oidcc-rp-initiated-logout-certification-test-plan code",
-    ]);
+      "oidcc-formpost-hybrid-certification-test-plan",
+      "oidcc-formpost-implicit-certification-test-plan",
+      "oidcc-hybrid-certification-test-plan",
+      "oidcc-implicit-certification-test-plan",
+      ...eachType("oidcc-rp-initiated-logout-certification-test-plan"),
+    ].sort());
   });
 
   it("says what each waiting plan waits for", () => {
@@ -224,11 +229,9 @@ describe("the certification script, as plans.json stands", () => {
         assert.match(reason, /^Issue-\d+(, pull request \d+)?: .+/);
       }
     }
-    const implicit = printed.waiting.find((entry) => entry.plan === "oidcc-implicit-certification-test-plan");
-    assert.deepEqual(implicit.waitingFor, [
-      "Issue-127, pull request 178: an ID token through the browser",
-      "Issue-128: an access token through the browser",
-    ]);
+    const frontchannel = printed.waiting.find((entry) => entry.plan
+      === "oidcc-frontchannel-rp-initiated-logout-certification-test-plan");
+    assert.deepEqual(frontchannel.waitingFor, ["Issue-139, pull request 184: front-channel logout"]);
   });
 
   it("gives every ready plan a complete configuration, written to its file", async () => {
@@ -278,8 +281,13 @@ describe("the certification script, as plans.json stands", () => {
       "First client", "Second client",
     ]);
     const flags = hodor.calls.flat();
-    assert.equal(flags.includes("--response-type"), false);
     assert.equal(flags.includes("--frontchannel-logout-uri"), false);
+    // Every response type is built: each client registers them all, and is
+    // marked for the three that return an access token.
+    for (const client of Object.values(hodor.tenants.certification.clients)) {
+      assert.deepEqual(client.responseTypes, PLANS.allResponseTypes);
+      assert.equal(client.browserAccessTokens, true);
+    }
     const backchannel = Object.values(hodor.tenants.certification.clients)
       .find((client) => client.backchannelLogoutUri !== undefined);
     assert.equal(backchannel.backchannelLogoutUri, `${SUITE}/test/a/${printed.alias}/backchannel_logout`);
@@ -315,7 +323,7 @@ describe("the certification script, as plans.json stands", () => {
 describe("the certification script, once more features are built", () => {
   it("turns a plan on with one line of plans.json", async () => {
     const plans = structuredClone(PLANS);
-    plans.features["id-token-through-the-browser"].built = true;
+    plans.features["access-token-through-the-browser"].built = false;
     plans.features["front-channel-logout"].built = true;
     const stand = await deployment(plans);
     try {
@@ -334,6 +342,7 @@ describe("the certification script, once more features are built", () => {
 
       const clients = Object.values(stand.hodor().tenants.certification.clients);
       assert.ok(clients.every((client) => client.responseTypes.join(",") === "code,id_token,code id_token"));
+      assert.ok(clients.every((client) => !client.browserAccessTokens), "no mark without its types");
       const frontchannel = clients.find((client) => client.frontchannelLogoutUri !== undefined);
       assert.equal(frontchannel.frontchannelLogoutUri, `${SUITE}/test/a/${printed.alias}/frontchannel_logout`);
       const entry = printed.plans.find((candidate) => runName(candidate)

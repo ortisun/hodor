@@ -330,8 +330,13 @@ fn every_malformed_request_is_refused_for_its_own_reason() {
             "invalid_request",
         ),
         (
-            "a token response type",
+            "a token response type, for a client that is not marked",
             with(base.clone(), "response_type", Some("token")),
+            "unauthorized_client",
+        ),
+        (
+            "a response type of OAuth that OpenID Connect does not define",
+            with(base.clone(), "response_type", Some("device_code")),
             "unsupported_response_type",
         ),
         (
@@ -554,8 +559,13 @@ fn every_error_after_the_address_is_trusted_comes_in_the_mode_asked_for() {
     let cases: Vec<(&str, Pairs, &str)> = vec![
         (
             "a type Hodor does not answer",
-            with(form_post.clone(), "response_type", Some("token")),
+            with(form_post.clone(), "response_type", Some("token token")),
             "unsupported_response_type",
+        ),
+        (
+            "a type that returns an access token, for a client that is not marked",
+            with(form_post.clone(), "response_type", Some("token")),
+            "unauthorized_client",
         ),
         (
             "no type",
@@ -1195,11 +1205,12 @@ fn a_grant_is_made_giving_no_claim() {
     assert_eq!(grant.claims, GrantClaims::default());
 }
 
-/// The setting with a client registered for every response type.
+/// The setting with a client registered for every response type that
+/// returns no access token.
 fn every_type() -> Setting {
     let mut setting = setting();
     let mut settings = setting.client.snapshot().settings.clone();
-    settings.response_types = ResponseType::ALL.to_vec();
+    settings.response_types = ResponseType::ALL[..4].to_vec();
     setting
         .client
         .change(settings, MOMENT)
@@ -1329,8 +1340,9 @@ fn an_error_goes_back_in_the_mode_the_answer_would_have_had() {
             &setting,
             with(base.clone(), "response_type", Some("token id_token"))
         )),
-        ("unsupported_response_type", ResponseMode::Fragment),
-        "a type that returns an access token is not offered, and answers in the fragment"
+        ("unauthorized_client", ResponseMode::Fragment),
+        "a type that returns an access token, which the client may not use, answers in the \
+         fragment"
     );
     assert_eq!(
         mode_of(check(
@@ -1395,4 +1407,197 @@ fn a_type_the_client_did_not_register_is_unauthorized() {
         let (error, _) = mode_of(check(&setting, pairs));
         assert_eq!(error, "unauthorized_client", "{written}");
     }
+}
+
+/// The setting with a client of every response type, marked for access
+/// tokens through the browser with `scopes`.
+fn marked_for(scopes: &[&str]) -> Setting {
+    let mut setting = every_type();
+    let mut settings = setting.client.snapshot().settings.clone();
+    settings.response_types = ResponseType::ALL.to_vec();
+    settings.browser_access_tokens =
+        Some(crate::domain::browser_access::BrowserAccessTokens::asked(
+            scopes.iter().map(|scope| (*scope).to_owned()).collect(),
+        ));
+    setting.client.change(settings, MOMENT).expect("marked");
+    setting
+}
+
+const TOKEN_TYPES: [(&str, ResponseType); 4] = [
+    ("token", ResponseType::Token),
+    ("id_token token", ResponseType::IdTokenToken),
+    ("code token", ResponseType::CodeToken),
+    ("code id_token token", ResponseType::CodeIdTokenToken),
+];
+
+/// A request of a type that returns an access token, with what its type
+/// needs: a challenge for a code.
+fn asking_for_a_token(setting: &Setting, written: &str, kind: ResponseType) -> Pairs {
+    let mut pairs = asking(setting, written);
+    if kind.returns_code() {
+        pairs = with(pairs, "code_challenge", Some(CHALLENGE));
+        pairs = with(pairs, "code_challenge_method", Some("S256"));
+    }
+    pairs
+}
+
+#[test]
+fn a_marked_client_is_answered_a_token_in_the_fragment_and_never_in_the_query() {
+    let setting = marked_for(&["read"]);
+    for (written, kind) in TOKEN_TYPES {
+        let pairs = asking_for_a_token(&setting, written, kind);
+        let request = check(&setting, pairs.clone()).expect(written);
+        assert_eq!(request.response_type, kind, "{written}");
+        assert_eq!(request.response_mode, ResponseMode::Fragment, "{written}");
+        let posted = check(
+            &setting,
+            with(pairs.clone(), "response_mode", Some("form_post")),
+        )
+        .expect("a form for every type");
+        assert_eq!(posted.response_mode, ResponseMode::FormPost);
+        assert_eq!(
+            mode_of(check(&setting, with(pairs, "response_mode", Some("query")))),
+            ("invalid_request", ResponseMode::Fragment),
+            "{written} in the query"
+        );
+    }
+}
+
+#[test]
+fn a_client_that_is_not_marked_is_refused_every_type_that_returns_an_access_token() {
+    // A client may not even register them without the mark; a request
+    // for one is refused as a type the client did not register.
+    let setting = every_type();
+    let mut unmarked = setting.client.snapshot().settings.clone();
+    unmarked.response_types = ResponseType::ALL.to_vec();
+    assert_eq!(
+        setting
+            .client
+            .clone()
+            .change(unmarked, MOMENT)
+            .expect_err("refused")
+            .code(),
+        "oauth.client_response_types_invalid"
+    );
+    for (written, kind) in TOKEN_TYPES {
+        assert_eq!(
+            mode_of(check(&setting, asking_for_a_token(&setting, written, kind))),
+            ("unauthorized_client", ResponseMode::Fragment),
+            "{written}"
+        );
+    }
+}
+
+#[test]
+fn a_request_for_a_token_asks_only_for_what_the_mark_allows() {
+    let setting = marked_for(&["read"]);
+    for (written, kind) in TOKEN_TYPES {
+        let pairs = asking_for_a_token(&setting, written, kind);
+        // The scopes of OpenID Connect, `offline_access` for the code's
+        // refresh token at the token endpoint, and those of the mark.
+        let client_scopes = with(pairs.clone(), "scope", Some("openid email read"));
+        assert!(check(&setting, client_scopes).is_ok(), "{written}");
+        assert_eq!(
+            mode_of(check(&setting, with(pairs, "scope", Some("openid write")))),
+            ("invalid_scope", ResponseMode::Fragment),
+            "{written}: `write` is not in the mark"
+        );
+    }
+    let none = marked_for(&[]);
+    assert_eq!(
+        mode_of(check(
+            &none,
+            asking_for_a_token(&none, "token", ResponseType::Token)
+        )),
+        ("invalid_scope", ResponseMode::Fragment),
+        "a mark of no scope allows those of OpenID Connect alone"
+    );
+    assert!(
+        check(
+            &none,
+            with(
+                asking_for_a_token(&none, "token", ResponseType::Token),
+                "scope",
+                Some("openid email")
+            )
+        )
+        .is_ok()
+    );
+    // A type that returns no access token is not held to the mark.
+    assert!(check(&none, asking(&none, "id_token")).is_ok());
+}
+
+#[test]
+fn a_nonce_is_needed_where_an_id_token_comes_and_a_challenge_where_a_code_does() {
+    let setting = marked_for(&["read"]);
+    for (written, kind) in TOKEN_TYPES {
+        let pairs = asking_for_a_token(&setting, written, kind);
+        let without_nonce = check(&setting, with(pairs, "nonce", None));
+        if kind.returns_id_token() {
+            assert_eq!(
+                mode_of(without_nonce),
+                ("invalid_request", ResponseMode::Fragment),
+                "{written}"
+            );
+        } else {
+            assert!(without_nonce.is_ok(), "{written}: no ID token, no nonce");
+        }
+        let without_challenge = check(&setting, asking(&setting, written));
+        if kind.returns_code() {
+            assert_eq!(
+                mode_of(without_challenge),
+                ("invalid_request", ResponseMode::Fragment),
+                "{written}: a public client's code needs its challenge"
+            );
+        } else {
+            assert_eq!(
+                without_challenge.expect(written).code_challenge,
+                None,
+                "{written}: nothing to redeem"
+            );
+        }
+    }
+    // `token` alone is OAuth's, and needs no `openid`.
+    let oauth_only = with(asking(&setting, "token"), "scope", Some("read"));
+    assert!(check(&setting, with(oauth_only, "nonce", None)).is_ok());
+}
+
+#[test]
+fn a_kept_request_is_answered_only_while_the_client_is_still_marked_for_it() {
+    let mut setting = marked_for(&["read"]);
+    let request = check(
+        &setting,
+        asking_for_a_token(&setting, "id_token token", ResponseType::IdTokenToken),
+    )
+    .expect("checked while marked");
+    assert_eq!(still_answerable(&setting.client, &request), None);
+
+    // The mark no longer allows one of its scopes.
+    let mut settings = setting.client.snapshot().settings.clone();
+    settings.browser_access_tokens = Some(
+        crate::domain::browser_access::BrowserAccessTokens::asked(Vec::new()),
+    );
+    setting.client.change(settings, MOMENT).expect("narrowed");
+    let refused = still_answerable(&setting.client, &request).expect("refused");
+    assert_eq!(
+        (refused.error, refused.mode, refused.state.as_deref()),
+        ("invalid_scope", ResponseMode::Fragment, Some("xyz"))
+    );
+    assert_eq!(refused.redirect_uri, REDIRECT);
+
+    // The mark is gone, and the types it allowed with it.
+    let mut settings = setting.client.snapshot().settings.clone();
+    settings.browser_access_tokens = None;
+    settings.response_types = crate::domain::response::response_types_kept(
+        &settings.response_types,
+        &settings.grant_types,
+        false,
+    );
+    setting.client.change(settings, MOMENT).expect("unmarked");
+    let refused = still_answerable(&setting.client, &request).expect("refused");
+    assert_eq!(refused.error, "unauthorized_client");
+
+    // A request that returns no access token is never held to the mark.
+    let id_token = check(&setting, asking(&setting, "id_token")).expect("still registered");
+    assert_eq!(still_answerable(&setting.client, &id_token), None);
 }

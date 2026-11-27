@@ -2,7 +2,7 @@
 
 ## Overview
 
-The Basic OpenID Provider, Config OpenID Provider and Back-Channel OpenID Provider plans of the OpenID Foundation's conformance suite, run against a Hodor image, and the Basic and Back-Channel plans again with pairwise clients; and, when asked for, the Form Post plan of the code flow, the Implicit plan for `id_token` and the Hybrid plan for `code id_token`. [OpenID conformance](../../docs/operations/conformance.md) is the human-maintained page: what runs, how, and why each expected result is expected.
+The Basic OpenID Provider, Config OpenID Provider and Back-Channel OpenID Provider plans of the OpenID Foundation's conformance suite, run against a Hodor image, and the Basic and Back-Channel plans again with pairwise clients; and, when asked for, the Form Post plan of the code flow, the Implicit plan for `id_token` and `id_token token` and the Hybrid plan for `code id_token`, `code token` and `code id_token token`. [OpenID conformance](../../docs/operations/conformance.md) is the human-maintained page: what runs, how, and why each expected result is expected.
 
 ## Files
 

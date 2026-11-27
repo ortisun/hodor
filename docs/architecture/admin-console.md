@@ -201,7 +201,8 @@ The console is used in production with these known gaps. Each is a requirement o
 | Recent authentication for sensitive actions (Requirement-Console-03) | There is no step-up yet | Phase 2 |
 | Phishing-resistant sign-in for administrators (Requirement-Console-05) | Passkeys are Phase 4. Until then an administrator signs in with a password | Phase 4 |
 | Adding GitHub providers and directories, and changing their settings or secret, from the console | The form is the one of OpenID Connect providers | Next |
-| Security posture, live activity, signing keys | The server has no such resources yet | The phase of each |
+| Security posture, live activity, signing keys | The server has no such resources yet, but `GET /posture/findings` with its one check, the clients marked for access tokens through the browser ([the security posture](../api/admin-api.md#the-security-posture)); the score and acceptances are not built | The phase of each |
+| The mark for access tokens through the browser and the response types in the client screens | The administration interface and `hodor-cli` set them | Next |
 | Giving a role, binding a resource server, drafting and simulating a policy version from the console | The routes exist; the forms do not | Next |
 | Changing a client's token lifetimes from the console | The form keeps to what most clients change; the administration interface changes them | Next |
 | Reactivating, changing or removing a user; filtering and searching the tables | The administration interface does not have them | Phase 2 |

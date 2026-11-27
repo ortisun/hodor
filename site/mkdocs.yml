@@ -275,6 +275,7 @@ nav:
       - decisions/0079-keys-at-a-client-s-address-kept-in-memory.md
       - decisions/0080-the-registration-endpoint.md
       - decisions/0082-ext-authz-checks-the-signature.md
+      - decisions/0083-the-mark-for-access-tokens-through-the-browser.md
   - Contributing:
       - development/conventions.md
       - development/documentation-site.md

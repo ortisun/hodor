@@ -105,24 +105,38 @@ randomness and hashing are passed in. Every module is `pub(crate)` in
   `ScopeDefinition`; `ResourceServerSettings`; `ResourceServer` with
   `create`, `change`, `defines`; `OPENID_SCOPES`.
 - `response.rs`: what the authorization endpoint answers with, and where.
-  `ResponseType` (`code`, `id_token`, `code id_token`, `none`; `read` takes
-  the words in any order and answers a `ReadResponseType`, which tells a
-  type that returns an access token, `ReturnsAccessToken`, from an unknown
-  one, and whose `offered` is the type when Hodor offers it; `parse`
-  refuses both with `oauth.client_response_types_invalid`; `as_str`,
-  `ALL`; `default_mode` is the fragment for a type that returns an ID token
-  and the query otherwise; `allows(mode)` refuses the query for a type that
-  returns an ID token; `makes_grant` is false for `none` alone), `ResponseMode`
+  `ResponseType` (`code`, `id_token`, `code id_token`, `none`, and since
+  Issue-128 `token`, `id_token token`, `code token` and
+  `code id_token token`; `read` takes the words in any order and answers a
+  `ReadResponseType`, `Offered` or `Unknown`, whose `offered` is the type
+  when Hodor offers it; `parse` refuses an unknown one with
+  `oauth.client_response_types_invalid`; `as_str`, `ALL`, the eight in
+  that order; `returns_code`, `returns_id_token`, `returns_access_token`;
+  `default_mode` is the fragment for a type that returns a token and the
+  query otherwise; `allows(mode)` refuses the query for a type that
+  returns a token; `makes_grant` is false for `none` alone), `ResponseMode`
   (`Query`, the default, `Fragment` and `FormPost`, serialized as `query`,
   `fragment` and `form_post`; `read` answers `None` for any other name;
   `as_str`, `ALL`, which discovery lists),
   `error_mode(response_type, response_mode)`: the mode an error goes back
   in, the one named when offered and allowed by the type, else the type's
-  default, the fragment for a type that returns an access token, else the
-  query; and `response_types_kept(current, grants)`, what a change that
-  does not name them leaves: none without `authorization_code`, `code` for
-  a client that gains it with none. Its cases are in the module's own
+  default, else the query; and `response_types_kept(current, grants,
+  marked)`, what a change that does not name them leaves: none without
+  `authorization_code`, none that returns an access token without the
+  mark, and `code` when nothing remains. Its cases are in the module's own
   tests.
+- `browser_access.rs`: the mark for access tokens through the browser
+  (Decision 0083). `BrowserAccessTokens { scopes, marked_by, marked_at }`
+  with `asked(scopes)`, `stamped(before, actor, now)` (the record of
+  `before` while the scopes are the same), `checked` (at most 50 scopes,
+  each written as one, never `offline_access`, else
+  `oauth.client_browser_access_tokens_invalid`), `allows(scope)` (the five
+  scopes of OpenID Connect, `offline_access` and the mark's), `to_json` and
+  `from_json`; `OPENID_CONNECT_SCOPES`,
+  `LONGEST_BROWSER_ACCESS_TOKEN_LIFETIME` (five minutes),
+  `browser_access_token_scopes` (the request's but `offline_access`) and
+  `browser_access_token_lifetime` (the client's, five minutes at most).
+  Its cases are in the module's own tests.
 - `authorization.rs`: the authorization endpoint. `AuthorizationParameters`
   (pairs as received, empty values dropped; `client_id` is the one given,
   or the request object's when none is); `check_request(parameters,

@@ -136,8 +136,15 @@ follows is `docs/architecture/contexts/oauth.md`.
     `CODE_LIFETIME`, `PENDING_LIFETIME`, `MAX_RESOURCES`.
   - Response types and modes: `ResponseType` (`read` into
     `ReadResponseType`, `parse`, `returns_code`, `returns_id_token`,
-    `makes_grant`, `default_mode`, `allows`), `ResponseMode` (`query`,
-    `fragment`, `form_post`), `error_mode`, and `response_types_kept`.
+    `returns_access_token`, `makes_grant`, `default_mode`, `allows`),
+    `ResponseMode` (`query`, `fragment`, `form_post`), `error_mode`, and
+    `response_types_kept`; `still_answerable`, whether a kept request for
+    an access token may still be answered to its client.
+  - The mark for access tokens through the browser: `BrowserAccessTokens`,
+    `OPENID_CONNECT_SCOPES`, `LONGEST_BROWSER_ACCESS_TOKEN_LIFETIME`,
+    `browser_access_token_scopes`, `browser_access_token_lifetime`; and
+    `BrowserAccessToken`, what `TokenService::browser_access_token`
+    answers.
   - Refresh tokens: `RefreshFamily`, `RefreshFamilyId`, `RefreshTokenHash`,
     `RefreshTokenValue`, `RefreshTokenRecord`, `FamilySecret`,
     `FamilyStatus`, `RefreshAsk`, `RefreshDecision`, `RefreshRefusal`, and

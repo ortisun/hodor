@@ -4,6 +4,7 @@ use crate::application::ports::{ApplicationStore, ClientStore, ResourceServerSto
 use crate::domain::application::{
     Application, ApplicationId, ApplicationSettings, MAX_APPLICATIONS, Status,
 };
+use crate::domain::browser_access::BrowserAccessTokens;
 use crate::domain::client::{Client, ClientId, ClientSettings, ClientType, MAX_CLIENTS};
 use crate::domain::event::OauthEvent;
 use crate::domain::forwarded::WorkloadIdentity;
@@ -544,10 +545,15 @@ impl ApplicationService {
         command: CreateClient,
         caller: Caller,
     ) -> Result<(Client, Option<ClientSecretValue>), DomainError> {
+        let mut settings = command.settings;
+        // The mark records who set it and when.
+        settings.browser_access_tokens = settings
+            .browser_access_tokens
+            .map(|mark| mark.stamped(None, caller.actor, self.clock.now()));
         let (client, secret) = Client::create(
             command.application_id,
             command.client_type,
-            command.settings,
+            settings,
             command
                 .secret_lifetime
                 .unwrap_or(ClientSecret::DEFAULT_LIFETIME),
@@ -625,12 +631,24 @@ impl ApplicationService {
         &self,
         tenant: &TenantContext,
         id: ClientId,
-        settings: ClientSettings,
+        mut settings: ClientSettings,
         caller: Caller,
     ) -> Result<Client, DomainError> {
         // Only a new or changed back-channel logout address is checked: a
         // name that leads elsewhere since does not stop other changes.
         let current = self.client(tenant, id).await?;
+        // A mark whose scopes stay the same keeps who set it and when.
+        settings.browser_access_tokens = settings
+            .browser_access_tokens
+            .map(BrowserAccessTokens::checked)
+            .transpose()?
+            .map(|mark| {
+                mark.stamped(
+                    current.browser_access_tokens(),
+                    caller.actor,
+                    self.clock.now(),
+                )
+            });
         let settings = settings.checked(current.client_type())?;
         if let Some(url) = settings.backchannel_logout_uri.as_deref()
             && current.backchannel_logout_uri() != Some(url)
@@ -858,6 +876,28 @@ impl ApplicationService {
             .find_by_application(uow.as_mut(), id)
             .await?;
         Ok((application, resource_server))
+    }
+
+    /// The clients of the tenant marked for access tokens through the
+    /// browser, enabled or not, the one marked longest first: what the
+    /// security posture finds of them.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if storage fails.
+    pub async fn marked_clients(&self, tenant: &TenantContext) -> Result<Vec<Client>, DomainError> {
+        let mut uow = self.units_of_work.begin(tenant).await?;
+        let mut clients = self
+            .clients
+            .marked_for_browser_access_tokens(uow.as_mut())
+            .await?;
+        clients.sort_by_key(|client| {
+            (
+                client.browser_access_tokens().map(|mark| mark.marked_at),
+                client.id(),
+            )
+        });
+        Ok(clients)
     }
 
     /// The clients of an application, oldest first.

@@ -63,6 +63,7 @@ mod decisions;
 mod factors;
 mod groups;
 mod organizations;
+mod posture;
 mod trust_domains;
 mod webhooks;
 mod workloads;
@@ -115,6 +116,7 @@ pub const ADMIN_OPERATIONS: &[(&str, &str, Permission)] = &[
         Permission::SessionsRevoke,
     ),
     ("GET", "/audit-records", Permission::AuditRead),
+    ("GET", "/posture/findings", Permission::AuditRead),
     (
         "GET",
         "/identity-providers",
@@ -859,6 +861,7 @@ fn shared_routes() -> Router<Shared> {
         .merge(access_lists::routes())
         .merge(groups::routes())
         .merge(organizations::routes())
+        .merge(posture::routes())
         .merge(workloads::routes())
         .merge(webhooks::routes())
         .merge(trust_domains::routes())

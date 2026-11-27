@@ -450,9 +450,11 @@ async fn a_pushed_request_that_fails_a_check_is_answered_at_once_and_kept_nowher
     for (extra, expected) in [
         (vec![("scope", "openid write")], "invalid_scope"),
         (
-            vec![("response_type", "token")],
+            vec![("response_type", "token token")],
             "unsupported_response_type",
         ),
+        // A type that returns an access token, from a client not marked.
+        (vec![("response_type", "token")], "unauthorized_client"),
         (
             vec![("redirect_uri", "https://elsewhere.example.com/callback")],
             "invalid_request",

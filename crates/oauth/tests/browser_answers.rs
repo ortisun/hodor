@@ -20,11 +20,11 @@ use hodor_keys::testing::{FakeKeyProvider, InMemoryKeys};
 use hodor_oauth::api::{
     ApplicationId, ApplicationPorts, ApplicationService, ApplicationSettings,
     AuthorizationCodePorts, AuthorizationCodeService, AuthorizationParameters,
-    AuthorizationRequest, ClaimMapperPorts, ClaimMapperService, ClaimMapperSettings, ClaimMapping,
-    ClaimSource, ClaimTarget, ClientId, ClientSettings, ClientType, ConsentPorts, ConsentService,
-    CreateClient, GrantStore as _, GrantType, IdTokenAlgorithm, Issuer, PersonAttributes,
-    ResponseMode, ResponseType, SignedInPerson, TokenPorts, TokenRequest, TokenService,
-    left_half_hash, s256_challenge,
+    AuthorizationRequest, BrowserAccessTokens, ClaimMapperPorts, ClaimMapperService,
+    ClaimMapperSettings, ClaimMapping, ClaimSource, ClaimTarget, ClientId, ClientSettings,
+    ClientType, ConsentPorts, ConsentService, CreateClient, GrantStore as _, GrantType,
+    IdTokenAlgorithm, Issuer, PersonAttributes, ResponseMode, ResponseType, SignedInPerson,
+    TokenPorts, TokenRequest, TokenService, left_half_hash, s256_challenge,
 };
 use hodor_oauth::testing::{
     ClaimSourcesOf, DistinctRandom, FakeVerifier, InMemoryAccessTokenRecords,
@@ -218,7 +218,8 @@ fn ana(world: &World, tenant: &TenantContext) -> SignedInPerson {
     person
 }
 
-/// A public client of every response type that may ask for `scopes`.
+/// A public client of every response type that returns no access token,
+/// that may ask for `scopes`.
 async fn client(
     world: &World,
     tenant: &TenantContext,
@@ -242,7 +243,9 @@ async fn client_signing_with(
         vec![GrantType::AuthorizationCode],
         vec![REDIRECT.to_owned()],
     );
-    settings.response_types = ResponseType::ALL.to_vec();
+    // Every type but those that return an access token, which need the
+    // mark of `marked_client`.
+    settings.response_types = ResponseType::ALL[..4].to_vec();
     settings.id_token_algorithm = algorithm;
     settings.allowed_scopes = scopes.iter().map(|scope| (*scope).to_owned()).collect();
     world
@@ -333,7 +336,15 @@ async fn answered(
         Some(grant) if request.response_type.returns_id_token() => Some(
             world
                 .tokens
-                .browser_id_token(tenant, ISSUER, request, grant, person, code.as_deref())
+                .browser_id_token(
+                    tenant,
+                    ISSUER,
+                    request,
+                    grant,
+                    person,
+                    code.as_deref(),
+                    None,
+                )
                 .await
                 .expect("storage")
                 .expect("signed")
@@ -639,4 +650,431 @@ async fn the_claims_of_the_scopes_share_the_bound_of_the_id_token_with_the_mappe
         "a claim that would cross the bound is left out whole"
     );
     assert_eq!(claims["email"], "ana@example.com", "one after it that fits");
+}
+
+/// A client of every response type, marked for access tokens through the
+/// browser with `marked`, whose access tokens live an hour.
+async fn marked_client(
+    world: &World,
+    tenant: &TenantContext,
+    application: ApplicationId,
+    scopes: &[&str],
+    marked: &[&str],
+) -> ClientId {
+    let mut settings = ClientSettings::new(
+        "Payroll in the browser",
+        ClientType::Public,
+        vec![GrantType::AuthorizationCode],
+        vec![REDIRECT.to_owned()],
+    );
+    settings.response_types = ResponseType::ALL.to_vec();
+    settings.browser_access_tokens = Some(BrowserAccessTokens::asked(
+        marked.iter().map(|scope| (*scope).to_owned()).collect(),
+    ));
+    settings.allowed_scopes = scopes.iter().map(|scope| (*scope).to_owned()).collect();
+    settings.token_policy.access_token = Duration::hours(1);
+    world
+        .applications
+        .create_client(
+            tenant,
+            CreateClient {
+                application_id: application,
+                client_type: ClientType::Public,
+                settings,
+                secret_lifetime: None,
+            },
+            Caller::system(),
+        )
+        .await
+        .expect("client")
+        .0
+        .id()
+}
+
+/// What the endpoint answers `request` with when it returns an access
+/// token: the code, the access token and the ID token, each if any.
+async fn answered_with_a_token(
+    world: &World,
+    tenant: &TenantContext,
+    request: &AuthorizationRequest,
+    person: &SignedInPerson,
+) -> (
+    Option<String>,
+    hodor_oauth::api::BrowserAccessToken,
+    Option<String>,
+) {
+    let consented = world
+        .consent
+        .consented_scopes(tenant, request, person)
+        .await
+        .expect("consented scopes");
+    assert_eq!(
+        world
+            .codes
+            .still_answerable(tenant, request)
+            .await
+            .expect("storage"),
+        None
+    );
+    let answer = world
+        .codes
+        .answer(tenant, request, person, &consented, Caller::system())
+        .await
+        .expect("answer");
+    let grant = answer.grant.as_ref().expect("a grant");
+    let code = answer.code.as_ref().map(|code| code.expose().to_owned());
+    let token = world
+        .tokens
+        .browser_access_token(
+            tenant,
+            ISSUER,
+            request,
+            grant,
+            person,
+            CorrelationId::generate(),
+        )
+        .await
+        .expect("storage")
+        .expect("signed");
+    let id_token = if request.response_type.returns_id_token() {
+        Some(
+            world
+                .tokens
+                .browser_id_token(
+                    tenant,
+                    ISSUER,
+                    request,
+                    grant,
+                    person,
+                    code.as_deref(),
+                    Some(token.access_token.expose()),
+                )
+                .await
+                .expect("storage")
+                .expect("signed")
+                .expose()
+                .clone(),
+        )
+    } else {
+        None
+    };
+    (code, token, id_token)
+}
+
+#[tokio::test]
+async fn an_access_token_through_the_browser_lives_five_minutes_and_is_tied_by_at_hash() {
+    let world = world();
+    let (tenant, application) = tenant(&world, true).await;
+    let payroll = marked_client(
+        &world,
+        &tenant,
+        application,
+        &["openid", "profile", "email", "offline_access"],
+        &[],
+    )
+    .await;
+    let ana = ana(&world, &tenant);
+    let request = checked(
+        &world,
+        &tenant,
+        payroll,
+        "id_token token",
+        "openid profile offline_access",
+        &json!({}),
+    )
+    .await;
+    assert_eq!(request.response_mode, ResponseMode::Fragment);
+    let (code, token, id_token) = answered_with_a_token(&world, &tenant, &request, &ana).await;
+    assert!(code.is_none(), "nothing to redeem");
+
+    // The access token of a code, for five minutes though the client's
+    // live an hour, without `offline_access`, and bound to nothing.
+    assert_eq!(token.expires_in, 300);
+    assert_eq!(token.scope, "openid profile");
+    let access = claims_of(token.access_token.expose());
+    assert_eq!(access["iss"], ISSUER);
+    assert_eq!(access["sub"], ana.user_id.to_string());
+    assert_eq!(access["client_id"], payroll.to_string());
+    assert_eq!(access["scope"], "openid profile");
+    assert_eq!(access["aud"], ISSUER, "it reads UserInfo");
+    assert_eq!(
+        access["exp"].as_i64().expect("exp") - access["iat"].as_i64().expect("iat"),
+        300
+    );
+    assert_eq!(access["auth_time"], ana.signed_in_at.unix_timestamp());
+    assert!(access.get("cnf").is_none());
+
+    // The ID token names it by `at_hash`, and leaves the claims of the
+    // scopes to UserInfo, which the token reads.
+    let claims = claims_of(&id_token.expect("an ID token"));
+    assert_eq!(
+        claims["at_hash"],
+        left_half_hash(
+            token.access_token.expose(),
+            IdTokenAlgorithm::Es256,
+            &FakeDigest
+        )
+    );
+    assert_eq!(claims["nonce"], NONCE);
+    assert!(claims.get("c_hash").is_none());
+    assert!(claims.get("name").is_none(), "read at UserInfo");
+
+    let types = world.units.committed_event_types();
+    assert!(types.contains(&"oauth.browser_access_token_issued".to_owned()));
+    assert!(types.contains(&"oauth.id_token_issued".to_owned()));
+    assert!(!types.iter().any(|kind| kind.starts_with("oauth.refresh")));
+    for event in world.units.committed_events() {
+        assert!(
+            !format!("{event:?}").contains(token.access_token.expose()),
+            "no event carries the token"
+        );
+    }
+}
+
+#[tokio::test]
+async fn a_code_and_an_access_token_come_together_and_the_code_redeems_as_any_code() {
+    let world = world();
+    let (tenant, application) = tenant(&world, true).await;
+    let payroll = marked_client(&world, &tenant, application, &["openid", "email"], &[]).await;
+    let ana = ana(&world, &tenant);
+    let request = checked(
+        &world,
+        &tenant,
+        payroll,
+        "code id_token token",
+        "openid email",
+        &json!({}),
+    )
+    .await;
+    let (code, token, id_token) = answered_with_a_token(&world, &tenant, &request, &ana).await;
+    let code = code.expect("a code");
+    let claims = claims_of(&id_token.expect("an ID token"));
+    assert_eq!(
+        claims["c_hash"],
+        left_half_hash(&code, IdTokenAlgorithm::Es256, &FakeDigest)
+    );
+    assert_eq!(
+        claims["at_hash"],
+        left_half_hash(
+            token.access_token.expose(),
+            IdTokenAlgorithm::Es256,
+            &FakeDigest
+        )
+    );
+    assert_eq!(
+        claims["s_hash"],
+        left_half_hash(STATE, IdTokenAlgorithm::Es256, &FakeDigest)
+    );
+
+    let form = vec![
+        ("grant_type".to_owned(), "authorization_code".to_owned()),
+        ("code".to_owned(), code),
+        ("redirect_uri".to_owned(), REDIRECT.to_owned()),
+        ("code_verifier".to_owned(), VERIFIER.to_owned()),
+        ("client_id".to_owned(), payroll.to_string()),
+    ];
+    let tokens = world
+        .tokens
+        .token(
+            &tenant,
+            ISSUER_OF,
+            TokenRequest::parse(None, form).expect("a request"),
+            CorrelationId::generate(),
+        )
+        .await
+        .expect("storage")
+        .expect("tokens");
+    // The token endpoint's own token, of the client's lifetime.
+    assert_eq!(tokens.expires_in, 3600);
+    assert_ne!(tokens.access_token.expose(), token.access_token.expose());
+    let redeemed = claims_of(tokens.id_token.as_ref().expect("an ID token").expose());
+    assert_eq!(redeemed["sub"], claims["sub"]);
+    assert!(
+        tokens.refresh_token.is_none(),
+        "the client has no refresh grant"
+    );
+}
+
+#[tokio::test]
+async fn a_client_that_lost_its_mark_since_the_request_was_checked_gets_nothing() {
+    let world = world();
+    let (tenant, application) = tenant(&world, true).await;
+    let payroll = marked_client(
+        &world,
+        &tenant,
+        application,
+        &["openid", "groups"],
+        &["groups"],
+    )
+    .await;
+    let ana = ana(&world, &tenant);
+    let request = checked(
+        &world,
+        &tenant,
+        payroll,
+        "token",
+        "openid groups",
+        &json!({}),
+    )
+    .await;
+
+    // The administrator narrows the mark while the person signs in.
+    let mut settings = world
+        .applications
+        .client(&tenant, payroll)
+        .await
+        .expect("client")
+        .snapshot()
+        .settings
+        .clone();
+    settings.browser_access_tokens = Some(BrowserAccessTokens::asked(Vec::new()));
+    world
+        .applications
+        .change_client(&tenant, payroll, settings.clone(), Caller::system())
+        .await
+        .expect("narrowed");
+    let refused = world
+        .codes
+        .still_answerable(&tenant, &request)
+        .await
+        .expect("storage")
+        .expect("refused");
+    assert_eq!(refused.error, "invalid_scope");
+
+    // And removes it.
+    settings.browser_access_tokens = None;
+    settings.response_types = vec![ResponseType::Code];
+    world
+        .applications
+        .change_client(&tenant, payroll, settings, Caller::system())
+        .await
+        .expect("unmarked");
+    let refused = world
+        .codes
+        .still_answerable(&tenant, &request)
+        .await
+        .expect("storage")
+        .expect("refused");
+    assert_eq!(refused.error, "unauthorized_client");
+
+    // Even asked directly, the token is not signed.
+    let consented = world
+        .consent
+        .consented_scopes(&tenant, &request, &ana)
+        .await
+        .expect("consented");
+    let answer = world
+        .codes
+        .answer(&tenant, &request, &ana, &consented, Caller::system())
+        .await
+        .expect("answer");
+    let refusal = world
+        .tokens
+        .browser_access_token(
+            &tenant,
+            ISSUER,
+            &request,
+            answer.grant.as_ref().expect("a grant"),
+            &ana,
+            CorrelationId::generate(),
+        )
+        .await
+        .expect("storage")
+        .expect_err("refused");
+    assert_eq!(refusal.error, "unauthorized_client");
+    assert!(
+        !world
+            .units
+            .committed_event_types()
+            .contains(&"oauth.browser_access_token_issued".to_owned())
+    );
+}
+
+#[tokio::test]
+async fn the_mark_records_who_set_it_and_the_marked_clients_are_listed() {
+    let world = world();
+    let (tenant, application) = tenant(&world, true).await;
+    let administrator = hodor_kernel::Actor::User(UserId::generate());
+    let caller = Caller {
+        actor: administrator,
+        correlation_id: CorrelationId::generate(),
+    };
+    let mut settings = ClientSettings::new(
+        "Payroll in the browser",
+        ClientType::Public,
+        vec![GrantType::AuthorizationCode],
+        vec![REDIRECT.to_owned()],
+    );
+    settings.response_types = vec![ResponseType::IdTokenToken];
+    settings.allowed_scopes = vec!["openid".to_owned()];
+    settings.browser_access_tokens =
+        Some(BrowserAccessTokens::asked(vec!["invoices:read".to_owned()]));
+    let (marked, _) = world
+        .applications
+        .create_client(
+            &tenant,
+            CreateClient {
+                application_id: application,
+                client_type: ClientType::Public,
+                settings,
+                secret_lifetime: None,
+            },
+            caller,
+        )
+        .await
+        .expect("marked");
+    let mark = marked.browser_access_tokens().expect("a mark").clone();
+    assert_eq!(mark.marked_by, administrator);
+    assert_eq!(mark.marked_at, world.clock.now());
+    let plain = client(&world, &tenant, application, &["openid"]).await;
+    assert_ne!(plain, marked.id());
+    let listed: Vec<ClientId> = world
+        .applications
+        .marked_clients(&tenant)
+        .await
+        .expect("listed")
+        .iter()
+        .map(|client| client.id())
+        .collect();
+    assert_eq!(listed, [marked.id()], "the unmarked client is not listed");
+
+    // Another administrator who renames the client keeps the record; one
+    // who changes the scopes is the new one who set it.
+    let other = Caller {
+        actor: hodor_kernel::Actor::User(UserId::generate()),
+        correlation_id: CorrelationId::generate(),
+    };
+    let mut renamed = marked.snapshot().settings.clone();
+    renamed.name = "Payroll, renamed".to_owned();
+    let changed = world
+        .applications
+        .change_client(&tenant, marked.id(), renamed.clone(), other)
+        .await
+        .expect("renamed");
+    assert_eq!(changed.browser_access_tokens(), Some(&mark));
+    renamed.browser_access_tokens = Some(BrowserAccessTokens::asked(Vec::new()));
+    let changed = world
+        .applications
+        .change_client(&tenant, marked.id(), renamed, other)
+        .await
+        .expect("narrowed");
+    assert_eq!(
+        changed.browser_access_tokens().map(|mark| mark.marked_by),
+        Some(other.actor)
+    );
+
+    // Another tenant's posture finds nothing of it.
+    let (elsewhere, _) = tenant_again(&world).await;
+    assert!(
+        world
+            .applications
+            .marked_clients(&elsewhere)
+            .await
+            .expect("listed")
+            .is_empty()
+    );
+}
+
+async fn tenant_again(world: &World) -> (TenantContext, ApplicationId) {
+    tenant(world, true).await
 }

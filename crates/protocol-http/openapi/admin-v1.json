@@ -1084,6 +1084,63 @@
         }
       }
     },
+    "/posture/findings": {
+      "get": {
+        "operationId": "listPostureFindings",
+        "summary": "Read the findings of the tenant's security posture, computed now",
+        "x-hodor-permission": "audit:read",
+        "responses": {
+          "401": {
+            "description": "No access token, or one that is not good in this tenant. The same in every case.",
+            "headers": {
+              "WWW-Authenticate": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The token is good and its user may not do this.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "200": {
+            "description": "Every finding, in the order of the checks, then the oldest first. A client marked for access tokens through the browser is one.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "items"
+                  ],
+                  "properties": {
+                    "items": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/components/schemas/PostureFinding"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/identity-providers": {
       "get": {
         "operationId": "listIdentityProviders",
@@ -13938,7 +13995,8 @@
           "logo_uri",
           "policy_uri",
           "tos_uri",
-          "registered"
+          "registered",
+          "browser_access_tokens"
         ],
         "properties": {
           "id": {
@@ -13987,14 +14045,18 @@
           },
           "response_types": {
             "type": "array",
-            "description": "What the authorization endpoint may answer the client with, answered as listed here; `id_token code` is taken as `code id_token`. At least one with `authorization_code` and none without it; `[\"code\"]` for a client with that grant unless given. A type that returns an access token is refused with `oauth.client_response_types_invalid`.",
+            "description": "What the authorization endpoint may answer the client with, answered as listed here; `id_token code` is taken as `code id_token`. At least one with `authorization_code` and none without it; `[\"code\"]` for a client with that grant unless given. `token`, `id_token token`, `code token` and `code id_token token`, which return an access token through the browser, only with `browser_access_tokens`; otherwise `oauth.client_response_types_invalid`.",
             "items": {
               "type": "string",
               "enum": [
                 "code",
                 "id_token",
                 "code id_token",
-                "none"
+                "none",
+                "token",
+                "id_token token",
+                "code token",
+                "code id_token token"
               ]
             }
           },
@@ -14284,6 +14346,17 @@
           "registered": {
             "type": "boolean",
             "description": "Whether the client registered itself at the registration endpoint. Such a client is never first party, whatever its application says."
+          },
+          "browser_access_tokens": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/BrowserAccessTokens"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The mark for access tokens through the browser, or `null`. A marked client is a finding of the security posture; a client that registered itself is marked only by an administrator, afterwards."
           }
         }
       },
@@ -14351,14 +14424,18 @@
           },
           "response_types": {
             "type": "array",
-            "description": "What the authorization endpoint may answer the client with, answered as listed here; `id_token code` is taken as `code id_token`. At least one with `authorization_code` and none without it; `[\"code\"]` for a client with that grant unless given. A type that returns an access token is refused with `oauth.client_response_types_invalid`.",
+            "description": "What the authorization endpoint may answer the client with, answered as listed here; `id_token code` is taken as `code id_token`. At least one with `authorization_code` and none without it; `[\"code\"]` for a client with that grant unless given. `token`, `id_token token`, `code token` and `code id_token token`, which return an access token through the browser, only with `browser_access_tokens`; otherwise `oauth.client_response_types_invalid`.",
             "items": {
               "type": "string",
               "enum": [
                 "code",
                 "id_token",
                 "code id_token",
-                "none"
+                "none",
+                "token",
+                "id_token token",
+                "code token",
+                "code id_token token"
               ]
             }
           },
@@ -14518,6 +14595,9 @@
           "tls_client_certificate_bound_access_tokens": {
             "type": "boolean",
             "description": "`true` asks for every access token of the client, and for a public client its refresh tokens, to be bound to the certificate the proxy in front of Hodor forwards with its request; the client is then refused a token when its request comes with none. `false` unless given. Refused with `linkerd_identity`: `oauth.client_certificate_bound_access_tokens_invalid`."
+          },
+          "browser_access_tokens": {
+            "$ref": "#/components/schemas/BrowserAccessTokensInput"
           }
         }
       },
@@ -14557,14 +14637,18 @@
           },
           "response_types": {
             "type": "array",
-            "description": "What the authorization endpoint may answer the client with, answered as listed here; `id_token code` is taken as `code id_token`. At least one with `authorization_code` and none without it; `[\"code\"]` for a client with that grant unless given. A type that returns an access token is refused with `oauth.client_response_types_invalid`.",
+            "description": "What the authorization endpoint may answer the client with, answered as listed here; `id_token code` is taken as `code id_token`. At least one with `authorization_code` and none without it; `[\"code\"]` for a client with that grant unless given. `token`, `id_token token`, `code token` and `code id_token token`, which return an access token through the browser, only with `browser_access_tokens`; otherwise `oauth.client_response_types_invalid`.",
             "items": {
               "type": "string",
               "enum": [
                 "code",
                 "id_token",
                 "code id_token",
-                "none"
+                "none",
+                "token",
+                "id_token token",
+                "code token",
+                "code id_token token"
               ]
             }
           },
@@ -14737,6 +14821,17 @@
           "tls_client_certificate_bound_access_tokens": {
             "type": "boolean",
             "description": "Whether every access token of the client, and for a public client its refresh tokens, is bound to the certificate its request comes with. Refused with `linkerd_identity`: `oauth.client_certificate_bound_access_tokens_invalid`."
+          },
+          "browser_access_tokens": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/BrowserAccessTokensInput"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "`null` removes the mark, and with it the response types that return an access token unless the change names the types. Left out, it stays, unless the change takes `authorization_code` away."
           }
         }
       },
@@ -17718,10 +17813,13 @@
             "items": {
               "type": "string",
               "enum": [
-                "code"
+                "code",
+                "id_token",
+                "code id_token",
+                "none"
               ]
             },
-            "description": "The response types a registration may name, among those Hodor answers; `code` unless given."
+            "description": "The response types a registration may name, among those Hodor answers; `code` unless given. Never one that returns an access token, which needs an administrator's mark (`oauth.client_registration_policy_invalid`)."
           },
           "scopes": {
             "type": "array",
@@ -17786,10 +17884,13 @@
             "items": {
               "type": "string",
               "enum": [
-                "code"
+                "code",
+                "id_token",
+                "code id_token",
+                "none"
               ]
             },
-            "description": "The response types a registration may name, among those Hodor answers; `code` unless given."
+            "description": "The response types a registration may name, among those Hodor answers; `code` unless given. Never one that returns an access token, which needs an administrator's mark (`oauth.client_registration_policy_invalid`)."
           },
           "scopes": {
             "type": "array",
@@ -18043,6 +18144,123 @@
             "minimum": 1,
             "maximum": 1000,
             "description": "1 unless given."
+          }
+        }
+      },
+      "BrowserAccessTokens": {
+        "type": "object",
+        "description": "The mark for access tokens through the browser, as the server keeps it: the scopes the token may carry beyond `openid`, `profile`, `email`, `address` and `phone`, who set it and when. A change that keeps the same scopes keeps who set it.",
+        "required": [
+          "scopes",
+          "marked_by",
+          "marked_at"
+        ],
+        "properties": {
+          "scopes": {
+            "type": "array",
+            "maxItems": 50,
+            "items": {
+              "type": "string"
+            }
+          },
+          "marked_by": {
+            "type": "object",
+            "description": "Who set it, written as the actor of an audit record is: `{\"kind\": \"user\", \"id\": \"…\"}` for an administrator, `{\"kind\": \"system\"}` for the command-line tool.",
+            "required": [
+              "kind"
+            ],
+            "properties": {
+              "kind": {
+                "type": "string"
+              },
+              "id": {
+                "type": "string"
+              }
+            }
+          },
+          "marked_at": {
+            "type": "string",
+            "format": "date-time"
+          }
+        }
+      },
+      "BrowserAccessTokensInput": {
+        "type": "object",
+        "additionalProperties": false,
+        "description": "The mark for access tokens through the browser, as an administrator gives it. Only for a client with `authorization_code` and without `tls_client_certificate_bound_access_tokens`; otherwise `oauth.client_browser_access_tokens_invalid`.",
+        "properties": {
+          "scopes": {
+            "type": "array",
+            "maxItems": 50,
+            "items": {
+              "type": "string"
+            },
+            "description": "The scopes the access token through the browser may carry beyond those of OpenID Connect, never `offline_access`; none unless given."
+          }
+        }
+      },
+      "PostureFinding": {
+        "type": "object",
+        "required": [
+          "check",
+          "severity",
+          "summary",
+          "object",
+          "detail",
+          "set_by",
+          "since"
+        ],
+        "properties": {
+          "check": {
+            "type": "string",
+            "enum": [
+              "client_marked_for_browser_access_tokens"
+            ]
+          },
+          "severity": {
+            "type": "string",
+            "enum": [
+              "low",
+              "medium",
+              "high"
+            ]
+          },
+          "summary": {
+            "type": "string"
+          },
+          "object": {
+            "type": "object",
+            "description": "What the finding is about: for a client, its `type`, `id`, `application_id` and `name`.",
+            "required": [
+              "type",
+              "id"
+            ],
+            "properties": {
+              "type": {
+                "type": "string"
+              },
+              "id": {
+                "type": "string"
+              },
+              "application_id": {
+                "type": "string"
+              },
+              "name": {
+                "type": "string"
+              }
+            }
+          },
+          "detail": {
+            "type": "object",
+            "description": "For a marked client, the `scopes` of its mark."
+          },
+          "set_by": {
+            "type": "object",
+            "description": "Who made the setting found, written as the actor of an audit record is."
+          },
+          "since": {
+            "type": "string",
+            "format": "date-time"
           }
         }
       }

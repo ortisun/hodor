@@ -61,6 +61,7 @@ const ONLY = (process.env.CONFORMANCE_ONLY ?? "").split(",").filter((name) => na
 const PLANS = [
   "basic", "config", "backchannel", "basic-pairwise", "backchannel-pairwise",
   "formpost-basic", "implicit-id-token", "hybrid-code-id-token",
+  "implicit-id-token-token", "hybrid-code-token", "hybrid-code-id-token-token",
 ];
 const CONTINUOUS_INTEGRATION_PLANS = PLANS.slice(0, 5);
 const CHOSEN = (process.env.CONFORMANCE_PLANS ?? CONTINUOUS_INTEGRATION_PLANS.join(","))
@@ -177,9 +178,13 @@ function seedHodor() {
   const signedWith = (algorithm) => ["--id-token-algorithm", algorithm];
   // The clients of the Basic plan also serve the Implicit and Hybrid plans,
   // which use them the same way: each may be answered with a code, an ID
-  // token, or both.
+  // token, an access token, or any of them together. The types that return
+  // an access token need the mark, with no scope beyond those of OpenID
+  // Connect, which are all the suite asks for.
   const throughTheBrowser = [
     "--response-type", "code", "--response-type", "id_token", "--response-type", "code id_token",
+    "--response-type", "id_token token", "--response-type", "code token",
+    "--response-type", "code id_token token", "--browser-access-tokens",
   ];
   return {
     first: client("First client", "client_secret_basic",
@@ -458,14 +463,25 @@ async function main() {
       // The ID token through the browser, Issue-127: the answer in the
       // fragment, alone and with a code. Each plan holds the tests of every
       // response type of its profile and sets the type of each test itself;
-      // only those of `id_token` and `code id_token` run here, as the types
-      // that return an access token are Issue-128's.
+      // only those of `id_token` and `code id_token` run here; those of the
+      // types that return an access token follow.
       "implicit-id-token": () => runPlan("oidcc-implicit-certification-test-plan", config,
         { server_metadata: "discovery", client_registration: "static_client" }, browser,
         "oidcc-implicit-certification-test-plan (id_token)", "id_token"),
       "hybrid-code-id-token": () => runPlan("oidcc-hybrid-certification-test-plan", config,
         { server_metadata: "discovery", client_registration: "static_client" }, browser,
         "oidcc-hybrid-certification-test-plan (code id_token)", "code id_token"),
+      // The access token through the browser, Issue-128, for the marked
+      // clients: the other response types of the two plans.
+      "implicit-id-token-token": () => runPlan("oidcc-implicit-certification-test-plan", config,
+        { server_metadata: "discovery", client_registration: "static_client" }, browser,
+        "oidcc-implicit-certification-test-plan (id_token token)", "id_token token"),
+      "hybrid-code-token": () => runPlan("oidcc-hybrid-certification-test-plan", config,
+        { server_metadata: "discovery", client_registration: "static_client" }, browser,
+        "oidcc-hybrid-certification-test-plan (code token)", "code token"),
+      "hybrid-code-id-token-token": () => runPlan("oidcc-hybrid-certification-test-plan", config,
+        { server_metadata: "discovery", client_registration: "static_client" }, browser,
+        "oidcc-hybrid-certification-test-plan (code id_token token)", "code id_token token"),
     };
     const results = [];
     for (const name of PLANS.filter((plan) => CHOSEN.includes(plan))) {

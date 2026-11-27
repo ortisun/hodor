@@ -2,17 +2,17 @@
   "$comment": "The plans of 0.5.0 on the OpenID Foundation's hosted suite, what each needs in Hodor, and which features are built. Turning a plan on when its feature is merged is one line: its feature's \"built\" becomes true. docs/operations/certification-deployment.md explains every field.",
   "features": {
     "id-token-through-the-browser": {
-      "built": false,
+      "built": true,
       "issue": "Issue-127",
       "pullRequest": 178,
       "what": "an ID token through the browser"
     },
     "access-token-through-the-browser": {
-      "built": false,
+      "built": true,
       "issue": "Issue-128",
       "what": "an access token through the browser",
-      "$comment": "When built, clientArguments takes the option of `hodor-cli client add` that marks a client as allowed tokens through the browser.",
-      "clientArguments": []
+      "$comment": "clientArguments marks every client that registers a type returning an access token, with no scope beyond those of OpenID Connect.",
+      "clientArguments": ["--browser-access-tokens"]
     },
     "front-channel-logout": {
       "built": false,
@@ -75,8 +75,6 @@
           "--way", "open", "--host", "{suiteHost}", "--most-clients", "200",
           "--grant", "authorization_code", "--grant", "refresh_token",
           "--response-type", "code", "--response-type", "id_token", "--response-type", "code id_token",
-          "--response-type", "id_token token", "--response-type", "code token",
-          "--response-type", "code id_token token",
           "--method", "client_secret_basic", "--method", "client_secret_post", "--method", "private_key_jwt",
           "--subject-type", "public", "--subject-type", "pairwise",
           "--scope", "openid", "--scope", "profile", "--scope", "email", "--scope", "address",

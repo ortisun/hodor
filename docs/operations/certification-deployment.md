@@ -70,13 +70,13 @@ node deploy/certification/certification.mjs make
 The script reads `deploy/certification/.env` for `HODOR_PUBLIC_URL`, checks that Hodor answers there, and makes, through `hodor-cli`, everything the plans that are ready need, and nothing for a plan that is not ([plans that wait](#plans-that-wait-for-a-feature)):
 
 - **The tenant `certification`**, with an application of its own, first party, so that consent is not asked, for the plans whose clients are registered by hand: Basic, Config, Implicit, Hybrid, the three Form Post plans and the logout plans.
-- **Its clients**, each confidential, without PKCE, as the Basic plan of 2014 needs, reading unsigned request objects, with the grants `authorization_code` and `refresh_token`, the scopes `openid`, `profile`, `email`, `address`, `phone` and `offline_access`, the suite's redirect address `https://www.certification.openid.net/test/a/<alias>/callback` and its address after logout `…/post_logout_redirect`, and every response type that is built:
+- **Its clients**, each confidential, without PKCE, as the Basic plan of 2014 needs, reading unsigned request objects, with the grants `authorization_code` and `refresh_token`, the scopes `openid`, `profile`, `email`, `address`, `phone` and `offline_access`, the suite's redirect address `https://www.certification.openid.net/test/a/<alias>/callback` and its address after logout `…/post_logout_redirect`, and every response type that is built; a client with a type that returns an access token is [marked](../architecture/contexts/oauth.md#the-mark-for-access-tokens-through-the-browser) for it with `--browser-access-tokens`, with no scope beyond those of OpenID Connect, and is therefore a finding of the tenant's security posture for as long as the deployment stands:
     - two that send their secret by `client_secret_basic` and one by `client_secret_post`, the three clients of the Basic plan, whose ID tokens are signed with `ES256`, `RS256` and `PS256`;
     - one for the RP-Initiated plan, with no logout address of its own;
     - one for the Back-Channel plan, with the suite's `…/backchannel_logout` as its back-channel logout address, `sid` required;
     - one for the Front-Channel plan, with `…/frontchannel_logout`, once front-channel logout is built.
 - **The tenant `certification-session`**, for the Session plan alone, once session management is built: a tenant turns it on for all its clients, and the other plans need not see it.
-- **The tenant `certification-dynamic`**, for the Dynamic and 3rd Party-Init plans, once the registration endpoint is built: client registration turned on, open, for an application of registered clients that is never first party, and only for addresses on the suite's host.
+- **The tenant `certification-dynamic`**, for the Dynamic and 3rd Party-Init plans, once the registration endpoint is built: client registration turned on, open, for an application of registered clients that is never first party, and only for addresses on the suite's host. Its policy allows `code`, `id_token` and `code id_token`, never a type that returns an access token, which needs an administrator's mark that a registered client never has ([Decision 0083](../decisions/0083-the-mark-for-access-tokens-through-the-browser.md)); the Dynamic plan runs with `code`, and discovery names every type whatever the policy says.
 - **In each tenant, the person the owner signs in as**, `certification@example.com` unless `CERTIFICATION_PERSON_EMAIL` says otherwise, made by an administrator through the administration interface and given every standard claim, so that the tests of the scopes find each claim they want. The script chooses a long random password and sets it through recovery, reading the link from the mail server.
 
 **The alias.** The suite's addresses for a test contain an alias, which "should be unique to yourself" among everyone who uses the hosted suite ([OpenID Provider testing](https://openid.net/certification/connect_op_testing/)). The script makes one, `hodor-` and eight random hexadecimal digits, unless `CERTIFICATION_ALIAS` gives it, and registers every client with it. Every plan uses the same alias, so the plans are run one at a time.
@@ -107,9 +107,10 @@ The script reads `deploy/certification/.env` for `HODOR_PUBLIC_URL`, checks that
   ],
   "waiting": [
     {
-      "profile": "Implicit OP",
-      "plan": "oidcc-implicit-certification-test-plan",
-      "waitingFor": ["Issue-127, pull request 178: an ID token through the browser", "Issue-128: an access token through the browser"]
+      "profile": "Front-Channel OP",
+      "plan": "oidcc-frontchannel-rp-initiated-logout-certification-test-plan",
+      "variant": { "client_registration": "static_client", "response_type": "code" },
+      "waitingFor": ["Issue-139, pull request 184: front-channel logout"]
     }
   ]
 }
@@ -138,15 +139,15 @@ The plans of 0.5.0, as [the target](conformance.md#the-target) names them, with 
 |---|---|---|---|---|
 | Basic OP | `oidcc-basic-certification-test-plan` | `server_metadata=discovery`, `client_registration=static_client` | `certification`: the three of the Basic plan | Yes |
 | Config OP | `oidcc-config-certification-test-plan` | Set by the plan | The same | Yes |
-| Implicit OP | `oidcc-implicit-certification-test-plan` | As Basic; the plan runs each response type of its profile itself | The same | Waits for Issues 127 and 128 |
-| Hybrid OP | `oidcc-hybrid-certification-test-plan` | As Basic | The same | Waits for Issues 127 and 128 |
+| Implicit OP | `oidcc-implicit-certification-test-plan` | As Basic; the plan runs each response type of its profile itself | The same | Yes |
+| Hybrid OP | `oidcc-hybrid-certification-test-plan` | As Basic | The same | Yes |
 | Form Post OP | `oidcc-formpost-basic-certification-test-plan` | As Basic | The same | Yes |
-| Form Post OP | `oidcc-formpost-implicit-certification-test-plan`, `oidcc-formpost-hybrid-certification-test-plan` | As Basic | The same | Wait for Issues 127 and 128 |
-| RP-Initiated OP | `oidcc-rp-initiated-logout-certification-test-plan`, once per response type | `client_registration=static_client`, `response_type` | `certification`: the RP-Initiated client | `code` yes; the others wait for Issues 127 and 128 |
-| Back-Channel OP | `oidcc-backchannel-rp-initiated-logout-certification-test-plan`, once per response type | As RP-Initiated | `certification`: the Back-Channel client | `code` yes; the others wait for Issues 127 and 128 |
+| Form Post OP | `oidcc-formpost-implicit-certification-test-plan`, `oidcc-formpost-hybrid-certification-test-plan` | As Basic | The same | Yes |
+| RP-Initiated OP | `oidcc-rp-initiated-logout-certification-test-plan`, once per response type | `client_registration=static_client`, `response_type` | `certification`: the RP-Initiated client | Yes, for every response type |
+| Back-Channel OP | `oidcc-backchannel-rp-initiated-logout-certification-test-plan`, once per response type | As RP-Initiated | `certification`: the Back-Channel client | Yes, for every response type |
 | Front-Channel OP | `oidcc-frontchannel-rp-initiated-logout-certification-test-plan`, once per response type | As RP-Initiated | `certification`: the Front-Channel client | Waits for Issue-139 |
 | Session OP | `oidcc-session-management-certification-test-plan`, once per response type | As RP-Initiated | `certification-session` | Waits for Issue-140 |
-| Dynamic OP | `oidcc-dynamic-certification-test-plan` | `response_type=code`; the plan sets the rest | `certification-dynamic`: the suite registers its own | Waits for Issues 127, 128, 134 and 137 |
+| Dynamic OP | `oidcc-dynamic-certification-test-plan` | `response_type=code`; the plan sets the rest | `certification-dynamic`: the suite registers its own | Waits for Issues 134 and 137 |
 | 3rd Party-Init OP | `oidcc-3rdparty-init-login-certification-test-plan` | Set by the plan | `certification-dynamic` | Waits for Issue-134 |
 
 The response types are `code`, `id_token`, `code id_token`, `id_token token`, `code token` and `code id_token token`. The suite's plan of the Dynamic profile offers the response type in its menu and the Foundation's page names none; `code` is what continuous integration runs ([Decision 0051](../decisions/0051-conformance-runs-and-certification.md#what-runs-and-when)), and `plans.json` lists it alone until the Foundation is asked.
@@ -157,11 +158,11 @@ Some plans need what is not built on `develop` yet. The script never guesses: `p
 
 | Feature | Built by | What turning it on adds |
 |---|---|---|
-| `id-token-through-the-browser` | Issue-127, pull request 178 | `id_token` and `code id_token` on every client of `certification`; with Issue-128, the Implicit, Hybrid and two Form Post plans |
-| `access-token-through-the-browser` | Issue-128 | `id_token token`, `code token` and `code id_token token`. Also give its `clientArguments` the option of `hodor-cli client add` that marks a client as allowed tokens through the browser, which that issue names |
+| `id-token-through-the-browser` | Issue-127, pull request 178. Built | `id_token` and `code id_token` on every client of `certification`; with Issue-128, the Implicit, Hybrid and two Form Post plans |
+| `access-token-through-the-browser` | Issue-128. Built | `id_token token`, `code token` and `code id_token token`, and its `clientArguments`, `--browser-access-tokens`, the option of `hodor-cli client add` that marks a client for them |
 | `front-channel-logout` | Issue-139, pull request 184 | The Front-Channel client and plan |
 | `session-management` | Issue-140 | The tenant `certification-session` and the Session plan. Also give its `tenantCommands` the command of `hodor-cli` that turns session management on for a tenant, which that issue names |
-| `registration-endpoint` | Issue-133, pull request 179; built | The tenant `certification-dynamic` with registration on, made once a plan that uses it is ready: the 3rd Party-Init plan with Issue-134, the Dynamic plan with Issues 127, 128, 134 and 137. Its command turns registration on with the six response types, so it needs Issue-128 too, or fewer response types, before either plan is ready |
+| `registration-endpoint` | Issue-133, pull request 179; built | The tenant `certification-dynamic` with registration on, made once a plan that uses it is ready: the 3rd Party-Init plan with Issue-134, the Dynamic plan with Issues 134 and 137. Its command turns registration on with `code`, `id_token` and `code id_token`: a registration policy never allows a type that returns an access token ([Decision 0083](../decisions/0083-the-mark-for-access-tokens-through-the-browser.md)) |
 | `registration-management` | Issue-134 | The 3rd Party-Init plan, with the Dynamic plan |
 | `dynamic-plan` | Issue-137 | What the Dynamic plan needs of a tenant beyond the endpoint, such as registered clients without PKCE, which Issue-137 decides; its `tenantCommands` take the command it names |
 

@@ -828,9 +828,11 @@ async fn errors_are_posted_in_the_mode_asked_for_and_other_modes_are_refused() {
     // the issuer, and no code.
     let cases = [
         (
-            vec![("response_type", "token")],
+            vec![("response_type", "token token")],
             "unsupported_response_type",
         ),
+        // A type the client, which is not marked, did not register.
+        (vec![("response_type", "token")], "unauthorized_client"),
         (vec![("scope", "openid admin")], "invalid_scope"),
         (vec![("code_challenge_method", "plain")], "invalid_request"),
         (vec![("prompt", "none")], "login_required"),

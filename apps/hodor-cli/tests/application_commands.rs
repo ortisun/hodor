@@ -940,3 +940,96 @@ async fn a_client_is_given_the_response_types_it_is_answered_with() {
         "{refused:?}"
     );
 }
+
+#[tokio::test]
+async fn a_client_is_marked_for_access_tokens_through_the_browser() {
+    let database = TestDatabase::start().await;
+    let created = run(
+        &database,
+        &["tenant", "create", "--slug", "acme", "--name", "Acme"],
+    );
+    assert!(created.status.success(), "{created:?}");
+    let added = run(
+        &database,
+        &[
+            "application",
+            "add",
+            "--tenant",
+            "acme",
+            "--name",
+            "Billing",
+            "--first-party",
+        ],
+    );
+    let application = value(&added, "application");
+    let client = |more: &[&str]| {
+        let mut arguments = vec![
+            "client",
+            "add",
+            "--tenant",
+            "acme",
+            "--application",
+            &application,
+            "--name",
+            "Billing in the browser",
+            "--type",
+            "public",
+            "--grant",
+            "authorization_code",
+            "--redirect-uri",
+            "https://billing.example.com/callback",
+            "--response-type",
+            "code",
+            "--response-type",
+            "id_token token",
+        ];
+        arguments.extend_from_slice(more);
+        run(&database, &arguments)
+    };
+
+    // Without the mark, a type that returns an access token is refused.
+    let refused = client(&[]);
+    assert!(!refused.status.success());
+    assert!(
+        text(&refused.stderr).contains("oauth.client_response_types_invalid"),
+        "{refused:?}"
+    );
+    // A scope of the mark needs the mark.
+    let alone = client(&["--browser-access-token-scope", "groups"]);
+    assert!(!alone.status.success(), "{alone:?}");
+
+    let marked = client(&[
+        "--browser-access-tokens",
+        "--browser-access-token-scope",
+        "groups",
+    ]);
+    assert!(marked.status.success(), "{marked:?}");
+    let id = value(&marked, "client");
+    let (types, mark): (Vec<String>, serde_json::Value) = sqlx::query_as(
+        "SELECT response_types, browser_access_tokens FROM oauth.client WHERE id = $1::uuid",
+    )
+    .bind(&id)
+    .fetch_one(database.owner())
+    .await
+    .expect("client");
+    assert_eq!(types, ["code", "id_token token"]);
+    assert_eq!(mark["scopes"], serde_json::json!(["groups"]));
+    assert_eq!(
+        mark["marked_by"],
+        serde_json::json!({ "kind": "system" }),
+        "set by Hodor itself, for the operator"
+    );
+    assert!(mark["marked_at"].is_string());
+
+    // The mark asks for no refresh token.
+    let refresh = client(&[
+        "--browser-access-tokens",
+        "--browser-access-token-scope",
+        "offline_access",
+    ]);
+    assert!(!refresh.status.success());
+    assert!(
+        text(&refresh.stderr).contains("oauth.client_browser_access_tokens_invalid"),
+        "{refresh:?}"
+    );
+}

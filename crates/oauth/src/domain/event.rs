@@ -74,6 +74,23 @@ pub enum OauthEvent {
         /// The client.
         client_id: ClientId,
     },
+    /// A client was marked for access tokens through the browser, or the
+    /// scopes of its mark changed.
+    ClientBrowserAccessTokensMarked {
+        /// The client.
+        client_id: ClientId,
+        /// Its application.
+        application_id: ApplicationId,
+        /// The scopes of the mark, beyond those of OpenID Connect.
+        scopes: Vec<String>,
+    },
+    /// A client's mark for access tokens through the browser was removed.
+    ClientBrowserAccessTokensUnmarked {
+        /// The client.
+        client_id: ClientId,
+        /// Its application.
+        application_id: ApplicationId,
+    },
     /// A client got a new secret.
     ClientSecretIssued {
         /// The client.
@@ -175,6 +192,21 @@ pub enum OauthEvent {
     },
     /// An access token was issued. Never carries the token.
     AccessTokenIssued {
+        /// The client it was issued to.
+        client_id: ClientId,
+        /// The grant it was issued under.
+        grant_id: GrantId,
+        /// The person it speaks for.
+        user_id: UserId,
+        /// The token's `jti`.
+        token_id: String,
+        /// When it expires.
+        #[serde(with = "time::serde::rfc3339")]
+        expires_at: Timestamp,
+    },
+    /// An access token was issued through the browser, by the
+    /// authorization endpoint, to a marked client. Never carries the token.
+    BrowserAccessTokenIssued {
         /// The client it was issued to.
         client_id: ClientId,
         /// The grant it was issued under.
@@ -376,6 +408,12 @@ impl DomainEvent for OauthEvent {
             Self::ClientChanged { .. } => "oauth.client_changed",
             Self::ClientEnabled { .. } => "oauth.client_enabled",
             Self::ClientDisabled { .. } => "oauth.client_disabled",
+            Self::ClientBrowserAccessTokensMarked { .. } => {
+                "oauth.client_browser_access_tokens_marked"
+            }
+            Self::ClientBrowserAccessTokensUnmarked { .. } => {
+                "oauth.client_browser_access_tokens_unmarked"
+            }
             Self::ClientSecretIssued { .. } => "oauth.client_secret_issued",
             Self::ClientSecretRevoked { .. } => "oauth.client_secret_revoked",
             Self::ClientKeyAdded { .. } => "oauth.client_key_added",
@@ -389,6 +427,7 @@ impl DomainEvent for OauthEvent {
             Self::ConsentRefused { .. } => "oauth.consent_refused",
             Self::ConsentWithdrawn { .. } => "oauth.consent_withdrawn",
             Self::AccessTokenIssued { .. } => "oauth.access_token_issued",
+            Self::BrowserAccessTokenIssued { .. } => "oauth.browser_access_token_issued",
             Self::ClientAccessTokenIssued { .. } => "oauth.client_access_token_issued",
             Self::RefreshTokenFamilyStarted { .. } => "oauth.refresh_token_family_started",
             Self::RefreshTokenRotated { .. } => "oauth.refresh_token_rotated",

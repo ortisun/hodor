@@ -11,7 +11,7 @@ use crate::domain::client::{
 };
 use crate::domain::pairwise::SubjectType;
 use crate::domain::registration::RegistrationPolicy;
-use crate::domain::response::ResponseType;
+use crate::domain::response::{ResponseType, response_types_invalid};
 use crate::domain::secret::ClientSecretValue;
 use hodor_kernel::DomainError;
 use serde_json::{Map, Value, json};
@@ -187,12 +187,21 @@ pub fn read_client_metadata(
             .collect::<Result<_, _>>()?,
     };
     grant_types.dedup();
+    // A client that registers itself is never marked for access tokens
+    // through the browser, so it never has a type that returns one
+    // (Decision 0083).
     let response_types = members
         .texts("response_types")?
         .map(|names| {
             names
                 .iter()
-                .map(|name| ResponseType::parse(name))
+                .map(|name| match ResponseType::parse(name) {
+                    Ok(kind) if kind.returns_access_token() => Err(response_types_invalid(
+                        "a registered client never has a response type that returns an \
+                         access token: it needs an administrator's mark",
+                    )),
+                    read => read,
+                })
                 .collect::<Result<Vec<_>, _>>()
         })
         .transpose()?;

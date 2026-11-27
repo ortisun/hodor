@@ -2,7 +2,7 @@
 
 ## Overview
 
-The PostgreSQL schema, as eighty-two numbered SQL files. A number is
+The PostgreSQL schema, as eighty-three numbered SQL files. A number is
 reserved when a piece of work starts, so a number can be missing until that
 work merges; every file not yet applied is applied, in order. They are
 embedded in the binaries by `static MIGRATOR: Migrator = sqlx::migrate!("../../migrations")`
@@ -97,6 +97,7 @@ Tables created, by file:
 | `0120_keys_authority_name_constraints.sql` | `keys.certificate_authority.uri_constraints`, `true` by default, the value of every authority made before it: whether the authority's name constraints hold its trust domains as URI hosts; and `additional_dns_names`, empty by default, at most 10 (`certificate_authority_additional_dns_name_count`): the DNS names they permit besides the trust domains (Decision 0076) |
 | `0122_oauth_client_jwks_uri.sql` | `oauth.client.jwks_uri`: a client's key set address, compared byte for byte, 1 to 2000 characters starting `https://` or `http://` (`client_jwks_uri_form`), only with `private_key_jwt` (`client_jwks_uri_needs_private_key_jwt`); what it answers is never stored |
 | `0123_oauth_client_registered.sql` | adds to `oauth.client` `application_type` (`web`, `native` or null, `client_application_type_known`), `client_uri`, `logo_uri`, `policy_uri` and `tos_uri` (`https://`, at most 2000 characters, `client_display_uris_https`), `registered` (`false` by default) and `registered_from` (32 bytes, only for a registered client, `client_registered_from_shape`), with the partial index `client_registered_from_idx` on the tenant, `registered_from` and `created_at` of registered clients. Numbers 0119 and 0121 are left to other work |
+| `0125_oauth_client_browser_access_tokens.sql` | `oauth.client.browser_access_tokens`, the mark for access tokens through the browser as `jsonb`, an object with its scopes, at most 50, who set it and when (`client_browser_access_tokens_shape`), only with `authorization_code` and without certificate-bound access tokens (`client_browser_access_tokens_need_code`); `client_response_types_known` allows the four types that return an access token, only with the mark (`client_browser_access_tokens_for_token_types`); the partial index `client_marked_for_browser_access_tokens` finds the marked clients of a tenant |
 
 No migration creates a type, an extension or seed rows; enumerations are text
 columns with `CHECK ... IN (...)` constraints.

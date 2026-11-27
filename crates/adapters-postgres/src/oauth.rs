@@ -6,12 +6,12 @@ use crate::uow::{connection, database_error};
 use hodor_kernel::{DomainError, Timestamp, UnitOfWork, UserId};
 use hodor_oauth::api::{
     Application, ApplicationId, ApplicationSettings, ApplicationSnapshot, ApplicationStore,
-    ApplicationType, Audience, AuthenticationMethod, Client, ClientId, ClientKey, ClientSecret,
-    ClientSecretHash, ClientSecretId, ClientSettings, ClientSnapshot, ClientStore, ClientType,
-    ExchangeRule, GrantType, IdTokenAlgorithm, LinkerdIdentity, RequestObjectAlgorithm,
-    ResourceServer, ResourceServerId, ResourceServerSettings, ResourceServerSnapshot,
-    ResourceServerStore, ResponseType, ScopeDefinition, SelfRegistration, SpiffeId, Status,
-    SubjectType, TokenPolicy, WorkloadIdentity,
+    ApplicationType, Audience, AuthenticationMethod, BrowserAccessTokens, Client, ClientId,
+    ClientKey, ClientSecret, ClientSecretHash, ClientSecretId, ClientSettings, ClientSnapshot,
+    ClientStore, ClientType, ExchangeRule, GrantType, IdTokenAlgorithm, LinkerdIdentity,
+    RequestObjectAlgorithm, ResourceServer, ResourceServerId, ResourceServerSettings,
+    ResourceServerSnapshot, ResourceServerStore, ResponseType, ScopeDefinition, SelfRegistration,
+    SpiffeId, Status, SubjectType, TokenPolicy, WorkloadIdentity,
 };
 use sqlx::PgConnection;
 use sqlx::Row as _;
@@ -284,7 +284,7 @@ const CLIENT_COLUMNS: &str = "id, application_id, name, client_type, authenticat
      certificate_bound_access_tokens, default_max_age, default_acr_values, require_auth_time, \
      userinfo_signed_response_alg, require_pushed_authorization_requests, \
      request_uris, jwks_uri, response_types, application_type, client_uri, logo_uri, policy_uri, \
-     tos_uri, registered, registered_from";
+     tos_uri, registered, registered_from, browser_access_tokens";
 
 /// A client's default max age, as the column holds it.
 fn default_max_age_of(settings: &ClientSettings) -> Result<Option<i32>, DomainError> {
@@ -453,6 +453,14 @@ async fn load_client(
             logo_uri: row.try_get("logo_uri").map_err(get)?,
             policy_uri: row.try_get("policy_uri").map_err(get)?,
             tos_uri: row.try_get("tos_uri").map_err(get)?,
+            browser_access_tokens: row
+                .try_get::<Option<serde_json::Value>, _>("browser_access_tokens")
+                .map_err(get)?
+                .map(|mark| {
+                    BrowserAccessTokens::from_json(&mark)
+                        .map_err(|_| corrupted("mark for access tokens through the browser"))
+                })
+                .transpose()?,
         },
         secrets,
         keys,
@@ -531,6 +539,14 @@ fn response_type_names(settings: &ClientSettings) -> Vec<&'static str> {
         .collect()
 }
 
+/// The mark for access tokens through the browser, as its column holds it.
+fn mark_of(settings: &ClientSettings) -> Option<serde_json::Value> {
+    settings
+        .browser_access_tokens
+        .as_ref()
+        .map(BrowserAccessTokens::to_json)
+}
+
 fn grant_names(settings: &ClientSettings) -> Vec<&'static str> {
     settings
         .grant_types
@@ -561,11 +577,11 @@ impl ClientStore for PgClientStore {
                   require_auth_time, userinfo_signed_response_alg,
                   require_pushed_authorization_requests, request_uris, jwks_uri, response_types,
                   application_type, client_uri, logo_uri, policy_uri, tos_uri, registered,
-                  registered_from, version)
+                  registered_from, browser_access_tokens, version)
              VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16,
                      $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28,
                      $29, $30, $31, $32, $33, $34, $35, $36, $37, $38, $39, $40, $41, $42,
-                     $43, $44, $45, 0)",
+                     $43, $44, $45, $46, 0)",
         )
         .bind(tenant)
         .bind(state.id.as_uuid())
@@ -626,6 +642,7 @@ impl ClientStore for PgClientStore {
                 .and_then(|registered| registered.address_hash)
                 .map(|hash| hash.to_vec()),
         )
+        .bind(mark_of(settings))
         .execute(&mut *connection)
         .await;
         match inserted {
@@ -667,7 +684,7 @@ impl ClientStore for PgClientStore {
                  jwks_uri = $35,
                  response_types = $36,
                  application_type = $37, client_uri = $38, logo_uri = $39, policy_uri = $40,
-                 tos_uri = $41,
+                 tos_uri = $41, browser_access_tokens = $42,
                  version = version + 1
              WHERE tenant_id = $1 AND id = $2 AND version = $17",
         )
@@ -721,6 +738,7 @@ impl ClientStore for PgClientStore {
         .bind(settings.logo_uri.as_deref())
         .bind(settings.policy_uri.as_deref())
         .bind(settings.tos_uri.as_deref())
+        .bind(mark_of(settings))
         .execute(&mut *connection)
         .await
         .map_err(get)?;
@@ -780,6 +798,27 @@ impl ClientStore for PgClientStore {
         )))
         .bind(tenant)
         .bind(identity.as_str())
+        .fetch_all(&mut *connection)
+        .await
+        .map_err(get)?;
+        let mut clients = Vec::with_capacity(rows.len());
+        for row in &rows {
+            clients.push(load_client(connection, tenant, row).await?);
+        }
+        Ok(clients)
+    }
+
+    async fn marked_for_browser_access_tokens(
+        &self,
+        uow: &mut dyn UnitOfWork,
+    ) -> Result<Vec<Client>, DomainError> {
+        let tenant = uow.tenant().tenant_id().as_uuid();
+        let connection = connection(uow)?;
+        let rows = sqlx::query(sqlx::AssertSqlSafe(format!(
+            "SELECT {CLIENT_COLUMNS} FROM oauth.client
+             WHERE tenant_id = $1 AND browser_access_tokens IS NOT NULL ORDER BY created_at, id"
+        )))
+        .bind(tenant)
         .fetch_all(&mut *connection)
         .await
         .map_err(get)?;

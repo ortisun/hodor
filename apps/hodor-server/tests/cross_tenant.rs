@@ -490,7 +490,7 @@ async fn an_administrators_token_is_refused_by_every_operation_of_another_tenant
             tried += 1;
         }
     }
-    assert_eq!(tried, 163, "every documented operation was tried");
+    assert_eq!(tried, 164, "every documented operation was tried");
 
     // The token is good where it belongs, and nothing happened in Globex:
     // it has its two users, both active.
@@ -8264,4 +8264,174 @@ async fn a_client_registered_in_one_tenant_is_unknown_in_another() {
     )
     .await;
     assert_eq!(status, StatusCode::CREATED, "{body}");
+}
+
+/// A public client of `code` and `token` of a new first-party application
+/// of `tenant`, marked for access tokens through the browser when
+/// `marked`, otherwise of `code` alone. Answers its `client_id`.
+async fn browser_token_client(world: &World, tenant: &Tenant, marked: bool) -> String {
+    use hodor_adapters_postgres::{PgApplicationStore, PgClientStore, PgResourceServerStore};
+    use hodor_oauth::api::{
+        ApplicationPorts, ApplicationService, ApplicationSettings, BrowserAccessTokens,
+        ClientSettings, ClientType, CreateClient, GrantType, ResponseType,
+    };
+    let applications = ApplicationService::new(ApplicationPorts {
+        units_of_work: Arc::new(world.database.app().clone()),
+        applications: Arc::new(PgApplicationStore),
+        clients: Arc::new(PgClientStore),
+        resource_servers: Arc::new(PgResourceServerStore),
+        digest: Arc::new(Sha256Digest),
+        random: Arc::new(OsRandom),
+        clock: Arc::new(SystemClock),
+    });
+    let application = applications
+        .create_application(
+            &tenant.context,
+            ApplicationSettings {
+                name: "Travel in the browser".to_owned(),
+                first_party: true,
+            },
+            Caller::system(),
+        )
+        .await
+        .expect("application");
+    let mut settings = ClientSettings::new(
+        "Travel in the browser",
+        ClientType::Public,
+        vec![GrantType::AuthorizationCode],
+        vec![REDIRECT.to_owned()],
+    );
+    if marked {
+        settings.response_types = vec![ResponseType::Code, ResponseType::Token];
+        settings.browser_access_tokens = Some(BrowserAccessTokens::asked(Vec::new()));
+    }
+    settings.allowed_scopes = vec!["openid".to_owned()];
+    let (client, _) = applications
+        .create_client(
+            &tenant.context,
+            CreateClient {
+                application_id: application.id(),
+                client_type: ClientType::Public,
+                settings,
+                secret_lifetime: None,
+            },
+            Caller::system(),
+        )
+        .await
+        .expect("client");
+    client.id().to_string()
+}
+
+/// A request of `client` for an access token alone at `slug`'s
+/// authorization endpoint.
+fn token_request(slug: &str, client: &str) -> String {
+    format!(
+        "/t/{slug}/oauth2/authorize?{}",
+        form_urlencoded::Serializer::new(String::new())
+            .extend_pairs([
+                ("response_type", "token"),
+                ("client_id", client),
+                ("redirect_uri", REDIRECT),
+                ("scope", "openid"),
+                ("state", "s-1"),
+            ])
+            .finish()
+    )
+}
+
+/// The parameters of the fragment `location` ends with.
+fn fragment_of(location: &str) -> std::collections::BTreeMap<String, String> {
+    let (_, fragment) = location.split_once('#').expect("a fragment");
+    form_urlencoded::parse(fragment.as_bytes())
+        .into_owned()
+        .collect()
+}
+
+#[tokio::test]
+async fn the_mark_of_one_tenants_client_means_nothing_at_another() {
+    let world = world_with(&[("HODOR_SECRET_KEYS", ROOT_KEY)]).await;
+    let (acme, globex) = (&world.acme, &world.globex);
+    let acme_client = browser_token_client(&world, acme, true).await;
+    let globex_client = browser_token_client(&world, globex, false).await;
+    let mut acme_browser = Browser::not_following(&world.server);
+    let (_, body) = acme_browser.sign_in(acme.slug, EMAIL, PASSWORD).await;
+    assert_eq!(body["status"], "completed", "{body}");
+    let mut globex_browser = Browser::not_following(&world.server);
+    let (_, body) = globex_browser.sign_in(globex.slug, EMAIL, PASSWORD).await;
+    assert_eq!(body["status"], "completed", "{body}");
+
+    // Where it belongs, the marked client gets its token in the fragment.
+    let (status, location, body) = acme_browser
+        .navigate(Method::GET, &token_request(acme.slug, &acme_client), None)
+        .await;
+    assert_eq!(status, StatusCode::FOUND, "{body}");
+    let answer = fragment_of(&location.expect("a redirect"));
+    let token = answer["access_token"].clone();
+    assert_eq!(answer["expires_in"], "300");
+
+    // Acme's client is unknown at Globex's authorization endpoint: Hodor's
+    // own page, nothing sent to the address, whatever its mark.
+    let (status, location, body) = globex_browser
+        .navigate(Method::GET, &token_request(globex.slug, &acme_client), None)
+        .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(location, None);
+    assert!(
+        body.contains("oauth.authorization_client_unknown"),
+        "{body}"
+    );
+
+    // Globex's own client, not marked, is refused the type.
+    let (status, location, _) = globex_browser
+        .navigate(
+            Method::GET,
+            &token_request(globex.slug, &globex_client),
+            None,
+        )
+        .await;
+    assert_eq!(status, StatusCode::FOUND);
+    let refused = fragment_of(&location.expect("a redirect"));
+    assert_eq!(refused["error"], "unauthorized_client");
+    assert!(!refused.contains_key("access_token"));
+
+    // Each tenant's posture names its own marked clients, and no other's.
+    let (status, findings) = world
+        .admin(
+            acme,
+            &acme.administrator_token,
+            Method::GET,
+            "/posture/findings",
+            None,
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{findings}");
+    let items = findings["items"].as_array().expect("items");
+    assert_eq!(items.len(), 1);
+    assert_eq!(items[0]["object"]["id"], acme_client.as_str());
+    let (status, findings) = world
+        .admin(
+            globex,
+            &globex.administrator_token,
+            Method::GET,
+            "/posture/findings",
+            None,
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{findings}");
+    assert_eq!(findings["items"], serde_json::json!([]));
+
+    // The token reads Acme's UserInfo, and is nothing at Globex's.
+    for (slug, expected) in [
+        (acme.slug, StatusCode::OK),
+        (globex.slug, StatusCode::UNAUTHORIZED),
+    ] {
+        let status = Client::new()
+            .get(format!("{}/t/{slug}/oauth2/userinfo", world.server.base))
+            .bearer_auth(&token)
+            .send()
+            .await
+            .expect("response")
+            .status();
+        assert_eq!(status, expected, "{slug}");
+    }
 }
