@@ -574,10 +574,15 @@ fn parameters_outside_that_contradict_the_object_are_refused() {
         &setting.keys.ec,
         &claims(&setting.client),
     );
-    let cases: [Contradiction<'_>; 4] = [
+    let cases: [Contradiction<'_>; 5] = [
         (
             "another response type",
             &[("response_type", "token")],
+            "response_type outside the request object is not the one inside",
+        ),
+        (
+            "a response type of more words",
+            &[("response_type", "code id_token")],
             "response_type outside the request object is not the one inside",
         ),
         (

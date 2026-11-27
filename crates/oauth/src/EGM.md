@@ -111,7 +111,10 @@ follows is `docs/architecture/contexts/oauth.md`.
     and `SPIFFE_ASSERTION_TYPE`, `SPIFFE_CLIENT_AUTHENTICATION_DRAFT`,
     `MAX_SPIFFE_ID_LENGTH`, `SVID_LONGEST_AHEAD`, `SVID_MARK_PREFIX`;
     `TokenService::with_trust_domains`.
-  - The OpenID Provider's domain: `id_token_claims`, `access_token_hash`,
+  - The OpenID Provider's domain: `id_token_claims`, `id_token_claims_for`
+    (any ID token, over `SignInFacts` and `IdTokenHashes`), `claims_of_scopes`,
+    `left_half_hash` (of the client's algorithm, SHA-512 for EdDSA),
+    `access_token_hash`, `IMPLICIT_GRANT`,
     `authentication_methods`, `assurance`, `is_multi_factor`,
     `asks_for_openid`, `check_access_token`, `read_access_token`,
     `ReadAccessToken`, `PublishedKey`, `CheckedAccessToken`, `BearerRefusal`, `PersonClaims`,
@@ -125,8 +128,11 @@ follows is `docs/architecture/contexts/oauth.md`.
     `PendingAuthorization`, `PendingAuthorizationId`, `BrowserSecret`,
     `Grant`, `GrantId`, `GrantStatus`, `AuthorizationCode`, `CodeHash`,
     `CodeValue`, `CodePresentation`, `CodeRefusal`, `s256_challenge`, and
-    `CODE_LIFETIME`, `PENDING_LIFETIME`, `MAX_RESOURCES`; `ResponseType`,
-    `ResponseMode` and `error_mode`.
+    `CODE_LIFETIME`, `PENDING_LIFETIME`, `MAX_RESOURCES`.
+  - Response types and modes: `ResponseType` (`read` into
+    `ReadResponseType`, `parse`, `returns_code`, `returns_id_token`,
+    `makes_grant`, `default_mode`, `allows`), `ResponseMode` (`query`,
+    `fragment`, `form_post`), `error_mode`, and `response_types_kept`.
   - Refresh tokens: `RefreshFamily`, `RefreshFamilyId`, `RefreshTokenHash`,
     `RefreshTokenValue`, `RefreshTokenRecord`, `FamilySecret`,
     `FamilyStatus`, `RefreshAsk`, `RefreshDecision`, `RefreshRefusal`, and

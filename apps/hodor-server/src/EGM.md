@@ -218,7 +218,10 @@ and `run`.
   `SecretKeys::parse`.
 - The token endpoint is mounted only with both a key service and
   `HODOR_SECRET_KEYS`; a retry window outside 0 to 60 seconds aborts startup
-  (`token`).
+  (`token`). Its `TokenService` is also the authorization endpoint's
+  `id_tokens`, which signs the ID tokens that come through the browser;
+  without it, a request for a type that returns one is answered
+  `server_error`.
 - Every context that keeps secrets (federation, authenticator applications,
   refresh token families, pairwise secrets)
   gets the same kind of `TenantSecretBox`, built by `secret_box` with

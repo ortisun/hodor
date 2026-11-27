@@ -335,13 +335,18 @@ fn every_malformed_request_is_refused_for_its_own_reason() {
             "unsupported_response_type",
         ),
         (
-            "a hybrid response type",
+            "a hybrid response type the client did not register",
             with(base.clone(), "response_type", Some("code id_token")),
+            "unauthorized_client",
+        ),
+        (
+            "an unknown response type",
+            with(base.clone(), "response_type", Some("code code")),
             "unsupported_response_type",
         ),
         (
-            "a fragment response mode",
-            with(base.clone(), "response_mode", Some("fragment")),
+            "a response mode not offered",
+            with(base.clone(), "response_mode", Some("form_post.jwt")),
             "invalid_request",
         ),
         (
@@ -514,25 +519,19 @@ fn a_request_is_answered_in_the_mode_it_names_or_in_the_query() {
     assert_eq!(named(None), ResponseMode::Query);
     assert_eq!(named(Some("query")), ResponseMode::Query);
     assert_eq!(named(Some("form_post")), ResponseMode::FormPost);
+    assert_eq!(named(Some("fragment")), ResponseMode::Fragment);
 }
 
 #[test]
 fn a_mode_hodor_does_not_offer_is_refused_in_the_mode_of_the_type() {
     let setting = setting();
     let base = good(&setting.client);
-    for mode in [
-        "fragment",
-        "jwt",
-        "query.jwt",
-        "form_post.jwt",
-        "FORM_POST",
-        "anything",
-    ] {
+    for mode in ["jwt", "query.jwt", "form_post.jwt", "FORM_POST", "anything"] {
         match check(&setting, with(base.clone(), "response_mode", Some(mode))) {
             Err(AuthorizationRefusal::Redirect(error)) => {
                 assert_eq!(error.error, "invalid_request", "{mode}");
                 assert_eq!(
-                    error.description, "the response modes are query and form_post",
+                    error.description, "the response modes are query, fragment and form_post",
                     "{mode}"
                 );
                 assert_eq!(error.mode, ResponseMode::Query, "{mode}");
@@ -1179,4 +1178,206 @@ fn a_grant_is_made_giving_no_claim() {
     .expect("accepted");
     let grant = Grant::make(&request, &person(MOMENT), MOMENT);
     assert_eq!(grant.claims, GrantClaims::default());
+}
+
+/// The setting with a client registered for every response type.
+fn every_type() -> Setting {
+    let mut setting = setting();
+    let mut settings = setting.client.snapshot().settings.clone();
+    settings.response_types = ResponseType::ALL.to_vec();
+    setting
+        .client
+        .change(settings, MOMENT)
+        .expect("every response type");
+    setting
+}
+
+/// A request for `response_type`, with a nonce, and without the code
+/// challenge of [`good`].
+fn asking(setting: &Setting, response_type: &str) -> Pairs {
+    let pairs = with(good(&setting.client), "response_type", Some(response_type));
+    let pairs = with(pairs, "nonce", Some("n-0S6_WzA2Mj"));
+    let pairs = with(pairs, "code_challenge", None);
+    with(pairs, "code_challenge_method", None)
+}
+
+fn mode_of(
+    result: Result<AuthorizationRequest, AuthorizationRefusal>,
+) -> (&'static str, ResponseMode) {
+    match result {
+        Err(AuthorizationRefusal::Redirect(error)) => (error.error, error.mode),
+        other => panic!("expected an error at the redirect address, got {other:?}"),
+    }
+}
+
+#[test]
+fn each_registered_type_is_answered_in_its_default_mode_unless_another_is_named() {
+    let setting = every_type();
+    for (written, kind, mode) in [
+        ("id_token", ResponseType::IdToken, ResponseMode::Fragment),
+        (
+            "code id_token",
+            ResponseType::CodeIdToken,
+            ResponseMode::Fragment,
+        ),
+        (
+            "id_token code",
+            ResponseType::CodeIdToken,
+            ResponseMode::Fragment,
+        ),
+        ("none", ResponseType::None, ResponseMode::Query),
+    ] {
+        let mut pairs = asking(&setting, written);
+        if kind.returns_code() {
+            // A public client's code still needs its challenge.
+            pairs = with(pairs, "code_challenge", Some(CHALLENGE));
+            pairs = with(pairs, "code_challenge_method", Some("S256"));
+        }
+        let request = check(&setting, pairs.clone()).expect(written);
+        assert_eq!(request.response_type, kind, "{written}");
+        assert_eq!(request.response_mode, mode, "{written}");
+        let fragment = check(&setting, with(pairs, "response_mode", Some("fragment")))
+            .expect("the fragment for every type");
+        assert_eq!(fragment.response_mode, ResponseMode::Fragment);
+    }
+    let code = check(&setting, good(&setting.client)).expect("code");
+    assert_eq!(
+        (code.response_type, code.response_mode),
+        (ResponseType::Code, ResponseMode::Query)
+    );
+}
+
+#[test]
+fn a_type_without_a_code_reads_no_challenge() {
+    let setting = every_type();
+    // A public client must send a challenge for a code, and need not for
+    // an ID token alone; one sent anyway is not read, however written.
+    let without = check(&setting, asking(&setting, "id_token")).expect("no challenge needed");
+    assert_eq!(without.code_challenge, None);
+    let ignored = with(asking(&setting, "id_token"), "code_challenge", Some("abc"));
+    let ignored = with(ignored, "code_challenge_method", Some("plain"));
+    assert_eq!(
+        check(&setting, ignored).expect("not read").code_challenge,
+        None
+    );
+    assert_eq!(
+        mode_of(check(&setting, asking(&setting, "code id_token"))),
+        ("invalid_request", ResponseMode::Fragment),
+        "a code needs its challenge"
+    );
+}
+
+#[test]
+fn an_id_token_needs_a_nonce_and_openid_and_never_goes_into_a_query() {
+    let setting = every_type();
+    for written in ["id_token", "code id_token"] {
+        let mut pairs = asking(&setting, written);
+        pairs = with(pairs, "code_challenge", Some(CHALLENGE));
+        pairs = with(pairs, "code_challenge_method", Some("S256"));
+        assert_eq!(
+            mode_of(check(&setting, with(pairs.clone(), "nonce", None))),
+            ("invalid_request", ResponseMode::Fragment),
+            "{written} without a nonce"
+        );
+        assert_eq!(
+            mode_of(check(
+                &setting,
+                with(pairs.clone(), "response_mode", Some("query"))
+            )),
+            ("invalid_request", ResponseMode::Fragment),
+            "{written} in the query"
+        );
+        assert_eq!(
+            mode_of(check(&setting, with(pairs.clone(), "scope", Some("read")))),
+            ("invalid_scope", ResponseMode::Fragment),
+            "{written} without openid"
+        );
+    }
+    // `code` and `none` need no nonce.
+    let none = with(asking(&setting, "none"), "nonce", None);
+    assert!(check(&setting, none).is_ok());
+}
+
+#[test]
+fn an_error_goes_back_in_the_mode_the_answer_would_have_had() {
+    let setting = every_type();
+    let base = asking(&setting, "id_token");
+    let mut twice = base.clone();
+    twice.push(("scope".to_owned(), "openid".to_owned()));
+    assert_eq!(
+        mode_of(check(&setting, twice)),
+        ("invalid_request", ResponseMode::Fragment),
+        "an error before the type is checked, for a type of the fragment"
+    );
+    assert_eq!(
+        mode_of(check(
+            &setting,
+            with(base.clone(), "response_type", Some("token id_token"))
+        )),
+        ("unsupported_response_type", ResponseMode::Fragment),
+        "a type that returns an access token is not offered, and answers in the fragment"
+    );
+    assert_eq!(
+        mode_of(check(
+            &setting,
+            with(base.clone(), "response_type", Some("code token code"))
+        )),
+        ("unsupported_response_type", ResponseMode::Query),
+        "an unknown type answers in the query"
+    );
+    assert_eq!(
+        mode_of(check(
+            &setting,
+            with(
+                with(base.clone(), "response_type", Some("code code")),
+                "response_mode",
+                Some("fragment")
+            )
+        )),
+        ("unsupported_response_type", ResponseMode::Fragment),
+        "the mode the request names, when Hodor offers it"
+    );
+    assert_eq!(
+        mode_of(check(
+            &setting,
+            with(base.clone(), "response_mode", Some("fragment.jwt"))
+        )),
+        ("invalid_request", ResponseMode::Fragment),
+        "a mode not offered falls back to the type's"
+    );
+    // A type that returns an ID token may come as a form, its errors too.
+    assert_eq!(
+        check(
+            &setting,
+            with(base.clone(), "response_mode", Some("form_post"))
+        )
+        .map(|request| request.response_mode)
+        .ok(),
+        Some(ResponseMode::FormPost),
+        "an ID token posted by the page of form_post"
+    );
+    assert_eq!(
+        mode_of(check(
+            &setting,
+            with(
+                with(base, "response_mode", Some("form_post")),
+                "nonce",
+                None
+            )
+        )),
+        ("invalid_request", ResponseMode::FormPost),
+        "an error of a type of the fragment, asked as a form"
+    );
+}
+
+#[test]
+fn a_type_the_client_did_not_register_is_unauthorized() {
+    let setting = setting();
+    for written in ["id_token", "code id_token", "none"] {
+        let mut pairs = asking(&setting, written);
+        pairs = with(pairs, "code_challenge", Some(CHALLENGE));
+        pairs = with(pairs, "code_challenge_method", Some("S256"));
+        let (error, _) = mode_of(check(&setting, pairs));
+        assert_eq!(error, "unauthorized_client", "{written}");
+    }
 }

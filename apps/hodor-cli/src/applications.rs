@@ -20,8 +20,8 @@ use hodor_oauth::api::{
     AuthenticationMethod, ClaimMapper, ClaimMapperId, ClaimMapperPorts, ClaimMapperService,
     ClaimMapperSettings, ClaimSource, ClaimTarget, Client, ClientId, ClientSettings, ClientType,
     CreateClient, CreateResourceServer, ExchangeRule, GrantType, IdTokenAlgorithm, LinkerdIdentity,
-    RequestObjectAlgorithm, ResourceServerSettings, RotateSecret, ScopeDefinition, SpiffeId,
-    Status, SubjectType,
+    RequestObjectAlgorithm, ResourceServerSettings, ResponseType, RotateSecret, ScopeDefinition,
+    SpiffeId, Status, SubjectType,
 };
 use hodor_tenant::api::TenantService;
 use std::fmt::Write as _;
@@ -94,6 +94,12 @@ pub(crate) enum ClientCommand {
         /// A grant it may use; given once per grant.
         #[arg(long = "grant", required = true)]
         grants: Vec<String>,
+        /// A response type the authorization endpoint may answer it with:
+        /// `code`, `id_token`, `code id_token` or `none`; given once per
+        /// type. `code` alone unless given, for a client with
+        /// `authorization_code`.
+        #[arg(long = "response-type")]
+        response_types: Vec<String>,
         /// A redirect address, compared by exact equality; given once per
         /// address.
         #[arg(long = "redirect-uri")]
@@ -498,6 +504,7 @@ pub(crate) async fn run_client(
             name,
             client_type: kind,
             grants,
+            response_types,
             redirect_uris,
             post_logout_redirect_uris,
             scopes,
@@ -543,6 +550,12 @@ pub(crate) async fn run_client(
                 .map(|grant| GrantType::parse(grant))
                 .collect::<Result<Vec<_>, _>>()?;
             let mut settings = ClientSettings::new(&name, kind, grants, redirect_uris);
+            if !response_types.is_empty() {
+                settings.response_types = response_types
+                    .iter()
+                    .map(|kind| ResponseType::parse(kind))
+                    .collect::<Result<_, _>>()?;
+            }
             if let Some(method) = method {
                 settings.authentication_method = AuthenticationMethod::parse(&method)?;
             }

@@ -371,7 +371,7 @@ impl RegistrationPolicy {
             Some(names) => names
                 .iter()
                 .map(|name| {
-                    ResponseType::read(name).ok_or_else(|| {
+                    ResponseType::read(name).offered().ok_or_else(|| {
                         policy_invalid(format!("`{name}` is not a response type Hodor answers"))
                     })
                 })

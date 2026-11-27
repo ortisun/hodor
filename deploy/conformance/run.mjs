@@ -3,7 +3,8 @@
 // the Basic and Back-Channel plans again with pairwise clients, in the stack
 // of compose.yaml, and fails unless every test ends as
 // docs/operations/conformance.md expects. The Form Post plan of the code
-// flow runs when asked for with CONFORMANCE_PLANS.
+// flow, and the Implicit and Hybrid plans, for the response types `id_token`
+// and `code id_token`, run when asked for with CONFORMANCE_PLANS.
 //
 // NOT FOR ANYTHING REAL: the person, the clients and their secrets are made
 // here for the run and written to the console.
@@ -54,8 +55,13 @@ const SECTOR_DOCUMENT_HOST = "sector-document:8080";
 const SECTOR_IDENTIFIER_URI = `http://${SECTOR_DOCUMENT_HOST}/redirect_uris.json`;
 const ONLY = (process.env.CONFORMANCE_ONLY ?? "").split(",").filter((name) => name !== "");
 // The plans this script can run, by a short name. Continuous integration
-// runs the first five; the Form Post plan of the code flow runs when named.
-const PLANS = ["basic", "config", "backchannel", "basic-pairwise", "backchannel-pairwise", "formpost-basic"];
+// runs the first five; the Form Post plan of the code flow and the Implicit
+// and Hybrid plans of the response types Hodor answers through the browser
+// run when named.
+const PLANS = [
+  "basic", "config", "backchannel", "basic-pairwise", "backchannel-pairwise",
+  "formpost-basic", "implicit-id-token", "hybrid-code-id-token",
+];
 const CONTINUOUS_INTEGRATION_PLANS = PLANS.slice(0, 5);
 const CHOSEN = (process.env.CONFORMANCE_PLANS ?? CONTINUOUS_INTEGRATION_PLANS.join(","))
   .split(",")
@@ -144,7 +150,7 @@ function seedHodor() {
   if (!cli("tenant", "list").split("\n").some((line) => line.includes(` ${TENANT} `) || line.startsWith(`${TENANT} `))) {
     cli("tenant", "create", "--slug", TENANT, "--name", "Conformance", "--open-registration");
   }
-  // Until consent exists, only a first-party application gets codes.
+  // A first-party application: nobody is asked for consent.
   const application = printed(
     cli("application", "add", "--tenant", TENANT, "--name", "OpenID conformance suite", "--first-party"),
     "application",
@@ -169,10 +175,19 @@ function seedHodor() {
   // offers, and every one of them signs the ID tokens of some client: the
   // suite checks each against the tenant's key set.
   const signedWith = (algorithm) => ["--id-token-algorithm", algorithm];
+  // The clients of the Basic plan also serve the Implicit and Hybrid plans,
+  // which use them the same way: each may be answered with a code, an ID
+  // token, or both.
+  const throughTheBrowser = [
+    "--response-type", "code", "--response-type", "id_token", "--response-type", "code id_token",
+  ];
   return {
-    first: client("First client", "client_secret_basic", signedWith("ES256")),
-    second: client("Second client", "client_secret_basic", signedWith("RS256")),
-    post: client("Client that sends its secret in the form", "client_secret_post", signedWith("PS256")),
+    first: client("First client", "client_secret_basic",
+      [...signedWith("ES256"), ...throughTheBrowser]),
+    second: client("Second client", "client_secret_basic",
+      [...signedWith("RS256"), ...throughTheBrowser]),
+    post: client("Client that sends its secret in the form", "client_secret_post",
+      [...signedWith("PS256"), ...throughTheBrowser]),
     // The back-channel plan's alone: a test of another plan that signs out
     // never gets a logout token it does not wait for.
     backchannel: client("Client told when the session ends", "client_secret_basic", [
@@ -355,12 +370,20 @@ async function runModule(plan, entry, browser) {
   return { name: entry.testModule, module, status: info.status, result: info.result };
 }
 
-async function runPlan(name, config, variant, browser, label = name) {
+/**
+ * Runs the tests of a plan. A plan that sets the response type of each of
+ * its tests itself, as the Implicit and Hybrid plans do, runs only those of
+ * `responseType` when it is given.
+ */
+async function runPlan(name, config, variant, browser, label = name, responseType = undefined) {
   step(`Plan ${label}`);
   const plan = await suite("POST", "api/plan", { query: { planName: name, variant }, body: config });
   const results = [];
   for (const entry of plan.modules) {
     if (ONLY.length > 0 && !ONLY.includes(entry.testModule)) {
+      continue;
+    }
+    if (responseType !== undefined && entry.variant?.response_type !== responseType) {
       continue;
     }
     const result = await runModule(plan.id, entry, browser);
@@ -432,6 +455,17 @@ async function main() {
       // their response types (Issues 127 and 128).
       "formpost-basic": () => runPlan("oidcc-formpost-basic-certification-test-plan", config,
         { server_metadata: "discovery", client_registration: "static_client" }, browser),
+      // The ID token through the browser, Issue-127: the answer in the
+      // fragment, alone and with a code. Each plan holds the tests of every
+      // response type of its profile and sets the type of each test itself;
+      // only those of `id_token` and `code id_token` run here, as the types
+      // that return an access token are Issue-128's.
+      "implicit-id-token": () => runPlan("oidcc-implicit-certification-test-plan", config,
+        { server_metadata: "discovery", client_registration: "static_client" }, browser,
+        "oidcc-implicit-certification-test-plan (id_token)", "id_token"),
+      "hybrid-code-id-token": () => runPlan("oidcc-hybrid-certification-test-plan", config,
+        { server_metadata: "discovery", client_registration: "static_client" }, browser,
+        "oidcc-hybrid-certification-test-plan (code id_token)", "code id_token"),
     };
     const results = [];
     for (const name of PLANS.filter((plan) => CHOSEN.includes(plan))) {

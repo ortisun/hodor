@@ -3944,11 +3944,12 @@ async fn agreed(world: &World, user: UserId, client: &str) {
         acr_values: None,
         first_party: false,
         organization: None,
-        response_mode: hodor_oauth::api::ResponseMode::Query,
         id_token_hint: None,
         given_hint: None,
         claims: hodor_oauth::api::ClaimsRequest::default(),
         claims_locales: None,
+        response_type: hodor_oauth::api::ResponseType::Code,
+        response_mode: hodor_oauth::api::ResponseMode::Query,
     };
     let person = hodor_oauth::api::SignedInPerson {
         user_id: user,
@@ -7146,4 +7147,130 @@ async fn an_administrator_turns_client_registration_on_and_hands_out_initial_acc
         )
         .await;
     assert_eq!(globex.status, StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
+async fn a_client_registers_the_response_types_it_is_answered_with() {
+    let world = world().await;
+    let application = new_application(&world, "Billing", true).await;
+    let path = format!("/applications/{application}/clients");
+
+    // `code` unless chosen.
+    let plain = world
+        .as_administrator(Method::POST, &path, Some(web_client()))
+        .await;
+    assert_eq!(plain.status, StatusCode::CREATED, "{}", plain.body);
+    assert_eq!(plain.body["response_types"], serde_json::json!(["code"]));
+    let client = plain.body["id"].as_str().expect("id").to_owned();
+
+    // Every one offered, in any order of its words, kept in one order.
+    let mut body = web_client();
+    body["response_types"] = serde_json::json!(["none", "id_token code", "id_token", "code"]);
+    let every = world
+        .as_administrator(Method::POST, &path, Some(body))
+        .await;
+    assert_eq!(every.status, StatusCode::CREATED, "{}", every.body);
+    assert_eq!(
+        every.body["response_types"],
+        serde_json::json!(["code", "id_token", "code id_token", "none"])
+    );
+
+    // Refused: a type that returns an access token, an unknown one, none
+    // at all for a client of the code, and one for a client without it.
+    let mut service = web_client();
+    service["grant_types"] = serde_json::json!(["client_credentials"]);
+    service
+        .as_object_mut()
+        .expect("object")
+        .remove("redirect_uris");
+    let service_with_type = {
+        let mut body = service.clone();
+        body["response_types"] = serde_json::json!(["id_token"]);
+        body
+    };
+    let with_types = |types: serde_json::Value| {
+        let mut body = web_client();
+        body["response_types"] = types;
+        body
+    };
+    for (what, body) in [
+        (
+            "an access token through the browser",
+            with_types(serde_json::json!(["id_token token"])),
+        ),
+        (
+            "an unknown type",
+            with_types(serde_json::json!(["device_code"])),
+        ),
+        ("no type with the code", with_types(serde_json::json!([]))),
+        ("a type without the code", service_with_type),
+    ] {
+        let refused = world
+            .as_administrator(Method::POST, &path, Some(body))
+            .await;
+        assert_eq!(refused.status, StatusCode::UNPROCESSABLE_ENTITY, "{what}");
+        assert_eq!(
+            refused.code(),
+            "oauth.client_response_types_invalid",
+            "{what}"
+        );
+    }
+    let machine = world
+        .as_administrator(Method::POST, &path, Some(service))
+        .await;
+    assert_eq!(machine.status, StatusCode::CREATED, "{}", machine.body);
+    assert_eq!(machine.body["response_types"], serde_json::json!([]));
+
+    // A change that names them replaces them; one that takes the grant
+    // away drops them, and one that gives it back gives `code`.
+    let changed = world
+        .as_administrator(
+            Method::PATCH,
+            &format!("/clients/{client}"),
+            Some(serde_json::json!({ "response_types": ["id_token", "code id_token"] })),
+        )
+        .await;
+    assert_eq!(changed.status, StatusCode::OK, "{}", changed.body);
+    assert_eq!(
+        changed.body["response_types"],
+        serde_json::json!(["id_token", "code id_token"])
+    );
+    let renamed = world
+        .as_administrator(
+            Method::PATCH,
+            &format!("/clients/{client}"),
+            Some(serde_json::json!({ "name": "Billing web site" })),
+        )
+        .await;
+    assert_eq!(
+        renamed.body["response_types"],
+        serde_json::json!(["id_token", "code id_token"]),
+        "kept by a change that does not name them"
+    );
+    let machine_id = machine.body["id"].as_str().expect("id");
+    let gained = world
+        .as_administrator(
+            Method::PATCH,
+            &format!("/clients/{machine_id}"),
+            Some(serde_json::json!({
+                "grant_types": ["authorization_code"],
+                "redirect_uris": ["https://billing.example.com/callback"]
+            })),
+        )
+        .await;
+    assert_eq!(gained.status, StatusCode::OK, "{}", gained.body);
+    assert_eq!(gained.body["response_types"], serde_json::json!(["code"]));
+    let lost = world
+        .as_administrator(
+            Method::PATCH,
+            &format!("/clients/{machine_id}"),
+            Some(serde_json::json!({
+                "grant_types": ["client_credentials"],
+                "redirect_uris": [],
+                "post_logout_redirect_uris": []
+            })),
+        )
+        .await;
+    assert_eq!(lost.status, StatusCode::OK, "{}", lost.body);
+    assert_eq!(lost.body["response_types"], serde_json::json!([]));
 }

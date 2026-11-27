@@ -13904,6 +13904,7 @@
           "type",
           "authentication_method",
           "grant_types",
+          "response_types",
           "redirect_uris",
           "post_logout_redirect_uris",
           "allowed_scopes",
@@ -13975,6 +13976,19 @@
                 "refresh_token",
                 "client_credentials",
                 "urn:ietf:params:oauth:grant-type:token-exchange"
+              ]
+            }
+          },
+          "response_types": {
+            "type": "array",
+            "description": "What the authorization endpoint may answer the client with, answered as listed here; `id_token code` is taken as `code id_token`. At least one with `authorization_code` and none without it; `[\"code\"]` for a client with that grant unless given. A type that returns an access token is refused with `oauth.client_response_types_invalid`.",
+            "items": {
+              "type": "string",
+              "enum": [
+                "code",
+                "id_token",
+                "code id_token",
+                "none"
               ]
             }
           },
@@ -14277,6 +14291,19 @@
               ]
             }
           },
+          "response_types": {
+            "type": "array",
+            "description": "What the authorization endpoint may answer the client with, answered as listed here; `id_token code` is taken as `code id_token`. At least one with `authorization_code` and none without it; `[\"code\"]` for a client with that grant unless given. A type that returns an access token is refused with `oauth.client_response_types_invalid`.",
+            "items": {
+              "type": "string",
+              "enum": [
+                "code",
+                "id_token",
+                "code id_token",
+                "none"
+              ]
+            }
+          },
           "redirect_uris": {
             "type": "array",
             "items": {
@@ -14467,6 +14494,19 @@
                 "refresh_token",
                 "client_credentials",
                 "urn:ietf:params:oauth:grant-type:token-exchange"
+              ]
+            }
+          },
+          "response_types": {
+            "type": "array",
+            "description": "What the authorization endpoint may answer the client with, answered as listed here; `id_token code` is taken as `code id_token`. At least one with `authorization_code` and none without it; `[\"code\"]` for a client with that grant unless given. A type that returns an access token is refused with `oauth.client_response_types_invalid`.",
+            "items": {
+              "type": "string",
+              "enum": [
+                "code",
+                "id_token",
+                "code id_token",
+                "none"
               ]
             }
           },

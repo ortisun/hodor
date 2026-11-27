@@ -412,12 +412,14 @@ fn request_for(client_id: ClientId) -> AuthorizationRequest {
         acr_values: Some("urn:hodor:mfa".to_owned()),
         first_party: true,
         organization: None,
-        // Kept and read back: the mode the answer goes in.
-        response_mode: crate::domain::response::ResponseMode::FormPost,
         id_token_hint: None,
         given_hint: None,
         claims: crate::api::ClaimsRequest::default(),
         claims_locales: None,
+        // Kept and read back: a hybrid request answered as a form, so that
+        // both the type and the mode are kept.
+        response_type: crate::api::ResponseType::CodeIdToken,
+        response_mode: crate::api::ResponseMode::FormPost,
     }
 }
 

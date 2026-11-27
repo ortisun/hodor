@@ -129,6 +129,16 @@ pub enum OauthEvent {
         /// The person who signed in.
         user_id: UserId,
     },
+    /// An ID token was issued through the browser, by the authorization
+    /// endpoint. Never the token.
+    IdTokenIssued {
+        /// The client it was issued to.
+        client_id: ClientId,
+        /// The grant it was issued under.
+        grant_id: GrantId,
+        /// The person who signed in.
+        user_id: UserId,
+    },
     /// A grant was revoked, and everything issued from it with it.
     GrantRevoked {
         /// The grant.
@@ -360,6 +370,7 @@ impl DomainEvent for OauthEvent {
             Self::ResourceServerCreated { .. } => "oauth.resource_server_created",
             Self::ResourceServerChanged { .. } => "oauth.resource_server_changed",
             Self::AuthorizationCodeIssued { .. } => "oauth.authorization_code_issued",
+            Self::IdTokenIssued { .. } => "oauth.id_token_issued",
             Self::GrantRevoked { .. } => "oauth.grant_revoked",
             Self::ConsentGiven { .. } => "oauth.consent_given",
             Self::ConsentRefused { .. } => "oauth.consent_refused",

@@ -69,6 +69,7 @@ All records below are **Proposed** unless marked otherwise: they become Accepted
 | [0065](0065-where-the-standard-claims-come-from.md) | The identity context keeps a person's standard claims, and each source writes only what it can vouch for |
 | [0068](0068-claims-of-every-consented-scope.md) | The `claims` parameter gives a claim of any scope consented to for the client, not only of the scopes of the request |
 | [0071](0071-signing-intermediates.md) | An intermediate is signed from what its request asks, within the authority; withdrawing it stops Hodor trusting its key; signing has a permission, a role and a scope of its own (Accepted) |
+| [0072](0072-the-state-hash-and-the-response-types-of-a-client.md) | An ID token through the browser carries `s_hash` whenever the request had `state`, and only a client of the authorization code has response types |
 | [0074](0074-hodor-cert-manager-issuer.md) | `hodor-cert-manager-issuer` signs approved requests for an authority through the signing operation, which takes an access token for the audience of the certificate authority (Accepted) |
 | [0075](0075-the-registration-settings-of-a-tenant.md) | A tenant has one registration policy for every way and one list of hosts for every address; an initial access token is spent under a lock of its row (Accepted) |
 | [0076](0076-names-an-authority-leaves-to-its-meshes.md) | A tenant's certificate authority may leave URIs unconstrained and permit DNS names besides its trust domains, so that Istio and Linkerd run under it together (Accepted) |
