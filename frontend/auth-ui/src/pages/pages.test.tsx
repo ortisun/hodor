@@ -35,6 +35,21 @@ const shown = () => within(screen.getByRole("main")).getAllByRole("alert");
 /** The alert the page shows, once it shows one. */
 const alertShown = () => within(screen.getByRole("main")).findByRole("alert");
 
+/**
+ * The words the page ties to a field through its `aria-describedby`, its hint
+ * and its status, each as the page shows it. The design system also announces
+ * a status in a hidden live region outside the page, at a moment of its own,
+ * so a search of the whole document by text finds the message once or twice.
+ */
+function describing(field: HTMLElement): string[] {
+  const page = screen.getByRole("main");
+  return (field.getAttribute("aria-describedby") ?? "")
+    .split(" ")
+    .map((id) => document.getElementById(id))
+    .filter((element) => element !== null && page.contains(element))
+    .map((element) => element?.textContent?.trim() ?? "");
+}
+
 function page(script: Parameters<typeof scripted>[0]) {
   const { client, sent } = scripted(script);
   const go = vi.fn();
@@ -754,14 +769,8 @@ describe("the page that finishes", () => {
     const password = screen.getByLabelText<HTMLInputElement>(en.newPasswordLabel);
     await user.type(password, "short{Enter}");
 
-    // The message next to the field. Astryx also announces it in a hidden
-    // live region, at a moment of its own, so that copy is left out.
-    expect(
-      await screen.findByText(en.passwordTooShort, { ignore: "script, style, [data-astryx-live-region]" }),
-    ).toBeTruthy();
-    expect(password.getAttribute("aria-invalid")).toBe("true");
-    const described = (password.getAttribute("aria-describedby") ?? "").split(" ");
-    expect(described.map((id) => document.getElementById(id)?.textContent).join(" ")).toContain(en.passwordTooShort);
+    await waitFor(() => expect(password.getAttribute("aria-invalid")).toBe("true"));
+    expect(describing(password)).toContain(en.passwordTooShort);
 
     await user.type(password, " but longer now{Enter}");
     await waitFor(() => expect(go).toHaveBeenCalledWith("sign-in", "password-changed"));
@@ -945,7 +954,7 @@ describe("the profile page", () => {
 
     const field = screen.getByLabelText(en.claimLabel("birthdate"));
     await waitFor(() => expect(field.getAttribute("aria-invalid")).toBe("true"));
-    expect(screen.getByText(en.claimInvalid(en.claimLabel("birthdate")))).toBeTruthy();
+    expect(describing(field)).toContain(en.claimInvalid(en.claimLabel("birthdate")));
     expect(screen.queryByText(en.profileSaved)).toBeNull();
   });
 
