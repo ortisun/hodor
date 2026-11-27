@@ -7,6 +7,7 @@
 
 use crate::domain::authorization::{AuthorizationParameters, Given};
 use crate::domain::client::{Client, RequestObjectAlgorithm};
+use crate::domain::key::ClientKey;
 use crate::domain::token::{CLOCK_ALLOWANCE, KeyChoice, client_key_for, decode_json};
 use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
@@ -21,13 +22,17 @@ pub const MAX_REQUEST_OBJECT_BYTES: usize = 16 * 1024;
 const OWN_CLAIMS: [&str; 6] = ["iss", "aud", "exp", "nbf", "iat", "jti"];
 
 /// What a request object is checked against: the tenant it was sent to,
-/// the time, and the signature checking of the kernel.
+/// the time, the keys of the client it names, and the signature checking
+/// of the kernel.
 #[derive(Clone, Copy)]
 pub struct RequestObjectCheck<'a> {
     /// The tenant's issuer, which `aud` must hold when it is given.
     pub issuer: &'a str,
     /// The time now.
     pub now: Timestamp,
+    /// The keys of the client the request names: those Hodor keeps for
+    /// it, or those at its address. A signed object is checked with them.
+    pub keys: &'a [ClientKey],
     /// Checks a signed object's signature.
     pub verifier: &'a dyn SignatureVerifier,
 }
@@ -37,6 +42,7 @@ impl std::fmt::Debug for RequestObjectCheck<'_> {
         f.debug_struct("RequestObjectCheck")
             .field("issuer", &self.issuer)
             .field("now", &self.now)
+            .field("keys", &self.keys.len())
             .finish_non_exhaustive()
     }
 }
@@ -100,7 +106,7 @@ fn check_signature(
     claims_part: &str,
     signature_part: &str,
     client: &Client,
-    verifier: &dyn SignatureVerifier,
+    check: RequestObjectCheck<'_>,
 ) -> Result<bool, RequestObjectRefusal> {
     let invalid = RequestObjectRefusal::Invalid;
     let header =
@@ -130,9 +136,12 @@ fn check_signature(
     let signature = URL_SAFE_NO_PAD
         .decode(signature_part)
         .map_err(|_| invalid("the request object's signature is malformed"))?;
-    let key = client_key_for(client, &header, algorithm).map_err(key_refusal)?;
+    let key = client_key_for(check.keys, &header, algorithm).map_err(key_refusal)?;
     let signed = format!("{header_part}.{claims_part}");
-    if !verifier.verify(algorithm, &key, signed.as_bytes(), &signature) {
+    if !check
+        .verifier
+        .verify(algorithm, &key, signed.as_bytes(), &signature)
+    {
         return Err(invalid("the request object's signature does not verify"));
     }
     Ok(true)
@@ -302,13 +311,7 @@ pub fn check_request_object(
             "the request object is not three parts",
         ));
     };
-    let signed = check_signature(
-        header_part,
-        claims_part,
-        signature_part,
-        client,
-        check.verifier,
-    )?;
+    let signed = check_signature(header_part, claims_part, signature_part, client, check)?;
     // Only now is anything the object says used.
     let claims = decode_json(claims_part).ok_or(RequestObjectRefusal::Invalid(
         "the request object's claims are malformed",

@@ -158,6 +158,11 @@ pub(crate) enum ClientCommand {
         /// Fetched now, as the server fetches it.
         #[arg(long)]
         sector_identifier_uri: Option<String>,
+        /// For a client using `private_key_jwt`: the address where it
+        /// publishes its keys itself, in place of keys added one by one.
+        /// Checked as the server checks it, and not fetched now.
+        #[arg(long)]
+        jwks_uri: Option<String>,
         /// The service account or agent it acts as; only with the
         /// `client_credentials` grant alone.
         #[arg(long)]
@@ -508,6 +513,7 @@ pub(crate) async fn run_client(
             backchannel_logout_session_required,
             subject_type,
             sector_identifier_uri,
+            jwks_uri,
             principal,
             exchange_rules,
             spiffe_id,
@@ -566,6 +572,7 @@ pub(crate) async fn run_client(
                 settings.subject_type = SubjectType::parse(&subject_type)?;
             }
             settings.sector_identifier_uri = sector_identifier_uri;
+            settings.jwks_uri = jwks_uri;
             settings.spiffe_id = spiffe_id.as_deref().map(SpiffeId::parse).transpose()?;
             settings.linkerd_identity = linkerd_identity
                 .as_deref()

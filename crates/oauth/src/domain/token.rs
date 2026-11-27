@@ -7,6 +7,7 @@
 use crate::domain::authorization::AuthorizationCode;
 use crate::domain::client::{AuthenticationMethod, Client, ClientId};
 use crate::domain::forwarded::ForwardedIdentity;
+use crate::domain::key::ClientKey;
 use crate::domain::spiffe::SPIFFE_ASSERTION_TYPE;
 use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
@@ -672,20 +673,21 @@ impl KeyChoice {
     }
 }
 
-/// The one key of `client` that can have made a signature of `algorithm`
-/// under `header`: the key its `kid` names, or, without one, the only key
-/// that fits the algorithm. Client assertions and request objects choose
-/// the key alike.
+/// The one key of a client's `keys` that can have made a signature of
+/// `algorithm` under `header`: the key its `kid` names, or, without one,
+/// the only key that fits the algorithm. Client assertions and request
+/// objects choose the key alike. The keys are those Hodor keeps for the
+/// client or those at its address; a key of the address without a `kid`
+/// is never the one a `kid` names.
 pub(crate) fn client_key_for(
-    client: &Client,
+    keys: &[ClientKey],
     header: &Map<String, Value>,
     algorithm: SignatureAlgorithm,
 ) -> Result<PublicKey, KeyChoice> {
-    let keys = &client.snapshot().keys;
     let mut candidates: Vec<PublicKey> = match header.get("kid") {
         Some(Value::String(kid)) => keys
             .iter()
-            .filter(|key| &key.key_id == kid)
+            .filter(|key| !key.key_id.is_empty() && &key.key_id == kid)
             .filter_map(|key| key.verifying_key(algorithm))
             .collect(),
         Some(_) => return Err(KeyChoice::KidNotText),
@@ -702,7 +704,8 @@ pub(crate) fn client_key_for(
 }
 
 /// Checks a client's assertion (RFC 7523), in the order the specification
-/// gives. Nothing it says is used before its signature has been checked.
+/// gives, with `keys`, the client's: those Hodor keeps, or those at its
+/// address. Nothing it says is used before its signature has been checked.
 ///
 /// # Errors
 ///
@@ -711,6 +714,7 @@ pub(crate) fn client_key_for(
 pub fn check_assertion(
     assertion: &str,
     client: &Client,
+    keys: &[ClientKey],
     audience: AssertionAudience<'_>,
     now: Timestamp,
     verifier: &dyn SignatureVerifier,
@@ -731,7 +735,7 @@ pub fn check_assertion(
         .and_then(Value::as_str)
         .and_then(SignatureAlgorithm::from_name)
         .ok_or("the assertion names an algorithm that is not accepted")?;
-    let key = client_key_for(client, &header, algorithm).map_err(KeyChoice::assertion)?;
+    let key = client_key_for(keys, &header, algorithm).map_err(KeyChoice::assertion)?;
     let signed = format!("{header_part}.{claims_part}");
     if !verifier.verify(algorithm, &key, signed.as_bytes(), &signature) {
         return Err("the assertion's signature does not verify");

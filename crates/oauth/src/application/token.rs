@@ -4,6 +4,7 @@
 
 use crate::application::authorization::AuthorizationCodeService;
 use crate::application::claim_mapper::{ClaimMapping, MappedToken};
+use crate::application::client_keys::{ClientKeySets, keys_of};
 use crate::application::pairwise::{PairwiseSubjects, session_for, subject_for};
 use crate::application::ports::{
     AccessTokenRecordStore, ApplicationStore, CertificateCheck, ClientAssertionStore, ClientStore,
@@ -176,6 +177,7 @@ pub struct TokenService {
     pub(crate) pairwise: Option<PairwiseSubjects>,
     pub(crate) trust_domains: Option<TrustDomainService>,
     pub(crate) certificates: Option<Arc<dyn CertificateCheck>>,
+    client_keys: Option<ClientKeySets>,
 }
 
 impl fmt::Debug for TokenService {
@@ -216,6 +218,7 @@ impl TokenService {
             retry_window: DEFAULT_RETRY_WINDOW,
             pairwise: None,
             trust_domains: None,
+            client_keys: None,
             certificates: None,
         }
     }
@@ -238,6 +241,15 @@ impl TokenService {
     #[must_use]
     pub fn with_trust_domains(mut self, trust_domains: TrustDomainService) -> Self {
         self.trust_domains = Some(trust_domains);
+        self
+    }
+
+    /// Checks the assertions of a client with a key set address against
+    /// the keys there, fetched and kept by `sets`. Without it, such a
+    /// client has no keys, and its assertions are refused.
+    #[must_use]
+    pub fn with_client_key_sets(mut self, sets: ClientKeySets) -> Self {
+        self.client_keys = Some(sets);
         self
     }
 
@@ -450,15 +462,30 @@ impl TokenService {
                     token_endpoint: issuer.token_endpoint,
                     endpoint,
                 };
+                // Nothing is held in the database while a key set address
+                // is fetched.
+                let kept = if client.jwks_uri().is_some() {
+                    drop(uow);
+                    None
+                } else {
+                    Some(uow)
+                };
+                let keys =
+                    keys_of(self.client_keys.as_ref(), tenant, &client, Some(assertion)).await;
                 let checked = match check_assertion(
                     assertion,
                     &client,
+                    &keys,
                     audience,
                     now,
                     self.ports.verifier.as_ref(),
                 ) {
                     Ok(checked) => checked,
                     Err(reason) => return Ok(Err(TokenError::invalid_client(reason))),
+                };
+                let mut uow = match kept {
+                    Some(uow) => uow,
+                    None => self.ports.units_of_work.begin(tenant).await?,
                 };
                 let first = self
                     .ports

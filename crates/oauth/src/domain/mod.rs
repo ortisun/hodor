@@ -14,6 +14,7 @@ pub(crate) mod forwarded;
 pub(crate) mod initial_access_token;
 pub(crate) mod introspection;
 pub(crate) mod key;
+pub(crate) mod key_set;
 pub(crate) mod logout;
 pub(crate) mod openid;
 pub(crate) mod pairwise;

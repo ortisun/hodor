@@ -61,7 +61,7 @@ use hodor_keys::api::{
 use hodor_notification::api::Notifier;
 use hodor_oauth::api::{
     AccessTokenRegister, ApplicationPorts, ApplicationService, AuthorizationCodePorts,
-    AuthorizationCodeService, ClaimMapperPorts, ClaimMapperService, ClaimMapping,
+    AuthorizationCodeService, ClaimMapperPorts, ClaimMapperService, ClaimMapping, ClientKeySets,
     ClientRegistrationPorts, ClientRegistrationService, ConsentPorts, ConsentService, LogoutPorts,
     LogoutService, PairwisePorts, PairwiseSubjects, ResourceAccessPorts, ResourceAccessService,
     TokenPorts, TokenService, UserInfoPorts, UserInfoService, WorkloadIdentity, WorkloadTokens,
@@ -366,6 +366,12 @@ async fn run(config: Config) -> Result<(), Box<dyn Error>> {
     let authority = authority(&config, &database)?;
     let (interaction, invitations) = interaction(&config, &database)?;
     let mut authorization = authorization(&config, &database, interaction.authentication.clone())?;
+    // One set of clients' keys at their addresses for the server, shared by
+    // the authorization and the token endpoints.
+    let client_keys = client_key_sets(&config)?;
+    authorization.authorization = authorization
+        .authorization
+        .with_client_key_sets(client_keys.clone());
     // An `id_token_hint` is checked against the tenants' keys. The hint of a
     // pairwise client, and a `sub` it asks for through `claims`, are compared
     // with the person signed in by their pairwise identifier, through the
@@ -395,6 +401,7 @@ async fn run(config: Config) -> Result<(), Box<dyn Error>> {
             keys.clone(),
             authorization.authorization,
             secret_box(setting, &database)?,
+            client_keys,
         )?));
         oauth2 = oauth2.merge(userinfo_routes(userinfo(&config, &database, keys.clone())));
         oauth2 = oauth2.merge(logout_routes(logout(
@@ -851,6 +858,7 @@ fn token(
     keys: KeyService,
     codes: AuthorizationCodeService,
     secrets: Arc<dyn SecretBox>,
+    client_keys: ClientKeySets,
 ) -> Result<TokenState, DomainError> {
     let units = Arc::new(database.clone());
     let clock = Arc::new(SystemClock);
@@ -883,12 +891,28 @@ fn token(
     // JWT-SVIDs, and the certificates and identities trusted proxies
     // forward, are checked against the tenants' trust domains.
     .with_trust_domains(trust_domains(config, database)?)
-    .with_certificate_check(Arc::new(X509CertificateCheck));
+    .with_certificate_check(Arc::new(X509CertificateCheck))
+    // Client assertions are checked against the keys at a client's
+    // address too.
+    .with_client_key_sets(client_keys);
     Ok(TokenState {
         tokens,
         tenants: tenant_service(database),
         public_url: config.public_url.clone(),
     })
+}
+
+/// The keys of clients at their addresses, fetched by the guarded outbound
+/// client with this installation's development exception, no more than
+/// 64 kibibytes of a set read, and kept in this server's memory
+/// (Decision 0079).
+fn client_key_sets(config: &Config) -> Result<ClientKeySets, DomainError> {
+    let http = GuardedHttpClient::new(OutboundPolicy {
+        development_hosts: development_hosts(config),
+        max_response_bytes: hodor_oauth::api::MAX_KEY_SET_BYTES,
+        ..OutboundPolicy::default()
+    })?;
+    Ok(ClientKeySets::new(Arc::new(http), Arc::new(SystemClock)))
 }
 
 /// Names people to pairwise clients, with the tenants' pairwise secrets

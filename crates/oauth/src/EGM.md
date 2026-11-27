@@ -23,6 +23,11 @@ follows is `docs/architecture/contexts/oauth.md`.
     `AuthorizationCodePorts`, `ResumedRequest`, `RedeemedCode`;
     `TokenService`, `TokenPorts`, `Issuer`, `IssuedTokens`, with
     `TokenService::revoke`, `introspect`, `register` and `workload_tokens`;
+    `ClientKeySets` and `MAX_KEPT_KEY_SETS`, the keys at clients' addresses,
+    given to both services with `with_client_key_sets`; and the key set
+    domain: `check_jwks_uri`, `MAX_JWKS_URI_LENGTH`, `MAX_KEY_SET_BYTES`,
+    `KEY_SET_TIME_LIMIT`, `KEY_SET_KEPT_FOR`, `KEY_SET_REFETCH_AFTER`,
+    `MAX_PUBLISHED_KEYS`, `KEY_SET_ACCEPT`;
     `AccessTokenRegister`; `WorkloadTokens`; `UserInfoService`, `UserInfoPorts`;
     `LogoutService`, `LogoutPorts`, `LogoutRefusal`; `ConsentService`,
     `ConsentPorts`, `ConsentQuestion`, `AskedScope`, `ListedConsent`;
@@ -96,7 +101,8 @@ follows is `docs/architecture/contexts/oauth.md`.
     `advertise_forwarded_methods` and their bounds.
   - The token endpoint's domain: `TokenRequest` (with `parse`),
     `PresentedClient`, `BasicCredentials`, `GrantRequest`, `TokenError`,
-    `check_assertion`, `assertion_issuer`, `AssertionAudience`,
+    `check_assertion` (with the client's keys), `assertion_issuer`,
+    `AssertionAudience`,
     `CheckedAssertion`, `access_token_claims`, `claims_for`,
     `TokenSubject`, `AccessTokenClaims`, and
     `ASSERTION_TYPE`, `MAX_ASSERTION_BYTES`, `MAX_ASSERTION_ID_LENGTH`,

@@ -14,6 +14,7 @@ const ISSUER: &str = "https://hodor.example.com/t/acme";
 
 fn objects() -> RequestObjectCheck<'static> {
     RequestObjectCheck {
+        keys: &[],
         issuer: ISSUER,
         now: MOMENT,
         verifier: &crate::testing::FakeVerifier,

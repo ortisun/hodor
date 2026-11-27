@@ -421,6 +421,9 @@ struct ClientBody {
     subject_type: &'static str,
     /// The sector identifier address of a pairwise client, or `null`.
     sector_identifier_uri: Option<String>,
+    /// Where a client using `private_key_jwt` publishes its keys, or
+    /// `null`. What the address answers is never shown.
+    jwks_uri: Option<String>,
     /// The `max_age` of a request that names none, or `null`.
     default_max_age: Option<u32>,
     /// The `acr_values` of a request that names none, in order.
@@ -474,6 +477,7 @@ impl From<&Client> for ClientBody {
             backchannel_logout_session_required: settings.backchannel_logout_session_required,
             subject_type: settings.subject_type.as_str(),
             sector_identifier_uri: settings.sector_identifier_uri.clone(),
+            jwks_uri: settings.jwks_uri.clone(),
             default_max_age: settings.default_max_age,
             default_acr_values: settings.default_acr_values.clone(),
             require_auth_time: settings.require_auth_time,
@@ -559,6 +563,7 @@ struct NewClientBody {
     backchannel_logout_session_required: Option<bool>,
     subject_type: Option<String>,
     sector_identifier_uri: Option<String>,
+    jwks_uri: Option<String>,
     default_max_age: Option<u32>,
     default_acr_values: Option<Vec<String>>,
     require_auth_time: Option<bool>,
@@ -616,6 +621,11 @@ struct ClientChangesBody {
     /// Left out: unchanged; `null`: removed; an address: replaced.
     #[serde(default, deserialize_with = "present")]
     sector_identifier_uri: Option<Option<String>>,
+    /// Left out: unchanged, unless the change gives the client another
+    /// method than `private_key_jwt`; `null`: removed; an address:
+    /// replaced.
+    #[serde(default, deserialize_with = "present")]
+    jwks_uri: Option<Option<String>>,
     /// Left out: unchanged; `null`: removed; a number: replaced.
     #[serde(default, deserialize_with = "present")]
     default_max_age: Option<Option<u32>>,
@@ -831,6 +841,7 @@ async fn create_client(
                 settings.subject_type = SubjectType::parse(&subject_type).map_err(failed)?;
             }
             settings.sector_identifier_uri = new.sector_identifier_uri;
+            settings.jwks_uri = new.jwks_uri;
             settings.default_max_age = new.default_max_age;
             settings.default_acr_values = new.default_acr_values.unwrap_or_default();
             settings.require_auth_time = new.require_auth_time.unwrap_or(false);
@@ -983,6 +994,13 @@ async fn change_client(
                 sector_identifier_uri: changes
                     .sector_identifier_uri
                     .unwrap_or(now.sector_identifier_uri),
+                // A client that moves away from `private_key_jwt` loses its
+                // address, as it loses its keys.
+                jwks_uri: match changes.jwks_uri {
+                    Some(given) => given,
+                    None if method == AuthenticationMethod::PrivateKeyJwt => now.jwks_uri,
+                    None => None,
+                },
                 default_max_age: changes.default_max_age.unwrap_or(now.default_max_age),
                 default_acr_values: changes.default_acr_values.unwrap_or(now.default_acr_values),
                 require_auth_time: changes.require_auth_time.unwrap_or(now.require_auth_time),

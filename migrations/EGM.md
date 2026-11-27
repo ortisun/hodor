@@ -2,7 +2,7 @@
 
 ## Overview
 
-The PostgreSQL schema, as eighty numbered SQL files. A number is
+The PostgreSQL schema, as eighty-one numbered SQL files. A number is
 reserved when a piece of work starts, so a number can be missing until that
 work merges; every file not yet applied is applied, in order. They are
 embedded in the binaries by `static MIGRATOR: Migrator = sqlx::migrate!("../../migrations")`
@@ -94,6 +94,7 @@ Tables created, by file:
 | `0111_authorization_certificate_signer.sql` | Adds `certificate_signer` to the built-in roles `role_assignment_built_in` allows in `"authorization".role_assignment` |
 | `0118_oauth_client_registration.sql` | `oauth.client_registration`: the client registration settings of a tenant, one row per tenant (primary key `tenant_id`), the application referenced with the tenant (`client_registration_application_fk`), the ways among `initial_access_token`, `software_statement` and `open`, an application and a way while on, 1 to 1000 clients, the policy an object; `oauth.initial_access_token`: the SHA-256 of each token, unique per tenant, a hint of four hexadecimal characters, a name of 1 to 100 characters, 1 to 1000 registrations allowed and no more used, a lifetime of 1 hour to 90 days |
 | `0120_keys_authority_name_constraints.sql` | `keys.certificate_authority.uri_constraints`, `true` by default, the value of every authority made before it: whether the authority's name constraints hold its trust domains as URI hosts; and `additional_dns_names`, empty by default, at most 10 (`certificate_authority_additional_dns_name_count`): the DNS names they permit besides the trust domains (Decision 0076) |
+| `0122_oauth_client_jwks_uri.sql` | `oauth.client.jwks_uri`: a client's key set address, compared byte for byte, 1 to 2000 characters starting `https://` or `http://` (`client_jwks_uri_form`), only with `private_key_jwt` (`client_jwks_uri_needs_private_key_jwt`); what it answers is never stored |
 
 No migration creates a type, an extension or seed rows; enumerations are text
 columns with `CHECK ... IN (...)` constraints.

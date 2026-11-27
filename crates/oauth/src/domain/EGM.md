@@ -64,7 +64,28 @@ randomness and hashing are passed in. Every module is `pub(crate)` in
   `ClientKey::verifying_key(algorithm)`, the key as the kernel reads it when
   it fits `ES256`, `RS256` or `PS256` and its own `alg` (P-384 and Ed25519
   keys fit none yet), over the crate-visible `verifying_key_of(jwk,
-  algorithm)`, which a trust domain's bundle is read with too.
+  algorithm)`, which a trust domain's bundle is read with too;
+  crate-visible `ClientKey::published(value, now)`, a key of a set at a
+  client's address, checked alike but kept without a `kid` (an empty
+  `key_id`), `None` for anything refused.
+- `key_set.rs`: a client's keys at its address (Issue-136, Decision 0079).
+  `check_jwks_uri` (the form of a back-channel logout address,
+  `oauth.client_jwks_uri_invalid`), `MAX_JWKS_URI_LENGTH`,
+  `MAX_KEY_SET_BYTES` (64 kibibytes), `KEY_SET_TIME_LIMIT` (5 seconds),
+  `KEY_SET_KEPT_FOR` (an hour), `KEY_SET_REFETCH_AFTER` (a minute),
+  `MAX_PUBLISHED_KEYS` (20), `KEY_SET_ACCEPT`; inside the crate,
+  `published_keys(body, now)` (a JSON object with a list `keys`, the first
+  20 accepted keys, `None` for anything else), `names_unknown_key(signed,
+  keys)` (a header whose `kid` no key has, or without one none fits its
+  algorithm, by `client_key_for`), `KeptSet` (address, keys, `fetched_at`,
+  `asked_at`; `is_fresh`, `usable`, `asked_lately`) and `next_step(kept,
+  address, signed, now)`, `KeySetStep::Use(keys)` or `Fetch`: fetch when
+  nothing fresh is kept for that address or the token names an unknown
+  key, never when asked less than a minute ago. `client.rs` checks the
+  address (`jwks_uri`, only with `private_key_jwt`); `Client::change`
+  refuses one to a client with keys (`oauth.client_jwks_uri_with_keys`),
+  `Client::add_key` a key to a client with one
+  (`oauth.client_keys_at_address`). Its cases are in `key_set/tests.rs`.
 - `spiffe.rs`: SPIFFE client authentication with a JWT-SVID (`spiffe_jwt`,
   Decision 0055). `SpiffeId::parse` (`spiffe://`, a trust domain's name by
   the keys context's `TrustDomainName`, a path of segments of letters,
@@ -150,8 +171,11 @@ randomness and hashing are passed in. Every module is `pub(crate)` in
   `description` and a `reason` for logs only; `check_assertion`, the checks
   of RFC 7523 in the specification's order; `assertion_issuer`, the `iss`
   read before the signature only to find the client; inside the crate,
-  `client_key_for(client, header, algorithm)`, the one key that can have
-  signed, which assertions and request objects share, with `KeyChoice`;
+  `client_key_for(keys, header, algorithm)`, the one of the client's keys
+  (kept by Hodor or at its address; one without a `kid` is never the one a
+  `kid` names) that can have signed, which assertions and request objects
+  share, with `KeyChoice`; `check_assertion` takes those keys beside the
+  client;
   `claims_for` over a `TokenSubject` (whose `principal_kind` is written as
   the claim of that name) and `access_token_claims` for a code
   (RFC 9068; the issuer is the audience when there is none, and one of the
@@ -191,7 +215,8 @@ randomness and hashing are passed in. Every module is `pub(crate)` in
   `request_uri` beside it, the size (`MAX_REQUEST_OBJECT_BYTES`, 16
   kibibytes) and shape, the algorithm the client's
   `request_object_algorithm` accepts (`none` only for a client that chose
-  it, with an empty signature), the key by `client_key_for` and the
+  it, with an empty signature), the key by `client_key_for` among the
+  `keys` of `RequestObjectCheck` and the
   signature, then `iss` (required when signed), `client_id`, `aud` (the
   issuer of `RequestObjectCheck`), `exp` and `nbf` with the clock
   allowance; it answers the object's claims as `AuthorizationParameters`

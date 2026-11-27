@@ -1247,6 +1247,130 @@ async fn the_database_keeps_subject_types_and_sector_addresses_to_their_rules() 
 }
 
 #[tokio::test]
+async fn a_key_set_address_is_kept_for_a_client_using_private_key_jwt_alone() {
+    use hodor_oauth::api::AuthenticationMethod;
+
+    let database = TestDatabase::start().await;
+    let now = Timestamp::UNIX_EPOCH + Duration::days(20_000);
+    // The address is checked for a public destination when it is set: the
+    // stand-in of the tests lets any HTTPS address through.
+    let applications = ApplicationService::new(ApplicationPorts {
+        units_of_work: Arc::new(database.app().clone()),
+        applications: Arc::new(PgApplicationStore),
+        clients: Arc::new(PgClientStore),
+        resource_servers: Arc::new(PgResourceServerStore),
+        digest: Arc::new(FakeDigest),
+        random: Arc::new(DistinctRandom),
+        clock: Arc::new(FixedClock::at(now)),
+    })
+    .with_destinations(Arc::new(hodor_oauth::testing::FakeDestinations));
+    let tenant = TenantContext::assume(TenantId::generate());
+    let application = applications
+        .create_application(
+            &tenant,
+            ApplicationSettings {
+                name: "Payroll".to_owned(),
+                first_party: true,
+            },
+            Caller::system(),
+        )
+        .await
+        .expect("application");
+    let mut settings = ClientSettings::new(
+        "Payroll web",
+        ClientType::Confidential,
+        vec![GrantType::AuthorizationCode],
+        vec!["https://payroll.example.com/callback".to_owned()],
+    );
+    settings.authentication_method = AuthenticationMethod::PrivateKeyJwt;
+    settings.jwks_uri = Some("https://payroll.example.com/jwks".to_owned());
+    let (client, _) = applications
+        .create_client(
+            &tenant,
+            CreateClient {
+                application_id: application.id(),
+                client_type: ClientType::Confidential,
+                settings: settings.clone(),
+                secret_lifetime: None,
+            },
+            Caller::system(),
+        )
+        .await
+        .expect("client");
+    let read = applications
+        .client(&tenant, client.id())
+        .await
+        .expect("read back");
+    assert_eq!(read.jwks_uri(), Some("https://payroll.example.com/jwks"));
+    assert_eq!(
+        read.snapshot().settings,
+        settings
+            .clone()
+            .checked(ClientType::Confidential)
+            .expect("checked")
+    );
+
+    settings.jwks_uri = Some("https://payroll.example.com/jwks/2".to_owned());
+    applications
+        .change_client(&tenant, client.id(), settings.clone(), Caller::system())
+        .await
+        .expect("a new address");
+    settings.jwks_uri = None;
+    applications
+        .change_client(&tenant, client.id(), settings, Caller::system())
+        .await
+        .expect("no address");
+    let read = applications
+        .client(&tenant, client.id())
+        .await
+        .expect("read back");
+    assert_eq!(read.jwks_uri(), None);
+
+    // The database holds the address to its form and its method.
+    let insert = |method: &str, address: &str| {
+        format!(
+            "INSERT INTO oauth.client (tenant_id, id, application_id, name, client_type,
+                 authentication_method, grant_types, redirect_uris, allowed_scopes, require_pkce,
+                 access_token_seconds, id_token_seconds, refresh_token_seconds,
+                 refresh_idle_seconds, status, created_at, updated_at, version, jwks_uri)
+             VALUES ($1, gen_random_uuid(), $2, 'Web', 'confidential', '{method}',
+                 ARRAY['client_credentials'], ARRAY[]::text[], ARRAY[]::text[], true,
+                 300, 300, 2592000, 604800, 'enabled', now(), now(), 0, {address})"
+        )
+    };
+    let tenant_id = tenant.tenant_id().as_uuid();
+    let application_id = application.id().as_uuid();
+    // Every piece of the statement is a constant of this test.
+    sqlx::query(sqlx::AssertSqlSafe(insert(
+        "private_key_jwt",
+        "'https://payroll.example.com/jwks'",
+    )))
+    .bind(tenant_id)
+    .bind(application_id)
+    .execute(database.owner())
+    .await
+    .expect("an address for private_key_jwt");
+    for (case, statement) in [
+        (
+            "another method",
+            insert("client_secret_basic", "'https://payroll.example.com/jwks'"),
+        ),
+        (
+            "an address that is not HTTPS",
+            insert("private_key_jwt", "'ftp://payroll.example.com/jwks'"),
+        ),
+        ("an empty address", insert("private_key_jwt", "''")),
+    ] {
+        let refused = sqlx::query(sqlx::AssertSqlSafe(statement))
+            .bind(tenant_id)
+            .bind(application_id)
+            .execute(database.owner())
+            .await;
+        assert!(refused.is_err(), "{case}");
+    }
+}
+
+#[tokio::test]
 async fn the_database_keeps_spiffe_identifiers_to_their_rules() {
     let database = TestDatabase::start().await;
     let tenant = sqlx::types::Uuid::now_v7();

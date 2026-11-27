@@ -26,10 +26,11 @@ fn now() -> Timestamp {
     Timestamp::UNIX_EPOCH + Duration::days(20_000)
 }
 
-fn objects() -> RequestObjectCheck<'static> {
+fn objects(keys: &[ClientKey]) -> RequestObjectCheck<'_> {
     RequestObjectCheck {
         issuer: ISSUER,
         now: now(),
+        keys,
         verifier: &FakeVerifier,
     }
 }
@@ -212,7 +213,7 @@ fn check(
         Some(&setting.client),
         Some(&setting.application),
         &setting.servers,
-        objects(),
+        objects(&setting.client.snapshot().keys),
         false,
     )
 }
@@ -840,7 +841,7 @@ fn an_object_for_an_unknown_client_is_never_checked() {
             None,
             None,
             &[],
-            objects(),
+            objects(&[]),
             false,
         ),
         Err(AuthorizationRefusal::NotRedirectable(
@@ -857,7 +858,7 @@ fn an_object_for_an_unknown_client_is_never_checked() {
             Some(&other),
             Some(&application),
             &[],
-            objects(),
+            objects(&other.snapshot().keys),
             false,
         ),
         Err(AuthorizationRefusal::Redirect(

@@ -85,6 +85,7 @@ fn check(
         RequestObjectCheck {
             issuer: "https://hodor.example.com/t/acme",
             now: MOMENT,
+            keys: &[],
             verifier: &crate::testing::FakeVerifier,
         },
         false,

@@ -8,6 +8,7 @@ use crate::domain::consent::{
 use crate::domain::event::OauthEvent;
 use crate::domain::forwarded::{LinkerdIdentity, WorkloadIdentity, linkerd_identity_invalid};
 use crate::domain::key::{ClientKey, MAX_KEYS};
+use crate::domain::key_set::{check_jwks_uri, jwks_uri_not_allowed};
 use crate::domain::pairwise::{
     SubjectType, check_sector_identifier_uri, sector_of, sector_required, sector_uri_invalid,
     subject_type_invalid,
@@ -602,6 +603,10 @@ pub struct ClientSettings {
     /// For a pairwise client, the address whose host is its sector and
     /// which lists its redirect addresses, if it has one.
     pub sector_identifier_uri: Option<String>,
+    /// For a client using `private_key_jwt`, the address where it
+    /// publishes its keys itself, its `jwks_uri`, in place of keys Hodor
+    /// keeps.
+    pub jwks_uri: Option<String>,
     /// The `max_age` of a request that names none, its `default_max_age`.
     pub default_max_age: Option<u32>,
     /// The `acr_values` of a request that names none, in order, its
@@ -854,6 +859,7 @@ impl ClientSettings {
             backchannel_logout_session_required: false,
             subject_type: SubjectType::Public,
             sector_identifier_uri: None,
+            jwks_uri: None,
             default_max_age: None,
             default_acr_values: Vec::new(),
             require_auth_time: false,
@@ -1034,6 +1040,12 @@ impl ClientSettings {
                 }
             }
         }
+        if let Some(uri) = &self.jwks_uri {
+            if self.authentication_method != AuthenticationMethod::PrivateKeyJwt {
+                return Err(jwks_uri_not_allowed());
+            }
+            check_jwks_uri(uri)?;
+        }
         check_identities(
             self.authentication_method,
             self.spiffe_id.is_some(),
@@ -1077,6 +1089,7 @@ impl ClientSettings {
             backchannel_logout_session_required: self.backchannel_logout_session_required,
             subject_type: self.subject_type,
             sector_identifier_uri: self.sector_identifier_uri,
+            jwks_uri: self.jwks_uri,
             default_max_age: self.default_max_age,
             default_acr_values,
             require_auth_time: self.require_auth_time,
@@ -1241,6 +1254,12 @@ impl Client {
         self.state.settings.backchannel_logout_uri.as_deref()
     }
 
+    /// Where the client publishes its keys itself, if it does.
+    #[must_use]
+    pub fn jwks_uri(&self) -> Option<&str> {
+        self.state.settings.jwks_uri.as_deref()
+    }
+
     /// The `max_age` of a request of this client that names none.
     #[must_use]
     pub const fn default_max_age(&self) -> Option<u32> {
@@ -1332,8 +1351,9 @@ impl Client {
     ///
     /// # Errors
     ///
-    /// Returns an `Invalid` error if a setting breaks its rule; nothing
-    /// changes then.
+    /// Returns an `Invalid` error if a setting breaks its rule, and
+    /// `oauth.client_jwks_uri_with_keys` for a key set address given to a
+    /// client that has keys; nothing changes then.
     pub fn change(
         &mut self,
         settings: ClientSettings,
@@ -1342,6 +1362,14 @@ impl Client {
         let settings = settings.checked(self.state.client_type)?;
         if settings == self.state.settings {
             return Ok(Vec::new());
+        }
+        // A client's keys are in one place: kept by Hodor, or at its
+        // address.
+        if settings.jwks_uri.is_some() && !self.state.keys.is_empty() {
+            return Err(DomainError::conflict(
+                "oauth.client_jwks_uri_with_keys",
+                "a client with keys has no key set address: remove its keys first",
+            ));
         }
         let method = settings.authentication_method;
         let mut events = vec![];
@@ -1466,13 +1494,20 @@ impl Client {
     /// # Errors
     ///
     /// Returns `oauth.client_key_not_allowed` for a client that does not
-    /// use `private_key_jwt`, `oauth.client_key_taken` if it has a key
+    /// use `private_key_jwt`, `oauth.client_keys_at_address` for one with
+    /// a key set address, `oauth.client_key_taken` if it has a key
     /// with the same `kid`, and `oauth.client_too_many_keys` if it has 5.
     pub fn add_key(&mut self, key: ClientKey, now: Timestamp) -> Result<OauthEvent, DomainError> {
         if self.state.settings.authentication_method != AuthenticationMethod::PrivateKeyJwt {
             return Err(DomainError::invalid(
                 "oauth.client_key_not_allowed",
                 "only a client using `private_key_jwt` has keys",
+            ));
+        }
+        if self.state.settings.jwks_uri.is_some() {
+            return Err(DomainError::invalid(
+                "oauth.client_keys_at_address",
+                "the client publishes its keys at its key set address, and has no others",
             ));
         }
         if self.state.keys.iter().any(|kept| kept.key_id == key.key_id) {
@@ -2443,6 +2478,61 @@ mod tests {
             client.snapshot().secrets.is_empty(),
             "a new secret is made by rotation"
         );
+    }
+
+    #[test]
+    fn a_client_has_its_keys_kept_by_hodor_or_at_its_address_never_both() {
+        const ADDRESS: &str = "https://payroll.example.com/jwks";
+        let key = ClientKey::parse(
+            r#"{"kty":"OKP","crv":"Ed25519","kid":"one","x":"AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE"}"#,
+            NOW,
+        )
+        .expect("key");
+        // Only a client using `private_key_jwt` has an address.
+        let mut secret_with_address = web();
+        secret_with_address.jwks_uri = Some(ADDRESS.to_owned());
+        assert_eq!(
+            create(ClientType::Confidential, secret_with_address)
+                .expect_err("a secret method")
+                .code(),
+            "oauth.client_jwks_uri_invalid"
+        );
+        let mut jwt = web();
+        jwt.authentication_method = AuthenticationMethod::PrivateKeyJwt;
+        let mut bad = jwt.clone();
+        bad.jwks_uri = Some("https://payroll.example.com/jwks#now".to_owned());
+        assert_eq!(
+            create(ClientType::Confidential, bad)
+                .expect_err("a fragment")
+                .code(),
+            "oauth.client_jwks_uri_invalid"
+        );
+        let mut at_address = jwt.clone();
+        at_address.jwks_uri = Some(ADDRESS.to_owned());
+        let (mut client, secret) =
+            create(ClientType::Confidential, at_address.clone()).expect("valid");
+        assert!(secret.is_none());
+        assert_eq!(client.jwks_uri(), Some(ADDRESS));
+        assert_eq!(
+            client
+                .add_key(key.clone(), NOW)
+                .expect_err("an address")
+                .code(),
+            "oauth.client_keys_at_address"
+        );
+
+        // Without its address the client takes keys, and with keys it takes
+        // no address until they are removed.
+        client.change(jwt.clone(), NOW).expect("no address");
+        client.add_key(key, NOW).expect("a key");
+        let error = client
+            .change(at_address.clone(), NOW)
+            .expect_err("keys and an address");
+        assert_eq!(error.code(), "oauth.client_jwks_uri_with_keys");
+        assert_eq!(client.jwks_uri(), None, "nothing changed");
+        client.remove_key("one", NOW).expect("removed");
+        client.change(at_address, NOW).expect("an address again");
+        assert_eq!(client.jwks_uri(), Some(ADDRESS));
     }
 
     #[test]
