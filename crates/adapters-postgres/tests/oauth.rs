@@ -1041,10 +1041,11 @@ async fn the_database_keeps_request_object_algorithms_to_those_named() {
                  authentication_method, grant_types, redirect_uris, allowed_scopes, require_pkce,
                  access_token_seconds, id_token_seconds, refresh_token_seconds,
                  refresh_idle_seconds, status, created_at, updated_at, version,
-                 request_object_signing_alg)
+                 request_object_signing_alg, response_types)
              VALUES ($1, gen_random_uuid(), $1, 'Web', 'confidential', 'client_secret_basic',
                  ARRAY['authorization_code'], ARRAY['https://billing.example.com/callback'],
-                 ARRAY[]::text[], true, 300, 300, 2592000, 604800, 'enabled', now(), now(), 0, $2)",
+                 ARRAY[]::text[], true, 300, 300, 2592000, 604800, 'enabled', now(), now(), 0, $2,
+                 ARRAY['code'])",
         )
         .bind(tenant)
         .bind(algorithm.map(str::to_owned))
@@ -1148,11 +1149,11 @@ async fn the_database_keeps_signing_algorithms_of_answers_to_those_named() {
                  authentication_method, grant_types, redirect_uris, allowed_scopes, require_pkce,
                  access_token_seconds, id_token_seconds, refresh_token_seconds,
                  refresh_idle_seconds, status, created_at, updated_at, version,
-                 id_token_algorithm, userinfo_signed_response_alg)
+                 id_token_algorithm, userinfo_signed_response_alg, response_types)
              VALUES ($1, gen_random_uuid(), $1, 'Web', 'confidential', 'client_secret_basic',
                  ARRAY['authorization_code'], ARRAY['https://billing.example.com/callback'],
                  ARRAY[]::text[], true, 300, 300, 2592000, 604800, 'enabled', now(), now(), 0,
-                 $2, $3)",
+                 $2, $3, ARRAY['code'])",
         )
         .bind(tenant)
         .bind(id_token.to_owned())

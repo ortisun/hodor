@@ -363,11 +363,16 @@ async fn the_discovery_document_names_what_answers() {
     // The `claims` parameter is read, and request objects by value.
     assert_eq!(document["claims_parameter_supported"], true);
     assert_eq!(document["request_parameter_supported"], true);
-    // The authorization endpoint answers in the query and with the page of
-    // `form_post`.
+    // The authorization endpoint answers in the query, in the fragment and
+    // with the page of `form_post`, with a code, an ID token, both, or
+    // nothing.
     assert_eq!(
         document["response_modes_supported"],
-        serde_json::json!(["query", "form_post"])
+        serde_json::json!(["query", "fragment", "form_post"])
+    );
+    assert_eq!(
+        document["response_types_supported"],
+        serde_json::json!(["code", "id_token", "code id_token", "none"])
     );
     for scope in ["groups", "address", "phone"] {
         assert!(
