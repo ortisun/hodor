@@ -73,3 +73,4 @@ All records below are **Proposed** unless marked otherwise: they become Accepted
 | [0075](0075-the-registration-settings-of-a-tenant.md) | A tenant has one registration policy for every way and one list of hosts for every address; an initial access token is spent under a lock of its row (Accepted) |
 | [0076](0076-names-an-authority-leaves-to-its-meshes.md) | A tenant's certificate authority may leave URIs unconstrained and permit DNS names besides its trust domains, so that Istio and Linkerd run under it together (Accepted) |
 | [0077](0077-ext-authz-checks-the-audience.md) | `hodor-ext-authz` denies claims whose audience is not the one its configuration names for the application |
+| [0079](0079-keys-at-a-client-s-address-kept-in-memory.md) | The keys at a client's address are kept in the memory of each server, for an hour at most, and fetched again at most once a minute per client |
