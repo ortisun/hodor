@@ -65,6 +65,10 @@ Every release of Hodor, newest first. The rules for versions and releases are in
 
 - A client using `private_key_jwt` may publish its keys itself, at its `jwks_uri`, instead of having an administrator add them one by one, and rotate them without asking anyone. Hodor fetches the address through the guarded outbound client when it checks an assertion or a request object of the client, follows no redirect, reads 64 kibibytes at most within 5 seconds, keeps what it answered for an hour at most in each server's memory, and fetches it again for a `kid` it does not know at most once a minute per client, so a key removed from the address stops being accepted within the hour. A client has its keys in one place, kept by Hodor or at its address, never both. The administration interface and `hodor-cli client add --jwks-uri` set it; the address is checked for a public destination when it is set, and nothing is fetched then ([Decision 0079](docs/decisions/0079-keys-at-a-client-s-address-kept-in-memory.md)).
 
+**The OpenID Connect certification**
+
+- `deploy/certification/` prepares the deployment the owner asks the OpenID Foundation to certify: an override of the installation with Docker whose web server holds the settings of TLS the profiles ask for, and a script, `certification.mjs`, that makes through `hodor-cli` the tenants, clients and person every plan of the hosted suite needs, prints the configuration to paste into the suite for each plan, and afterwards disables the clients, revokes the keys, suspends the tenants and checks that nothing it made still works. A plan whose feature is not built yet is listed as waiting, with the issue that builds it. [The certification deployment](docs/operations/certification-deployment.md) is the runbook.
+
 ### Changed
 
 - The given and family names SCIM set move from the provisioning context to the person, by migration 0098; a name longer than 200 characters is left for SCIM to send again. Claim mappers may no longer name a standard claim of OpenID Connect, which UserInfo now writes: one saved earlier under such a name writes nothing until it is renamed.

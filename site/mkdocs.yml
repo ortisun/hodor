@@ -144,6 +144,7 @@ nav:
       - cert-manager's issuer: operations/hodor-cert-manager-issuer.md
       - OpenID conformance: operations/conformance.md
       - OpenID certification: operations/certification.md
+      - The certification deployment: operations/certification-deployment.md
   - Examples:
       - examples/README.md
       - examples/first-tenant-and-administrator.md

@@ -1,6 +1,6 @@
 # How certification is obtained
 
-Passing the [OpenID conformance suite](conformance.md) in continuous integration is not a certification. A certification is a declaration, signed by a person who works for the implementer, that one deployment conforms to one or more profiles, with the logs of the hosted suite as evidence, listed by the OpenID Foundation once it accepts them. This page says how that is done for Hodor, what the project prepares, and what only the owner can do. [Decision 0051](../decisions/0051-conformance-runs-and-certification.md) says when.
+Passing the [OpenID conformance suite](conformance.md) in continuous integration is not a certification. A certification is a declaration, signed by a person who works for the implementer, that one deployment conforms to one or more profiles, with the logs of the hosted suite as evidence, listed by the OpenID Foundation once it accepts them. This page says how that is done for Hodor, what the project prepares, and what only the owner can do. [Decision 0051](../decisions/0051-conformance-runs-and-certification.md) says when. [The certification deployment](certification-deployment.md) is the runbook: the deployment, the script, the plans and the steps in order.
 
 Nothing on this page has been done yet. It was checked against the Foundation's pages in November 2026; read them again before relying on it, since the Foundation may change its fees and rules at any time.
 
@@ -45,12 +45,12 @@ The Foundation's frequently asked questions still describe the waiver of June 20
 
 | Step | The owner | The project |
 |---|---|---|
-| A host name and a public deployment with TLS, reachable by the hosted suite | Owns the name, pays for and runs the host | Keeps `deploy/certification/`: the stack, the web server's settings (TLS 1.2 and 1.3, the cipher suites FAPI asks for, client certificates requested and forwarded for the FAPI profiles) |
-| The tenants and clients each plan needs | Runs the script | Keeps the script, which makes them through `hodor-cli` with throwaway credentials, and prints the configuration to paste into the hosted suite |
+| A host name and a public deployment with TLS, reachable by the hosted suite | Owns the name, pays for and runs the host | Keeps `deploy/certification/`: an override of the installation with Docker, and the web server's settings (TLS 1.2 and 1.3, the cipher suites FAPI asks for, an RSA certificate from Let's Encrypt; client certificates requested and forwarded for the FAPI profiles from 0.6.0) ([the web server](certification-deployment.md#the-web-server)) |
+| The tenants and clients each plan needs | Runs the script | Keeps the script, which makes them through `hodor-cli` with throwaway credentials, and prints the configuration to paste into the hosted suite; a plan whose feature is not built yet is listed as waiting ([making what the plans need](certification-deployment.md#making-what-the-plans-need)) |
 | An account on the hosted suite and the runs | Signs in with Google or GitLab, runs each plan, looks at every review screenshot | Keeps, for each plan, the variants to choose and the results expected, in [the target](conformance.md#the-target) and `deploy/conformance/expected.json` |
 | Membership of the Foundation and the waiver, or the fee | Joins, asks for the waiver, or pays | — |
 | The Certification of Conformance | Fills it in and signs it through DocuSign, as the person responsible | Drafts the fields: implementer, deployment, version, profiles, suite version |
-| Before the logs are published | Disables the clients and revokes the keys used | The script does both, on request |
+| Before the logs are published | Disables the clients and revokes the keys used, by running the script | The script does both, suspends the tenants, and checks that nothing it made still works ([retiring what was made](certification-deployment.md#retiring-what-was-made)) |
 | Submitting | Submits at `submissions.openid.net` | — |
 | Afterwards | Takes the deployment down or resets it | Links the listing from the [conformance page](conformance.md) and the changelog |
 
