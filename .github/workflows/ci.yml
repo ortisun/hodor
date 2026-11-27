@@ -561,7 +561,7 @@ jobs:
           --set keyProvider.openbao.certificateAuthority.configMap=openbao-authority
           --set outboundAuthorities.configMap=hodor-authorities
           --set extAuthz.enabled=true --set extAuthz.tenant=acme
-          --set extAuthz.token.header=x-hodor-token-claims
+          --set extAuthz.token=bearer
           --set "extAuthz.applications[0].destination=spiffe://cluster.local/ns/shop/sa/orders"
           --set "extAuthz.applications[0].clientId=0193f1c2-6a1d-7c55-b0c8-6b1f2c9d4e01"
           --set "extAuthz.applications[0].audience=https://orders.example.com"

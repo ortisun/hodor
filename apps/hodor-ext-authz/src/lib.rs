@@ -2,14 +2,16 @@
 //! answered by one call of Hodor's Authorization API.
 //!
 //! It holds no decision of its own and keeps none: a check becomes an
-//! `evaluate` asked as the client of the destination's application, and
-//! every failure is a denial. It depends on no crate of the workspace but
-//! `hodor-observability`. Specified in
-//! `docs/operations/hodor-ext-authz.md` and Decision 0058.
+//! `evaluate` asked as the client of the destination's application, once
+//! the bearer token's signature holds against the tenant's published key
+//! set, and every failure is a denial. It depends on no crate of the
+//! workspace but `hodor-observability`. Specified in
+//! `docs/operations/hodor-ext-authz.md`, Decision 0058 and Decision 0082.
 
 pub mod check;
 pub mod config;
 pub mod hodor;
+pub mod key_set;
 pub mod pattern;
 pub mod service;
 
