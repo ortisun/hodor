@@ -1079,9 +1079,14 @@ async fn the_database_keeps_request_object_addresses_to_their_rules() {
     .await
     .expect("application");
     sqlx::query(
-        "INSERT INTO oauth.client VALUES ($1, $1, $1, 'Web', 'public', 'none',
+        "INSERT INTO oauth.client (tenant_id, id, application_id, name, client_type,
+             authentication_method, grant_types, redirect_uris, allowed_scopes, require_pkce,
+             access_token_seconds, id_token_seconds, refresh_token_seconds,
+             refresh_idle_seconds, status, created_at, updated_at, version, response_types)
+         VALUES ($1, $1, $1, 'Web', 'public', 'none',
              ARRAY['authorization_code'], ARRAY['https://billing.example.com/callback'],
-             ARRAY[]::text[], true, 300, 300, 2592000, 604800, 'enabled', now(), now(), 0)",
+             ARRAY[]::text[], true, 300, 300, 2592000, 604800, 'enabled', now(), now(), 0,
+             ARRAY['code'])",
     )
     .bind(tenant)
     .execute(database.owner())
@@ -1099,12 +1104,14 @@ async fn the_database_keeps_request_object_addresses_to_their_rules() {
             "INSERT INTO oauth.client (tenant_id, id, application_id, name, client_type,
                  authentication_method, grant_types, redirect_uris, allowed_scopes, require_pkce,
                  access_token_seconds, id_token_seconds, refresh_token_seconds,
-                 refresh_idle_seconds, status, created_at, updated_at, version, request_uris)
+                 refresh_idle_seconds, status, created_at, updated_at, version, request_uris,
+                 response_types)
              VALUES ($1, gen_random_uuid(), $1, 'Web', 'confidential', 'client_secret_basic',
                  ARRAY[$2], CASE WHEN $2 = 'authorization_code'
                      THEN ARRAY['https://billing.example.com/callback'] ELSE ARRAY[]::text[] END,
                  ARRAY[]::text[], true, 300, 300, 2592000, 604800, 'enabled', now(), now(), 0,
-                 $3)",
+                 $3, CASE WHEN $2 = 'authorization_code'
+                     THEN ARRAY['code'] ELSE ARRAY[]::text[] END)",
         )
         .bind(tenant)
         .bind(grant)
@@ -1990,9 +1997,14 @@ async fn the_database_keeps_a_pending_request_bound_one_way() {
     .await
     .expect("application");
     sqlx::query(
-        "INSERT INTO oauth.client VALUES ($1, $1, $1, 'Web', 'public', 'none',
+        "INSERT INTO oauth.client (tenant_id, id, application_id, name, client_type,
+             authentication_method, grant_types, redirect_uris, allowed_scopes, require_pkce,
+             access_token_seconds, id_token_seconds, refresh_token_seconds,
+             refresh_idle_seconds, status, created_at, updated_at, version, response_types)
+         VALUES ($1, $1, $1, 'Web', 'public', 'none',
              ARRAY['authorization_code'], ARRAY['https://billing.example.com/callback'],
-             ARRAY[]::text[], true, 300, 300, 2592000, 604800, 'enabled', now(), now(), 0)",
+             ARRAY[]::text[], true, 300, 300, 2592000, 604800, 'enabled', now(), now(), 0,
+             ARRAY['code'])",
     )
     .bind(tenant)
     .execute(database.owner())
