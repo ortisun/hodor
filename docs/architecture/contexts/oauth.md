@@ -4,7 +4,7 @@ The `oauth` context makes Hodor an OAuth 2.x authorization server and an OpenID 
 
 It does not sign anyone in. When a request needs a person, it hands the request to the `authentication` context and takes the session that comes back. The two contexts do not depend on each other: the HTTP layer joins them ([crates.md](../crates.md)).
 
-This page specifies what Issue-53 builds: applications, clients and resource servers, and the rules they keep; what Issue-55 builds: the authorization endpoint, grants and authorization codes; what Issue-56 builds: the token endpoint, client authentication and access tokens; what Issue-59 builds: the OpenID Provider; what Issue-60 builds: logout initiated by the relying party; what Issue-62 builds: [consent](#consent); what Issue-93 builds: [clients that act as a workload](#clients-that-act-as-a-workload); what Issue-106 builds: [a JWT-SVID as a client's proof](#checking-a-jwt-svid); what Issue-107 builds: [an identity forwarded by a proxy](#an-identity-forwarded-by-a-proxy) as a client's proof; what Issue-95 builds: [token exchange](#token-exchange); what Issue-100 builds: [back-channel logout](#back-channel-logout); what Issue-98 builds: [pairwise subject identifiers](#pairwise-subject-identifiers); and what Issue-99 builds: [claim mappers](#claim-mappers); what Issue-120 builds: [request objects](#request-objects); what Issue-121 builds: [pushed authorization requests](#pushed-authorization-requests); what Issue-122 builds: [request objects at a client's address](#request-objects-at-a-clients-address); and what Issue-125 builds: the parameters of a request that were still ignored, `id_token_hint`, `display` and `prompt=create`, a client's [defaults for a sign-in](#defaults-for-a-sign-in), the access token in a form body at [UserInfo](#userinfo); and what Issue-132 builds: [the settings of client registration](#client-registration) and initial access tokens; and what Issue-127 builds: [response types and modes](#response-types-and-modes) and [the ID token through the browser](#the-id-token-through-the-browser). The other endpoints and tokens are added by Issue-57 and Issue-58, under the headings at the end of this page.
+This page specifies what Issue-53 builds: applications, clients and resource servers, and the rules they keep; what Issue-55 builds: the authorization endpoint, grants and authorization codes; what Issue-56 builds: the token endpoint, client authentication and access tokens; what Issue-59 builds: the OpenID Provider; what Issue-60 builds: logout initiated by the relying party; what Issue-62 builds: [consent](#consent); what Issue-93 builds: [clients that act as a workload](#clients-that-act-as-a-workload); what Issue-106 builds: [a JWT-SVID as a client's proof](#checking-a-jwt-svid); what Issue-107 builds: [an identity forwarded by a proxy](#an-identity-forwarded-by-a-proxy) as a client's proof; what Issue-95 builds: [token exchange](#token-exchange); what Issue-100 builds: [back-channel logout](#back-channel-logout); what Issue-98 builds: [pairwise subject identifiers](#pairwise-subject-identifiers); and what Issue-99 builds: [claim mappers](#claim-mappers); what Issue-120 builds: [request objects](#request-objects); what Issue-121 builds: [pushed authorization requests](#pushed-authorization-requests); what Issue-122 builds: [request objects at a client's address](#request-objects-at-a-clients-address); and what Issue-125 builds: the parameters of a request that were still ignored, `id_token_hint`, `display` and `prompt=create`, a client's [defaults for a sign-in](#defaults-for-a-sign-in), the access token in a form body at [UserInfo](#userinfo); and what Issue-132 builds: [the settings of client registration](#client-registration) and initial access tokens; and what Issue-127 builds: [response types and modes](#response-types-and-modes) and [the ID token through the browser](#the-id-token-through-the-browser); and what Issue-133 builds: [the registration endpoint](#the-registration-endpoint), where a client registers itself. The other endpoints and tokens are added by Issue-57 and Issue-58, under the headings at the end of this page.
 
 ## Applications
 
@@ -54,6 +54,9 @@ A client is what talks to Hodor's endpoints. Its identifier is the `client_id` o
 | SPIFFE identifier | For a client using `spiffe_jwt` or `spiffe_x509`, and for one using `tls_client_auth` without a Linkerd identity: the one SPIFFE identifier of the workload whose JWT-SVIDs or forwarded certificates prove who the client is, its `spiffe_id` of the draft. See [the SPIFFE identifier of a client](#the-spiffe-identifier-of-a-client) |
 | Linkerd identity | For a client using `linkerd_identity`, and for one using `tls_client_auth` without a SPIFFE identifier: the workload's Linkerd identity, such as `web.shop.serviceaccount.identity.linkerd.cluster.local`. See [an identity forwarded by a proxy](#an-identity-forwarded-by-a-proxy) |
 | Certificate-bound access tokens | Whether its access tokens are bound to the certificate its requests come with, its `tls_client_certificate_bound_access_tokens` of RFC 8705. `false` unless chosen. See [certificate-bound access tokens](#certificate-bound-access-tokens) |
+| Application type | Its `application_type` of OpenID Connect Registration, `web` or `native`, or none, as for every client an administrator makes. A `web` client's redirect addresses are all HTTPS. Set by [the registration endpoint](#the-registration-endpoint) |
+| Addresses a person is shown | Its `client_uri`, `logo_uri`, `policy_uri` and `tos_uri` of OpenID Connect Registration: its home page, its logo, its privacy policy and its terms of service, each optional. See [addresses a person is shown](#addresses-a-person-is-shown). Set by the registration endpoint |
+| Registered | Whether the client registered itself at [the registration endpoint](#the-registration-endpoint). Set when it is made and never changed. A registered client is never first party, whatever its application says |
 | Secrets | Its secrets, kept only as hashes. Only with `client_secret_basic` or `client_secret_post` |
 | Keys | Its public keys, for `private_key_jwt`, kept by Hodor. Only with that method, and never with a key set address |
 | Key set address | Optional, for a client using `private_key_jwt`: the address where the client publishes its keys itself, its `jwks_uri` of OpenID Connect Registration, in place of keys kept by Hodor. See [keys at the client's address](#keys-at-the-clients-address) |
@@ -82,6 +85,7 @@ Every change to a client is checked against all of these at once; a change that 
 - **A client using `spiffe_jwt` has a principal and a SPIFFE identifier** ([Decision 0055](../../decisions/0055-spiffe-jwt-client-authentication.md)), **and so does one using `spiffe_x509`; one using `linkerd_identity` has a principal and a Linkerd identity; one using `tls_client_auth` a principal and exactly one of the two** ([Decision 0056](../../decisions/0056-forwarded-client-identity.md)). A client of any other method has neither. Its principal must be a service account. Refused with `oauth.client_spiffe_id_invalid`, or `oauth.client_linkerd_identity_invalid` for a Linkerd identity that does not read or does not fit the method.
 - **A client using `linkerd_identity` does not ask for certificate-bound access tokens**: Linkerd forwards no certificate to bind them to ([Decision 0057](../../decisions/0057-certificate-bound-access-tokens.md)). Any other client may, a public one included. Refused with `oauth.client_certificate_bound_access_tokens_invalid`.
 - **A client using `private_key_jwt` has its keys in one place**: keys kept by Hodor, or a key set address, never both, as RFC 7591 and OpenID Connect Registration say of `jwks` and `jwks_uri`. Only such a client has a key set address. A client with keys is refused an address with `oauth.client_jwks_uri_with_keys` until its keys are removed, and a client with an address is refused a key with `oauth.client_keys_at_address`.
+- **A `web` client's redirect addresses are all HTTPS**, as OpenID Connect Registration asks of a web client: plain HTTP to a loopback address and private-use schemes are for a `native` one. Refused with `oauth.client_application_type_invalid`. A client with no application type, as every client an administrator makes, is held only to the rules of redirect addresses.
 - **Switching the authentication method drops what the old one used.** A client that moves away from a secret method loses its secrets, and one that moves away from `private_key_jwt` loses its keys; the administration interface drops its key set address too. A client is given its identity in the change that moves it to a method that takes one, and the administration interface drops an identity the new method does not take.
 
 ### Response types of a client
@@ -113,6 +117,13 @@ A redirect address is where a person's browser is sent with a code. Sending a co
 An address is kept exactly as it was given.
 
 **Post-logout redirect addresses** follow the same rules, checked the same way, and are a list of their own: an address where a person may be sent with a code is not, for that reason, one where they may be sent after signing out, and the reverse.
+
+### Addresses a person is shown
+
+Issue-133. A client may name four addresses of its own that a person is shown: `client_uri`, its home page; `logo_uri`, an image of its logo; `policy_uri`, its privacy policy; and `tos_uri`, its terms of service. The [consent page](#what-the-page-shows) shows them for a registered client. Hodor never calls them: the person's browser loads the logo, and follows the others when the person chooses to.
+
+- **Each is one absolute HTTPS address**, with a host, without a name and password or a fragment, at most 2000 characters, all of them printable ASCII without spaces. A port, a path and a query are allowed. It is kept exactly as it was given. Otherwise `oauth.client_display_uri_invalid`, whose detail names the member.
+- Each is optional, and none is checked by the guarded outbound client, since Hodor never calls it.
 
 ### The back-channel logout address
 
@@ -165,7 +176,7 @@ How an assertion is checked against these keys is in [checking a client assertio
 
 ### Keys at the client's address
 
-Issue-136. A client using `private_key_jwt` may publish its keys itself, at an address of its own, instead of having an administrator give them to Hodor one by one: its `jwks_uri` of OpenID Connect Registration, an HTTPS address that answers a JSON Web Key Set ([RFC 7517, section 5](https://www.rfc-editor.org/rfc/rfc7517#section-5)). The client then rotates its keys without asking anyone: it adds the new key at its address, signs with it, and removes the old one. Any such client may have one, whether an administrator made it or, once the registration endpoint is built, it registered itself. How long Hodor keeps what it fetched is [Decision 0079](../../decisions/0079-keys-at-a-client-s-address-kept-in-memory.md).
+Issue-136. A client using `private_key_jwt` may publish its keys itself, at an address of its own, instead of having an administrator give them to Hodor one by one: its `jwks_uri` of OpenID Connect Registration, an HTTPS address that answers a JSON Web Key Set ([RFC 7517, section 5](https://www.rfc-editor.org/rfc/rfc7517#section-5)). The client then rotates its keys without asking anyone: it adds the new key at its address, signs with it, and removes the old one. Any such client may have one, whether an administrator made it or it registered itself at [the registration endpoint](#the-registration-endpoint). How long Hodor keeps what it fetched is [Decision 0079](../../decisions/0079-keys-at-a-client-s-address-kept-in-memory.md).
 
 **The address** is checked as a [back-channel logout address](#the-back-channel-logout-address) is:
 
@@ -361,6 +372,10 @@ Every table is a tenant table under row-level security, in the schema `oauth`. R
 | `require_auth_time` | `boolean` | `false` for a client made before it existed. A check constraint (`client_sign_in_defaults_need_code`) allows a default max age, default assurance levels and `true` here only with the `authorization_code` grant |
 | `sector_identifier_uri` | `text` | The [sector identifier address](#the-sector-identifier-address), or null. At most 2000 characters, `https://` or `http://`, compared byte for byte (`COLLATE "C"`); a check constraint allows it only for a pairwise client |
 | `jwks_uri` | `text` | The [key set address](#keys-at-the-clients-address), or null (migration 0122). At most 2000 characters, `https://` or `http://`, compared byte for byte (`COLLATE "C"`); a check constraint (`client_jwks_uri_needs_private_key_jwt`) allows it only with `private_key_jwt`. A client never has both an address and rows in `oauth.client_key`: every change and every key added is checked against it |
+| `application_type` | `text` | `web` or `native`, by a check constraint (`client_application_type_known`), or null, as for every client an administrator makes (migration 0123) |
+| `client_uri`, `logo_uri`, `policy_uri`, `tos_uri` | `text` | The [addresses a person is shown](#addresses-a-person-is-shown), or null. A check constraint (`client_display_uris_https`) keeps each to `https://` and at most 2000 characters (migration 0123) |
+| `registered` | `boolean` | Whether the client registered itself at [the registration endpoint](#the-registration-endpoint); `false` for every client made before it existed (migration 0123) |
+| `registered_from` | `bytea` | The SHA-256 of the address a registered client was registered from, as [the client address](../../api/api-spec.md#the-client-address) reads it, or null when the address was not known. A check constraint (`client_registered_from_shape`) keeps it to 32 bytes and to registered clients. The partial index `client_registered_from_idx`, on the tenant, this column and `created_at` for registered clients, counts [the registrations of an address](#bounds-of-registration) (migration 0123) |
 | `access_token_seconds`, `id_token_seconds`, `refresh_token_seconds`, `refresh_idle_seconds`, `consent_seconds` | `integer` | The token policy |
 | `created_at`, `updated_at` | `timestamptz` | |
 | `version` | `integer` | For optimistic locking; secrets and keys are stored with the client under the same version |
@@ -1472,6 +1487,7 @@ It names only what is built:
 | Member | Value |
 |---|---|
 | `issuer` | The tenant's issuer, exactly as every token and redirect carries it |
+| `registration_endpoint` | `{issuer}/oauth2/register`, only while [client registration](#client-registration) is on in the tenant. Left out otherwise, and the address answers `404` |
 | `authorization_endpoint`, `token_endpoint`, `userinfo_endpoint`, `jwks_uri`, `revocation_endpoint`, `introspection_endpoint`, `end_session_endpoint`, `pushed_authorization_request_endpoint` | The eight addresses under `{issuer}/oauth2`; the seventh is [logout](#logout-initiated-by-the-relying-party), the last the [pushed request endpoint](#pushed-authorization-requests) |
 | `response_types_supported` | `code`, `id_token`, `code id_token`, `none`: the [response types](#response-types-and-modes) a client may register |
 | `response_modes_supported` | `query`, `fragment`, `form_post`: the [response modes](#response-modes) the authorization endpoint answers in |
@@ -1503,7 +1519,7 @@ It names only what is built:
 
 **`spiffe_jwt` follows draft-ietf-oauth-spiffe-client-auth-03**, the version of the Internet-Draft Hodor implements ([checking a JWT-SVID](#checking-a-jwt-svid)). The draft is not yet a standard and may change; a change of the version Hodor follows is a change to Hodor, written in the changelog ([Decision 0029](../../decisions/0029-hodor-in-a-service-mesh.md#consequences)). `spiffe_x509` follows the same version, section 3.3 ([an identity forwarded by a proxy](#an-identity-forwarded-by-a-proxy)); the draft's `spiffe_wit` is not offered.
 
-The document may be kept by caches for five minutes and carries `Access-Control-Allow-Origin: *`, as the key set does: it is public. It names the tenant's own assurance levels and, through `create`, its own registration policy, so a change of either may take five minutes to reach a client that keeps it.
+The document may be kept by caches for five minutes and carries `Access-Control-Allow-Origin: *`, as the key set does: it is public. It names the tenant's own assurance levels, through `create` its own registration policy, and through `registration_endpoint` whether clients may register themselves, so a change of any of them may take five minutes to reach a client that keeps it.
 
 ### Ports
 
@@ -1901,7 +1917,7 @@ A checked request for a person who is signed in and whose session is enough then
 
 | Situation | What happens |
 |---|---|
-| The client's application is first party, and `prompt` does not hold `consent` | No question: a code is issued |
+| The client's application is first party, the client did not [register itself](#the-registration-endpoint), and `prompt` does not hold `consent` | No question: a code is issued |
 | `prompt` holds `consent` | The person is asked, whatever they agreed to before |
 | The scopes hold `offline_access`, for a third-party client | The person is asked, every time ([OpenID Connect Core, section 11](https://openid.net/specs/openid-connect-core-1_0.html#OfflineAccess)): letting an application go on without the person is decided each time it is asked for |
 | The person's consent for the client stands, has not expired, and holds every scope and audience of the request | No question: a code is issued |
@@ -1929,7 +1945,15 @@ When the person must sign in first, they sign in, the request is resumed, and on
 - each **scope** asked for: for a scope of OpenID Connect, or `groups`, its name, which the page words in the person's language; for a scope of a resource server, the description the resource server gives, as written by the tenant's administrator, with the resource server's name;
 - whether the request asks for **offline access**, so that the page says the application will keep access when the person is not there.
 
-It never shows the redirect address or anything else the client chose, so that a client cannot put words on Hodor's page.
+It never shows the redirect address or anything else a client an administrator made chose, so that such a client cannot put words on Hodor's page.
+
+**A client that registered itself** (Issue-133, [Decision 0080](../../decisions/0080-the-registration-endpoint.md)) chose everything about itself, and no administrator vouched for any of it. All the registered clients of a tenant belong to one application, whose name says nothing of which one asks, so the page shows instead:
+
+- the client's own name, its `client_name`, with a sentence saying that the application gave this name itself and that the tenant has not checked it;
+- its logo, from its `logo_uri`, loaded by the person's browser without a referrer; the pages' content security policy lets images come from any HTTPS address for it;
+- links to its home page, privacy policy and terms of service, its `client_uri`, `policy_uri` and `tos_uri`, each when it has one, opened in a new tab without a referrer.
+
+The account page's list of consents names a registered client by its own name too.
 
 ### Withdrawing a consent
 
@@ -2078,7 +2102,7 @@ Administrators reach them through [the administration interface](../../api/admin
 
 ## Client registration
 
-Issue-132. A tenant may let clients register themselves ([Decision 0049](../../decisions/0049-dynamic-client-registration.md)), and it chooses who may and what they may become ([Decision 0075](../../decisions/0075-the-registration-settings-of-a-tenant.md)). This section specifies what an administrator sets: whether registration is on, the application registered clients belong to, the ways a registration may be allowed, the registration policy that bounds every registration, and initial access tokens. The registration endpoint that reads all of it, `{issuer}/oauth2/register`, is Issue-133; reading, changing and removing a registration with its registration access token, Issue-134; software statements and the issuers a tenant trusts, Issue-135.
+Issue-132. A tenant may let clients register themselves ([Decision 0049](../../decisions/0049-dynamic-client-registration.md)), and it chooses who may and what they may become ([Decision 0075](../../decisions/0075-the-registration-settings-of-a-tenant.md)). This section specifies what an administrator sets, built in Issue-132: whether registration is on, the application registered clients belong to, the ways a registration may be allowed, the registration policy that bounds every registration, and initial access tokens; and the registration endpoint that reads all of it, `{issuer}/oauth2/register`, built in Issue-133 ([Decision 0080](../../decisions/0080-the-registration-endpoint.md)). Reading, changing and removing a registration with its registration access token is Issue-134; software statements and the issuers a tenant trusts, Issue-135; keys at a client's `jwks_uri`, Issue-136.
 
 ### The settings of a tenant
 
@@ -2092,13 +2116,13 @@ Issue-132. A tenant may let clients register themselves ([Decision 0049](../../d
 
 **Off unless the tenant turns it on.** A tenant that never set them reads the settings above, off. While registration is off:
 
-- the discovery document names no `registration_endpoint`, and the registration address answers `404`, as an address that does not exist does (Issue-133);
+- the discovery document names no `registration_endpoint`, and the registration address answers `404`, as an address that does not exist does;
 - no initial access token can be made, and every one already made is refused when presented, without being spent;
 - nothing else changes: the tokens are kept, so that turning registration on again makes each token that has not expired, been revoked or been used up work again, and so are the other settings when the change that turns registration off keeps them, as `hodor-cli client-registration off` does.
 
 **Every setting is checked at once**, and a change that breaks one changes nothing: an application that is not one of the tenant's, or is first party, or none while registration is on, is refused with `oauth.client_registration_application_invalid`; no way while registration is on with `oauth.client_registration_ways_invalid`; most clients outside 1 to 1000 with `oauth.client_registration_most_clients_invalid`; a policy that breaks a rule of its own with `oauth.client_registration_policy_invalid`, which says the rule. Settings are replaced as a whole, with optimistic locking: a change made from a copy someone else has changed since is refused with `oauth.client_registration_modified_concurrently`.
 
-**The application of registered clients is third party**, so that the person a registered client signs in is always asked for [consent](#consent). It stays an ordinary application: its administrator sees its clients with every other, and disables it to stop them all. Making it first party afterwards does not make a registered client first party: the registration endpoint records on each client that it registered itself, and asks consent for it whatever its application says (Issue-133). The bound of most clients is the registration endpoint's; a client made by hand is held to the bound of 20 of every application, counting every client the application holds, so an administrator who wants clients of their own makes them in another application.
+**The application of registered clients is third party**, so that the person a registered client signs in is always asked for [consent](#consent). It stays an ordinary application: its administrator sees its clients with every other, and disables it to stop them all. Making it first party afterwards does not make a registered client first party: the registration endpoint records on each client that it registered itself, and consent is asked for it whatever its application says. The bound of most clients is the registration endpoint's ([bounds of registration](#bounds-of-registration)); a client made by hand is held to the bound of 20 of every application, counting every client the application holds, so an administrator who wants clients of their own makes them in another application.
 
 ### The ways a registration is allowed
 
@@ -2125,7 +2149,7 @@ A policy is a set of limits an administrator writes. Every registration and ever
 
 The policy also decides what no administrator can change: a registered client is never first party, and its person is always asked for consent. What a registration may be beyond these limits is what [a client may be](#what-a-client-may-be): the policy narrows, it never widens.
 
-A registration that names something the policy does not allow is refused, and nothing is stored, with a code that names the limit: `oauth.registration_grant_not_allowed`, `oauth.registration_response_type_not_allowed`, `oauth.registration_scope_not_allowed`, `oauth.registration_method_not_allowed`, `oauth.registration_subject_type_not_allowed` or `oauth.registration_host_not_allowed`. The registration endpoint answers each as `invalid_client_metadata`, and a redirect address whose host is not allowed as `invalid_redirect_uri` (Issue-133). The check is the domain function `check_registration`, given what a registration names; changing the policy changes no client already registered, and applies from the next registration or change of one.
+A registration that names something the policy does not allow is refused, and nothing is stored, with a code that names the limit: `oauth.registration_grant_not_allowed`, `oauth.registration_response_type_not_allowed`, `oauth.registration_scope_not_allowed`, `oauth.registration_method_not_allowed`, `oauth.registration_subject_type_not_allowed` or `oauth.registration_host_not_allowed`. The registration endpoint answers each as `invalid_client_metadata`, and a redirect address whose host is not allowed, which it checks first with `oauth.registration_redirect_host_not_allowed`, as `invalid_redirect_uri` ([refusals](#refusals)). The check is the domain function `check_registration`, given what a registration names; changing the policy changes no client already registered, and applies from the next registration or change of one.
 
 ### Initial access tokens
 
@@ -2148,13 +2172,139 @@ A token allows a registration only. Changing or removing that registration takes
 
 #### When an initial access token is accepted
 
-The registration endpoint asks before it registers anything, in the unit of work of the registration (Issue-133). A token is accepted only when all of these hold, and refused in one way otherwise, `oauth.initial_access_token_invalid`, whatever the reason:
+The registration endpoint asks before it registers anything: once without spending, before it calls any address of the registration, and again in the unit of work that stores the client, which spends ([what a registration goes through](#what-a-registration-goes-through)). A token is accepted only when all of these hold, and refused in one way otherwise, `oauth.initial_access_token_invalid`, whatever the reason:
 
 - registration is on in the tenant of the address, and allows `initial_access_token`;
 - the value has the shape of a token, and its hash is a token of this tenant. A token of another tenant is not known here, and a value without the shape matches nothing, and nothing is computed or looked up for it;
 - it is not revoked, it has not expired, and it has allowed fewer registrations than it may.
 
 Accepting it spends one registration and records when. The token's row is locked while it is spent, so that two registrations at the same moment cannot spend one registration twice, and a registration that is refused later in the same unit of work spends nothing. A request without a token is accepted only where registration is on and allows `open`; otherwise it is refused with `oauth.initial_access_token_required`, and where registration is off every request is refused with `oauth.client_registration_off`, which the endpoint answers as `404`.
+
+### The registration endpoint
+
+Issue-133. A client registers itself with `POST {issuer}/oauth2/register` ([RFC 7591](https://www.rfc-editor.org/rfc/rfc7591), [OpenID Connect Dynamic Client Registration](https://openid.net/specs/openid-connect-registration-1_0.html)), sending its metadata as a JSON object, and gets a client of the tenant's application of registered clients. What it may send and what Hodor does with it are [Decision 0080](../../decisions/0080-the-registration-endpoint.md).
+
+#### What a registration sends
+
+- The body is one JSON object of members, with `Content-Type: application/json`, at most 64 kibibytes as for every request. A member whose value is `null` is taken as left out.
+- `Authorization: Bearer` with an [initial access token](#initial-access-tokens), where the tenant allows registrations by token. A request that carries one is allowed by it or by nothing ([the ways](#the-ways-a-registration-is-allowed)); a request without one is allowed only where registration is open.
+
+#### What a registration may name
+
+Every member Hodor supports becomes a setting of the client, checked by the rules every client is checked by ([what a client may be](#what-a-client-may-be)), as an administrator's change is, and then by [the registration policy](#the-registration-policy). A member left out takes the default of the specification that defines it, which is not always Hodor's own default for a client an administrator makes.
+
+| Member | Becomes | Unless given |
+|---|---|---|
+| `redirect_uris` | Its [redirect addresses](#redirect-addresses), by their rules; at least one, since a registered client has `authorization_code` | None |
+| `post_logout_redirect_uris` | Its post-logout redirect addresses | None |
+| `grant_types` | Its grants, among those the policy allows: `authorization_code`, with `refresh_token` besides if the policy allows it. `implicit`, which OpenID Connect Registration names for a client of `id_token`, is read as `authorization_code`, the grant that lets a client send people to the authorization endpoint ([Decision 0072](../../decisions/0072-the-state-hash-and-the-response-types-of-a-client.md)) | `authorization_code` |
+| `response_types` | Its [response types](#response-types-of-a-client), by their rules: `code`, `id_token`, `code id_token` and `none`, only with `authorization_code`; each one the policy allows. A type that returns an access token is refused with `oauth.client_response_types_invalid` until Issue-128 | `code` |
+| `application_type` | Its application type, `web` or `native`. A `web` client's redirect addresses are all HTTPS | `web` |
+| `client_name` | Its name, by the rule of names: 1 to 100 characters, without control characters | `Registered client` |
+| `client_uri`, `logo_uri`, `policy_uri`, `tos_uri` | Its [addresses a person is shown](#addresses-a-person-is-shown) | None |
+| `token_endpoint_auth_method` | Its authentication method, among those the policy allows. `none` makes a public client; any other a confidential one | `client_secret_basic` |
+| `token_endpoint_auth_signing_alg` | Checked, not kept: `ES256`, `RS256` or `PS256`, the algorithms a [client assertion](#checking-a-client-assertion) may be signed with, and only with `private_key_jwt` | — |
+| `jwks` | Its [keys](#keys), as `{"keys": […]}`, each checked as an administrator adds one: at most 5, each `kid` once. With `private_key_jwt` only, which needs it or `jwks_uri` | None |
+| `jwks_uri` | Its [key set address](#keys-at-the-clients-address), checked by the guarded outbound client's destination check; nothing is fetched when the client registers. With `private_key_jwt` only, never together with `jwks`, as RFC 7591 says | None |
+| `scope` | The scopes it may ask for, separated by spaces | Every scope the policy allows |
+| `subject_type` | Its [subject type](#subject-types) | `public` |
+| `sector_identifier_uri` | Its [sector identifier address](#the-sector-identifier-address), checked and fetched through the guarded outbound client; its document must list every redirect address | None |
+| `request_uris` | Its [request object addresses](#request-object-addresses), each checked by the guarded outbound client's destination check | None |
+| `require_pushed_authorization_requests` | Whether every request of it must be [pushed](#pushed-authorization-requests) first (RFC 9126, section 6) | `false` |
+| `id_token_signed_response_alg` | Its ID token algorithm | `RS256`, the default of OpenID Connect Registration, where an administrator's client gets `ES256` |
+| `userinfo_signed_response_alg` | Its UserInfo algorithm | None: UserInfo answers in JSON |
+| `request_object_signing_alg` | Its [request object algorithm](#request-objects) | None chosen |
+| `default_max_age`, `default_acr_values`, `require_auth_time` | Its [defaults for a sign-in](#defaults-for-a-sign-in) | None, none, `false` |
+| `backchannel_logout_uri`, `backchannel_logout_session_required` | Its [back-channel logout address](#the-back-channel-logout-address), checked through the guarded outbound client, and whether it needs `sid` | None, `false` |
+| `tls_client_certificate_bound_access_tokens` | Whether its access tokens are [bound to its certificate](#certificate-bound-access-tokens) | `false` |
+
+A member of the wrong kind, such as a text where a list of texts is expected, is refused with `oauth.client_metadata_invalid`, whose detail names the member.
+
+**What a registration never sets**, whatever it sends: a principal, a workload's identity, exchange rules, first party, and PKCE, which a registered client always uses. Its token policy is the default one ([token policy](#token-policy)).
+
+**Refused**, because the client would rely on something Hodor does not have, with `oauth.registration_member_not_supported`, whose detail names the member:
+
+| Member | Until |
+|---|---|
+| `id_token_encrypted_response_alg`, `id_token_encrypted_response_enc`, `userinfo_encrypted_response_alg`, `userinfo_encrypted_response_enc`, `request_object_encryption_alg`, `request_object_encryption_enc`, `authorization_encrypted_response_alg`, `authorization_encrypted_response_enc` | Encryption, 0.6.0 ([Decision 0048](../../decisions/0048-encryption.md)) |
+| `software_statement` | Software statements, Issue-135: refused with `oauth.software_statement_unapproved`, since the tenant trusts no issuer yet |
+
+**Ignored**, and left out of the answer, so that the client sees they were not kept: `contacts`, `software_id`, `software_version`, `initiate_login_uri` (Issue-134), `frontchannel_logout_uri` and `frontchannel_logout_session_required` (Milestone 16), every member written with a language tag such as `client_name#ja`, and every member Hodor does not know.
+
+#### What a registration goes through
+
+In this order; the first step that refuses decides the answer, and nothing is stored or spent:
+
+1. **The request is admitted, without spending anything**, in a unit of work that is never committed: registration is on in the tenant of the address, and the initial access token presented is good there, or the tenant is open and none is presented ([when an initial access token is accepted](#when-an-initial-access-token-is-accepted)); and the address the request comes from has registered fewer than 10 clients in the last minute.
+2. **The body is read**, and a software statement refused.
+3. **The members are checked** as the table above says: the client's settings by the rules of every client, a web client's redirect addresses among them, its keys one by one as an administrator adds them, then the policy, the hosts of the redirect addresses first.
+4. **The addresses Hodor will call are checked**, only now that the caller is admitted: a back-channel logout address, each request object address and a key set address by the guarded outbound client's destination check, a sector identifier address checked and its document fetched, as for an administrator's client.
+5. **The client is stored**, in one unit of work: the tenant's settings are locked, the two [bounds](#bounds-of-registration) counted again, the initial access token spent, the client made in the application of registered clients, enabled, marked as registered, with its first secret if its method takes one, and every event recorded; then committed together.
+
+Hodor calls none of a registration's addresses for a caller it has not admitted, and at most 10 times a minute for one address.
+
+#### Bounds of registration
+
+- **Most clients**: the application of registered clients holds fewer clients than the settings' most clients, every client of it counted, whoever made it. Otherwise `oauth.too_many_registered_clients`.
+- **10 a minute per address**: at most 10 clients registered in the tenant from one address within 60 seconds, counted from the clients stored, by the SHA-256 of the address [the client address](../../api/api-spec.md#the-client-address) reads, and all requests whose address is not known counted together. Otherwise `oauth.too_many_registrations`, with a wait of 60 seconds.
+
+Both are counted under the lock of the tenant's settings, so two registrations at the same moment cannot pass a bound together, and on every instance of the server alike.
+
+#### What a registration answers
+
+`201 Created`, with `Cache-Control: no-store`, and the client as it was kept ([RFC 7591, section 3.2.1](https://www.rfc-editor.org/rfc/rfc7591#section-3.2.1)):
+
+```json
+{
+  "client_id": "0193f1d0-7c2e-7b1a-9a3e-5f6d7e8f9a0b",
+  "client_id_issued_at": 1795795200,
+  "client_secret": "hodor_cs_…",
+  "client_secret_expires_at": 1827331200,
+  "client_name": "Partner portal",
+  "application_type": "web",
+  "redirect_uris": ["https://portal.partner.example/callback"],
+  "grant_types": ["authorization_code"],
+  "response_types": ["code"],
+  "token_endpoint_auth_method": "client_secret_basic",
+  "scope": "openid profile email",
+  "subject_type": "public",
+  "id_token_signed_response_alg": "RS256",
+  "require_auth_time": false,
+  "backchannel_logout_session_required": false,
+  "tls_client_certificate_bound_access_tokens": false,
+  "logo_uri": "https://portal.partner.example/logo.png"
+}
+```
+
+- `client_id` is made by Hodor; `client_id_issued_at` is when, in seconds since 1970.
+- `client_secret`, for a client whose method takes one, is its first [secret](#secrets), shown here once and kept as a hash; `client_secret_expires_at` is when it expires, a year later, as every first secret.
+- Every member that was kept is given back as it was kept; one without a value, or an empty list, is left out. `grant_types` gives `authorization_code` for a registration that named `implicit`.
+- No registration access token and no `registration_client_uri` yet: reading, changing and removing a registration is Issue-134, and OpenID Connect Registration makes both optional.
+
+#### Refusals
+
+Every refusal is a JSON object with `error` and `error_description` ([RFC 7591, section 3.2.2](https://www.rfc-editor.org/rfc/rfc7591#section-3.2.2)), and `Cache-Control: no-store`. The description is the message of the refusal, followed by its detail, which names the member or the value; it never says what an address resolved to.
+
+| Situation | Status | `error` |
+|---|---|---|
+| Registration is off in the tenant (`oauth.client_registration_off`) | `404`, the same answer as an address that does not exist, `route.not_found` | — |
+| No initial access token, where registration is not open (`oauth.initial_access_token_required`) | `401`, with `WWW-Authenticate: Bearer realm="{issuer}"` | `invalid_token` |
+| An initial access token that is not good in the tenant, whatever the reason, or an `Authorization` header that is not a bearer token (`oauth.initial_access_token_invalid`) | `401`, with `WWW-Authenticate: Bearer realm="{issuer}", error="invalid_token"` | `invalid_token` |
+| 10 clients registered from the address in the last minute (`oauth.too_many_registrations`) | `429`, with `Retry-After: 60` | `temporarily_unavailable` |
+| The body is not a JSON object, a member is of the wrong kind, a member is refused, or a member breaks a rule of every client or of the policy | `400` | `invalid_client_metadata` |
+| A redirect address breaks [their rules](#redirect-addresses) (`oauth.client_redirect_uri_invalid`), a web client names one that is not HTTPS (`oauth.client_application_type_invalid`), or the policy does not list its host (`oauth.registration_redirect_host_not_allowed`) | `400` | `invalid_redirect_uri` |
+| A software statement (`oauth.software_statement_unapproved`) | `400` | `unapproved_software_statement` |
+| The application of registered clients holds as many clients as it may (`oauth.too_many_registered_clients`) | `403` | `access_denied` |
+| The tenant's settings named another application while the registration was checked (`oauth.client_registration_modified_concurrently`) | `409` | `temporarily_unavailable` |
+
+The policy's codes, `oauth.registration_grant_not_allowed` and the others of [the registration policy](#the-registration-policy), are answered `invalid_client_metadata`; a redirect address whose host the policy does not list is checked before the other addresses, with a code of its own, `oauth.registration_redirect_host_not_allowed`, so that it is answered `invalid_redirect_uri` as RFC 7591 asks.
+
+#### A registered client
+
+A registered client is a client like any other at every endpoint: it signs people in, proves who it is with its secret or its keys, and an administrator sees it among the clients of the application of registered clients, disables it, rotates its secret or changes it. Two things differ, and never change:
+
+- **It is never first party.** Its person is asked for [consent](#consent) whatever its application says, even if the application is made first party afterwards.
+- **It says who it is in its own words** on the consent page: its name, its logo and its links ([what the page shows](#what-the-page-shows)), with a sentence saying the tenant has not checked them.
 
 ### Operations
 
@@ -2165,7 +2315,8 @@ Accepting it spends one registration and records when. The token's row is locked
 | Make an initial access token | Checks the name, the lifetime and the registrations, that registration is on and allows tokens, and that the tenant holds fewer than 100 active ones; returns the token once |
 | Revoke an initial access token | Ends it at once |
 | Read and list initial access tokens | One token, or every token of the tenant, newest first; never the token or its hash |
-| Admit a registration | For the registration endpoint: inside its unit of work, accepts the token presented or open registration, as [the rules above](#when-an-initial-access-token-is-accepted) say, and answers the settings and how the registration was allowed |
+| Admit a registration | For the registration endpoint: inside its unit of work, accepts the token presented or open registration, as [the rules above](#when-an-initial-access-token-is-accepted) say, and answers the settings and how the registration was allowed. Asked once more beforehand without spending, to know the caller may register before any address is called |
+| Register a client | [The registration endpoint](#the-registration-endpoint): reads the members, checks them as a client's settings and against the policy, checks the addresses Hodor will call, and stores the client under the bounds, returning it with its first secret once |
 
 Administrators reach them through [the administration interface](../../api/admin-api.md#client-registration), under `/client-registration`, with the permissions of applications, `applications:read` and `applications:write`: a token lets its holder make clients, so making one is as much as making a client. They reach them through `hodor-cli client-registration` too:
 
@@ -2198,12 +2349,15 @@ Administrators reach them through [the administration interface](../../api/admin
 | `oauth.initial_access_token_issued` | A token was made. Carries its identifier, its name, how many registrations it allows and when it expires; never the token or its hash |
 | `oauth.initial_access_token_revoked` | A token was revoked. Carries its identifier |
 | `oauth.initial_access_token_used` | A token allowed a registration. Carries its identifier and how many registrations it has allowed; recorded in the unit of work of the registration |
+| `oauth.client_registered` | A client registered itself. Carries the client, its application, the way that allowed it, `initial_access_token` or `open`, and the token's identifier when a token did; never the secret or the address. Recorded with the `oauth.client_created` and `oauth.client_secret_issued` of every new client |
 
 ### Ports
 
 | Port | Purpose |
 |---|---|
-| `ClientRegistrationStore` | Store and load the settings of the tenant, with optimistic locking |
+| `ClientRegistrationStore` | Store and load the settings of the tenant, with optimistic locking; lock them in the unit of work of a registration |
+| `ClientStore` | Store a registered client; count the clients of an application, and the clients registered from an address since a moment |
+| `DestinationCheck`, `HttpClient` | The guarded outbound client, for the back-channel logout and sector identifier addresses of a registration, as for any client |
 | `InitialAccessTokenStore` | Store, change and load initial access tokens; find one by its hash under a lock of its row, in the unit of work of a registration; count the active ones |
 | `ApplicationStore` | The application the settings name |
 | `Digest`, `RandomSource` | The hash and the random bytes of a token, from the kernel |
@@ -2214,6 +2368,8 @@ Administrators reach them through [the administration interface](../../api/admin
 
 `oauth.initial_access_token` holds `tenant_id`, `id` (the key, with the tenant), `token_hash` (32 bytes, unique in the tenant), `hint`, `name`, `max_registrations`, `registrations`, `created_at`, `expires_at`, `last_used_at` and `revoked_at`. Check constraints keep the hash to 32 bytes, the hint to four hexadecimal characters, the name to 1 to 100 characters, the registrations allowed to 1 to 1000 and those used between 0 and them, and a lifetime of one hour to 90 days. It is a tenant table under row-level security (migration 0118). A token is looked up by tenant and hash together, so a token presented to another tenant finds nothing.
 
+A registered client is a row of `oauth.client`, with `registered` true and `registered_from` the hash of its address, and its application type and addresses a person is shown in columns of their own (migration 0123, [`oauth.client`](#oauthclient)).
+
 ## Not built yet
 
 | Item | Planned in |
@@ -2222,7 +2378,6 @@ Administrators reach them through [the administration interface](../../api/admin
 | A logout token when a session runs out by itself, idle or at its absolute end: only a session that is ended on purpose is told | When an application needs it ([Decision 0037](../../decisions/0037-back-channel-logout.md)) |
 | Listing logout deliveries and delivering a set-aside one again, from the administration interface | Not scheduled |
 | The back-channel logout address in the console's client screens: it is set through the administration interface and the command-line tool | Not scheduled |
-| Back-channel logout to a client that registers itself: a tenant can turn registration on ([client registration](#client-registration)), and the registration endpoint is not built yet | 0.5.0, [Milestone 15](../../product/epics.md#milestone-15-clients-that-register-themselves), Issue-133 |
 | Sending the person back to the application when they choose to stay signed in at the logout question | When an application asks for it |
 | `logout_hint`, which names who to sign out | Not used: a browser holds one session per tenant |
 | An `id_token_hint` signed by a key that has left the tenant's key set: it is refused, and the application can send `client_id` instead, which asks the person | When it matters |
@@ -2248,7 +2403,6 @@ Administrators reach them through [the administration interface](../../api/admin
 | Request object addresses from the console | With the console pages of clients |
 | A limit on the number of requests to the pushed request endpoint, per client | With the limits of the token endpoint ([limits](#limits)) |
 | Requiring pushed requests, and the tenant's life of a pushed request, from the console | With the console pages of clients and of the tenant's settings |
-| A key set address for a client that registers itself: the registration endpoint is not built yet, and refuses `jwks_uri` in the branch that builds it until both are in | 0.5.0, Issue-133 |
 | A key set address for a client that does not use `private_key_jwt`, to sign its request objects only | When a client needs it |
 | The key set address in the console's client screens: it is set through the administration interface and the command-line tool | With the console pages of clients |
 | One kept key set for every server of an installation, so that a burst of unknown `kid` values causes one fetch a minute in all: each server keeps its own | Not planned ([Decision 0079](../../decisions/0079-keys-at-a-client-s-address-kept-in-memory.md)) |
@@ -2257,10 +2411,13 @@ Administrators reach them through [the administration interface](../../api/admin
 | Choosing a client's request object algorithm from the console | With the console pages of clients |
 | Fetching a sector identifier address again after the client was saved | Not planned: only its host is used ([Decision 0040](../../decisions/0040-pairwise-subjects.md)) |
 | Finding a person by a pairwise identifier outside a token's record, for the Authorization API or a resource server | Not planned: it would undo what the identifier hides ([Decision 0040](../../decisions/0040-pairwise-subjects.md)) |
-| A pairwise client that registers itself, and the suite's pairwise tests, which need it: the registration endpoint is not built yet | 0.5.0, [Milestone 15](../../product/epics.md#milestone-15-clients-that-register-themselves), Issue-133 ([Decision 0049](../../decisions/0049-dynamic-client-registration.md)) |
-| The registration endpoint, `registration_endpoint` in discovery, and the bound of most clients and of 10 registrations a minute it checks | 0.5.0, Issue-133 |
-| Reading, changing and removing a registration with its registration access token | 0.5.0, Issue-134 |
-| Software statements and the issuers a tenant trusts: a tenant may allow the way, and accepts no statement until then | 0.5.0, Issue-135 |
+| The suite's pairwise registration tests, `oidcc-registration-sector-uri` and `oidcc-registration-sector-bad`, in continuous integration: a pairwise client registers itself since Issue-133 | 0.5.0, [Milestone 15](../../product/epics.md#milestone-15-clients-that-register-themselves), Issue-137 |
+| Reading, changing and removing a registration with its registration access token (RFC 7592), `registration_access_token` and `registration_client_uri` in the answer of a registration, and `initiate_login_uri` | 0.5.0, Issue-134 |
+| Software statements and the issuers a tenant trusts: a tenant may allow the way, and the registration endpoint refuses every statement with `unapproved_software_statement` until then | 0.5.0, Issue-135 |
+| The Dynamic plan of the conformance suite in continuous integration, and a registered confidential client without PKCE, which most of its tests need: a registered client always uses PKCE | 0.5.0, Issue-137 |
+| `contacts`, `software_id` and `software_version` of a registration, and members with a language tag: ignored, and left out of the answer | When a client needs them |
+| Setting a client's application type and addresses a person is shown through the administration interface, the command-line tool or the console: only a registration sets them, and the administration interface shows them | With the console pages of clients |
+| Counting refused registrations against an address: only the clients stored count | With the other limits per address, before any deployment behind a load balancer |
 | The settings of client registration and initial access tokens in the admin console: they are set through the administration interface and the command-line tool | With the console pages of clients |
 | An initial access token with a policy of its own, narrower than the tenant's, and a policy of its own for open registration | When a tenant needs it ([Decision 0075](../../decisions/0075-the-registration-settings-of-a-tenant.md)) |
 | Limits of the policy per member of an address, such as hosts for redirect addresses apart from hosts for `jwks_uri` | When a tenant needs it ([Decision 0075](../../decisions/0075-the-registration-settings-of-a-tenant.md)) |
@@ -2276,7 +2433,7 @@ Administrators reach them through [the administration interface](../../api/admin
 | Prefix matches of SPIFFE identifiers, `spiffe://…/*`, which the draft allows | Not planned for 0.4.0 ([Decision 0029](../../decisions/0029-hodor-in-a-service-mesh.md#alternatives-considered)) |
 | A JWT-SVID or a forwarded identity without `client_id`, its SPIFFE identifier taken as the client identifier | Not planned: Hodor's client identifiers are never SPIFFE identifiers ([Decision 0055](../../decisions/0055-spiffe-jwt-client-authentication.md)) |
 | JWT-SVIDs signed with `ES384`, `ES512`, `RS384`, `RS512`, `PS384` or `PS512`, which a bundle may hold keys for | When the kernel's signature checking covers them |
-| The client metadata `spiffe_id` and `spiffe_bundle_endpoint` of a client that registers itself or publishes a Client ID Metadata Document, and a bundle a client brings | With dynamic client registration |
+| The client metadata `spiffe_id` and `spiffe_bundle_endpoint` of a client that registers itself or publishes a Client ID Metadata Document, and a bundle a client brings: a registration never binds a workload's identity, and ignores both | Not scheduled |
 | A client of an agent proving who it is with a JWT-SVID | When an agent needs it ([Decision 0055](../../decisions/0055-spiffe-jwt-client-authentication.md)) |
 | `tls_client_auth` bound to a subject's distinguished name, an IP address or an email address, which RFC 8705 also names | When a client needs one |
 | Intermediates that constrain URIs; an authority of the bundle that does is read ([Decision 0062](../../decisions/0062-the-certificate-authority-of-a-tenant.md)) | Not scheduled: the intermediates the tenant's authority signs carry none ([Decision 0071](../../decisions/0071-signing-intermediates.md)) |
