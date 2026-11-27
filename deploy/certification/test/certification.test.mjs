@@ -213,6 +213,7 @@ describe("the certification script, as plans.json stands", () => {
       "oidcc-basic-certification-test-plan",
       "oidcc-config-certification-test-plan",
       "oidcc-formpost-basic-certification-test-plan",
+      "oidcc-frontchannel-rp-initiated-logout-certification-test-plan code",
       "oidcc-rp-initiated-logout-certification-test-plan code",
     ]);
   });
@@ -275,11 +276,13 @@ describe("the certification script, as plans.json stands", () => {
     const names = Object.values(hodor.tenants.certification.clients).map((client) => client.name).sort();
     assert.deepEqual(names, [
       "Client that sends its secret in the form", "Client that signs out", "Client told through the back channel",
-      "First client", "Second client",
+      "Client told through the front channel", "First client", "Second client",
     ]);
     const flags = hodor.calls.flat();
     assert.equal(flags.includes("--response-type"), false);
-    assert.equal(flags.includes("--frontchannel-logout-uri"), false);
+    const frontchannel = Object.values(hodor.tenants.certification.clients)
+      .find((client) => client.frontchannelLogoutUri !== undefined);
+    assert.equal(frontchannel.frontchannelLogoutUri, `${SUITE}/test/a/${printed.alias}/frontchannel_logout`);
     const backchannel = Object.values(hodor.tenants.certification.clients)
       .find((client) => client.backchannelLogoutUri !== undefined);
     assert.equal(backchannel.backchannelLogoutUri, `${SUITE}/test/a/${printed.alias}/backchannel_logout`);

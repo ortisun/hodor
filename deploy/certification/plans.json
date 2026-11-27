@@ -15,7 +15,7 @@
       "clientArguments": []
     },
     "front-channel-logout": {
-      "built": false,
+      "built": true,
       "issue": "Issue-139",
       "pullRequest": 184,
       "what": "front-channel logout"

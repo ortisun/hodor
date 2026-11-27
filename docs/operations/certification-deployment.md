@@ -74,7 +74,7 @@ The script reads `deploy/certification/.env` for `HODOR_PUBLIC_URL`, checks that
     - two that send their secret by `client_secret_basic` and one by `client_secret_post`, the three clients of the Basic plan, whose ID tokens are signed with `ES256`, `RS256` and `PS256`;
     - one for the RP-Initiated plan, with no logout address of its own;
     - one for the Back-Channel plan, with the suite's `…/backchannel_logout` as its back-channel logout address, `sid` required;
-    - one for the Front-Channel plan, with `…/frontchannel_logout`, once front-channel logout is built.
+    - one for the Front-Channel plan, with `…/frontchannel_logout`.
 - **The tenant `certification-session`**, for the Session plan alone, once session management is built: a tenant turns it on for all its clients, and the other plans need not see it.
 - **The tenant `certification-dynamic`**, for the Dynamic and 3rd Party-Init plans, once the registration endpoint is built: client registration turned on, open, for an application of registered clients that is never first party, and only for addresses on the suite's host.
 - **In each tenant, the person the owner signs in as**, `certification@example.com` unless `CERTIFICATION_PERSON_EMAIL` says otherwise, made by an administrator through the administration interface and given every standard claim, so that the tests of the scopes find each claim they want. The script chooses a long random password and sets it through recovery, reading the link from the mail server.
@@ -144,7 +144,7 @@ The plans of 0.5.0, as [the target](conformance.md#the-target) names them, with 
 | Form Post OP | `oidcc-formpost-implicit-certification-test-plan`, `oidcc-formpost-hybrid-certification-test-plan` | As Basic | The same | Wait for Issues 127 and 128 |
 | RP-Initiated OP | `oidcc-rp-initiated-logout-certification-test-plan`, once per response type | `client_registration=static_client`, `response_type` | `certification`: the RP-Initiated client | `code` yes; the others wait for Issues 127 and 128 |
 | Back-Channel OP | `oidcc-backchannel-rp-initiated-logout-certification-test-plan`, once per response type | As RP-Initiated | `certification`: the Back-Channel client | `code` yes; the others wait for Issues 127 and 128 |
-| Front-Channel OP | `oidcc-frontchannel-rp-initiated-logout-certification-test-plan`, once per response type | As RP-Initiated | `certification`: the Front-Channel client | Waits for Issue-139 |
+| Front-Channel OP | `oidcc-frontchannel-rp-initiated-logout-certification-test-plan`, once per response type | As RP-Initiated | `certification`: the Front-Channel client | `code` yes; the others wait for Issues 127 and 128 |
 | Session OP | `oidcc-session-management-certification-test-plan`, once per response type | As RP-Initiated | `certification-session` | Waits for Issue-140 |
 | Dynamic OP | `oidcc-dynamic-certification-test-plan` | `response_type=code`; the plan sets the rest | `certification-dynamic`: the suite registers its own | Waits for Issues 127, 128, 134 and 137 |
 | 3rd Party-Init OP | `oidcc-3rdparty-init-login-certification-test-plan` | Set by the plan | `certification-dynamic` | Waits for Issue-134 |
