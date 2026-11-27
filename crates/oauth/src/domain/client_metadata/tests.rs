@@ -276,7 +276,8 @@ fn response_types_are_kept_by_the_rules_of_every_client() {
         implicit.settings.grant_types,
         vec![GrantType::AuthorizationCode]
     );
-    // A type that returns an access token is not offered yet.
+    // A type that returns an access token needs an administrator's mark,
+    // which a registered client never has (Decision 0083).
     for refused in ["id_token token", "code token", "token", "anything"] {
         assert_eq!(
             code(read(with("response_types", json!([refused])))),

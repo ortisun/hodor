@@ -724,7 +724,7 @@ fn the_document_and_the_routes_list_the_same_operations_and_permissions() {
         })
         .collect();
     assert_eq!(documented, served);
-    assert_eq!(served.len(), 163);
+    assert_eq!(served.len(), 164);
 
     // Every operation says how it refuses.
     let document: serde_json::Value = serde_json::from_str(ADMIN_OPENAPI).expect("valid JSON");
@@ -7273,4 +7273,188 @@ async fn a_client_registers_the_response_types_it_is_answered_with() {
         .await;
     assert_eq!(lost.status, StatusCode::OK, "{}", lost.body);
     assert_eq!(lost.body["response_types"], serde_json::json!([]));
+}
+
+#[tokio::test]
+async fn an_administrator_marks_a_client_for_access_tokens_through_the_browser_and_the_posture_finds_it()
+ {
+    let world = world().await;
+    let application = new_application(&world, "Billing", true).await;
+    let path = format!("/applications/{application}/clients");
+    let findings = || world.as_administrator(Method::GET, "/posture/findings", None);
+    let none = findings().await;
+    assert_eq!(none.status, StatusCode::OK, "{}", none.body);
+    assert_eq!(none.body["items"], serde_json::json!([]));
+
+    // A type that returns an access token needs the mark.
+    let mut unmarked = web_client();
+    unmarked["response_types"] = serde_json::json!(["code", "code id_token token"]);
+    let refused = world
+        .as_administrator(Method::POST, &path, Some(unmarked.clone()))
+        .await;
+    assert_eq!(refused.status, StatusCode::UNPROCESSABLE_ENTITY);
+    assert_eq!(refused.code(), "oauth.client_response_types_invalid");
+
+    let mut marked = unmarked;
+    marked["browser_access_tokens"] = serde_json::json!({ "scopes": ["invoices:read"] });
+    let created = world
+        .as_administrator(Method::POST, &path, Some(marked.clone()))
+        .await;
+    assert_eq!(created.status, StatusCode::CREATED, "{}", created.body);
+    assert_eq!(
+        created.body["response_types"],
+        serde_json::json!(["code", "code id_token token"])
+    );
+    let mark = &created.body["browser_access_tokens"];
+    assert_eq!(mark["scopes"], serde_json::json!(["invoices:read"]));
+    assert_eq!(
+        mark["marked_by"],
+        serde_json::json!({ "kind": "user", "id": world.administrator.to_string() }),
+        "recorded with who set it"
+    );
+    let marked_at = mark["marked_at"].as_str().expect("when").to_owned();
+    let client = created.body["id"].as_str().expect("id").to_owned();
+
+    // The posture finds it, for an auditor too.
+    let found = findings().await;
+    assert_eq!(found.status, StatusCode::OK);
+    let items = found.body["items"].as_array().expect("items");
+    assert_eq!(items.len(), 1);
+    assert_eq!(items[0]["check"], "client_marked_for_browser_access_tokens");
+    assert_eq!(items[0]["severity"], "medium");
+    assert_eq!(items[0]["object"]["type"], "client");
+    assert_eq!(items[0]["object"]["id"], client);
+    assert_eq!(items[0]["object"]["application_id"], application);
+    assert_eq!(
+        items[0]["detail"]["scopes"],
+        serde_json::json!(["invoices:read"])
+    );
+    assert_eq!(items[0]["set_by"], mark["marked_by"]);
+    assert_eq!(items[0]["since"], marked_at);
+    let acme = world.acme.clone();
+    let (_, auditor) = world
+        .person(&acme, "auditor@example.com", &[Role::TenantAuditor])
+        .await;
+    let read = world
+        .send(
+            Method::GET,
+            "/t/acme/api/v1/admin/posture/findings",
+            Some(&format!("Bearer {auditor}")),
+            None,
+        )
+        .await;
+    assert_eq!(read.status, StatusCode::OK);
+    assert_eq!(read.body["items"], found.body["items"]);
+
+    // Refused marks: one asking for a refresh token, one on a client that
+    // never comes to the authorization endpoint, one whose tokens are
+    // bound, and one that names who set it.
+    let with_mark = |mut body: serde_json::Value, mark: serde_json::Value| {
+        body["browser_access_tokens"] = mark;
+        body
+    };
+    let mut machine = web_client();
+    machine["grant_types"] = serde_json::json!(["client_credentials"]);
+    machine
+        .as_object_mut()
+        .expect("object")
+        .remove("redirect_uris");
+    let mut bound = web_client();
+    bound["tls_client_certificate_bound_access_tokens"] = serde_json::json!(true);
+    for (what, body) in [
+        (
+            "offline_access",
+            with_mark(
+                web_client(),
+                serde_json::json!({ "scopes": ["offline_access"] }),
+            ),
+        ),
+        (
+            "a client of client credentials",
+            with_mark(machine, serde_json::json!({ "scopes": [] })),
+        ),
+        (
+            "bound access tokens",
+            with_mark(bound, serde_json::json!({})),
+        ),
+    ] {
+        let refused = world
+            .as_administrator(Method::POST, &path, Some(body))
+            .await;
+        assert_eq!(refused.status, StatusCode::UNPROCESSABLE_ENTITY, "{what}");
+        assert_eq!(
+            refused.code(),
+            "oauth.client_browser_access_tokens_invalid",
+            "{what}"
+        );
+    }
+    let named = world
+        .as_administrator(
+            Method::POST,
+            &path,
+            Some(with_mark(
+                web_client(),
+                serde_json::json!({ "scopes": [], "marked_by": { "kind": "system" } }),
+            )),
+        )
+        .await;
+    assert!(named.status.is_client_error(), "{}", named.body);
+
+    // A change that keeps the scopes keeps who set the mark and when.
+    world.clock.advance(Duration::minutes(5));
+    let renamed = world
+        .as_administrator(
+            Method::PATCH,
+            &format!("/clients/{client}"),
+            Some(serde_json::json!({
+                "name": "Billing in the browser",
+                "browser_access_tokens": { "scopes": ["invoices:read"] }
+            })),
+        )
+        .await;
+    assert_eq!(renamed.status, StatusCode::OK, "{}", renamed.body);
+    assert_eq!(
+        renamed.body["browser_access_tokens"]["marked_at"],
+        marked_at
+    );
+
+    // Removing it drops the type that needed it, and the finding.
+    let removed = world
+        .as_administrator(
+            Method::PATCH,
+            &format!("/clients/{client}"),
+            Some(serde_json::json!({ "browser_access_tokens": null })),
+        )
+        .await;
+    assert_eq!(removed.status, StatusCode::OK, "{}", removed.body);
+    assert_eq!(
+        removed.body["browser_access_tokens"],
+        serde_json::Value::Null
+    );
+    assert_eq!(removed.body["response_types"], serde_json::json!(["code"]));
+    assert_eq!(findings().await.body["items"], serde_json::json!([]));
+
+    // Globex's posture never names Acme's client.
+    let again = world
+        .as_administrator(Method::POST, &path, Some(marked))
+        .await;
+    assert_eq!(again.status, StatusCode::CREATED);
+    let globex = world.globex.clone();
+    let (_, globex_administrator) = world
+        .person(
+            &globex,
+            "admin@globex.example.com",
+            &[Role::TenantAdministrator],
+        )
+        .await;
+    let theirs = world
+        .send(
+            Method::GET,
+            "/t/globex/api/v1/admin/posture/findings",
+            Some(&format!("Bearer {globex_administrator}")),
+            None,
+        )
+        .await;
+    assert_eq!(theirs.status, StatusCode::OK, "{}", theirs.body);
+    assert_eq!(theirs.body["items"], serde_json::json!([]));
 }

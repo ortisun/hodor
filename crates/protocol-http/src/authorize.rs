@@ -285,15 +285,26 @@ async fn issue(
         Err(error) => return Problem::from(error).into_response(),
     };
     let issuer = issuer(state, slug);
-    // An ID token through the browser needs the tenant's keys: without
-    // them, nothing is made for a request that asks for one.
-    let signer = match (request.response_type.returns_id_token(), &state.id_tokens) {
+    let kind = request.response_type;
+    // A token through the browser needs the tenant's keys: without them,
+    // nothing is made for a request that asks for one.
+    let signer = match (
+        kind.returns_id_token() || kind.returns_access_token(),
+        &state.id_tokens,
+    ) {
         (true, None) => {
-            let error = error_for(request, "server_error", "ID tokens cannot be signed here");
+            let error = error_for(request, "server_error", "tokens cannot be signed here");
             return redirect_error(&error, &issuer);
         }
         (_, signer) => signer,
     };
+    // A request kept while the person signed in is answered only if the
+    // client is still marked as it was: nothing is made otherwise.
+    match state.authorization.still_answerable(tenant, request).await {
+        Ok(None) => {}
+        Ok(Some(error)) => return redirect_error(&error, &issuer),
+        Err(error) => return Problem::from(error).into_response(),
+    }
     let answer = match state
         .authorization
         .answer(tenant, request, person, &consented, caller)
@@ -303,9 +314,41 @@ async fn issue(
         Err(error) => return Problem::from(error).into_response(),
     };
     let code = answer.code.as_ref().map(|code| code.expose().to_owned());
+    let access_token = match (signer, &answer.grant) {
+        (Some(signer), Some(grant)) if kind.returns_access_token() => match signer
+            .browser_access_token(
+                tenant,
+                &issuer,
+                request,
+                grant,
+                person,
+                caller.correlation_id,
+            )
+            .await
+        {
+            Ok(Ok(token)) => Some(token),
+            Ok(Err(refusal)) => {
+                tracing::error!(reason = refusal.reason, "no access token was signed");
+                let error = error_for(request, refusal.error, refusal.description);
+                return redirect_error(&error, &issuer);
+            }
+            Err(error) => return Problem::from(error).into_response(),
+        },
+        _ => None,
+    };
     let id_token = match (signer, &answer.grant) {
-        (Some(signer), Some(grant)) if request.response_type.returns_id_token() => match signer
-            .browser_id_token(tenant, &issuer, request, grant, person, code.as_deref())
+        (Some(signer), Some(grant)) if kind.returns_id_token() => match signer
+            .browser_id_token(
+                tenant,
+                &issuer,
+                request,
+                grant,
+                person,
+                code.as_deref(),
+                access_token
+                    .as_ref()
+                    .map(|token| token.access_token.expose().as_str()),
+            )
             .await
         {
             Ok(Ok(token)) => Some(token),
@@ -321,6 +364,16 @@ async fn issue(
     let mut parameters = Vec::new();
     if let Some(code) = &code {
         parameters.push(("code", code.as_str()));
+    }
+    // The scope is always written: it may differ from what was asked.
+    let expires_in = access_token
+        .as_ref()
+        .map(|token| token.expires_in.to_string());
+    if let (Some(token), Some(expires_in)) = (&access_token, &expires_in) {
+        parameters.push(("access_token", token.access_token.expose().as_str()));
+        parameters.push(("token_type", "Bearer"));
+        parameters.push(("expires_in", expires_in));
+        parameters.push(("scope", &token.scope));
     }
     if let Some(token) = &id_token {
         parameters.push(("id_token", token.expose().as_str()));

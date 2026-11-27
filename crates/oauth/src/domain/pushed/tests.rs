@@ -469,7 +469,7 @@ fn a_pushed_request_is_checked_at_once_and_answered_as_json() {
     );
     assert_eq!(
         refused(with("response_type", "token"), &setting.client),
-        "unsupported_response_type"
+        "unauthorized_client"
     );
     assert_eq!(
         refused(with("scope", "openid write"), &setting.client),
@@ -644,6 +644,9 @@ fn a_pushed_request_keeps_its_response_type_and_the_fragment() {
     let mut setting = setting();
     let mut settings = setting.client.snapshot().settings.clone();
     settings.response_types = crate::domain::response::ResponseType::ALL.to_vec();
+    settings.browser_access_tokens = Some(
+        crate::domain::browser_access::BrowserAccessTokens::asked(Vec::new()),
+    );
     setting
         .client
         .change(settings, MOMENT)

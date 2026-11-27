@@ -283,6 +283,22 @@ impl ClientStore for InMemoryClients {
         Ok(found)
     }
 
+    async fn marked_for_browser_access_tokens(
+        &self,
+        uow: &mut dyn UnitOfWork,
+    ) -> Result<Vec<Client>, DomainError> {
+        let tenant = uow.tenant().tenant_id();
+        let mut found: Vec<Client> = lock(&self.rows)
+            .iter()
+            .filter(|((owner, _), client)| {
+                *owner == tenant && client.browser_access_tokens().is_some()
+            })
+            .map(|(_, client)| client.clone())
+            .collect();
+        found.sort_by_key(|client| (client.snapshot().created_at, client.id()));
+        Ok(found)
+    }
+
     async fn list_for_application(
         &self,
         uow: &mut dyn UnitOfWork,
@@ -619,6 +635,7 @@ pub async fn run_contract(ports: Ports<'_>) {
     applications_are_stored_and_listed_in_their_tenant(ports).await;
     a_stale_application_is_not_stored(ports).await;
     a_client_is_stored_with_its_secrets_and_keys(ports).await;
+    a_marked_client_is_stored_with_its_mark_and_found_in_its_tenant(ports).await;
     a_client_change_replaces_its_secrets_and_keys(ports).await;
     a_client_belongs_to_an_application_of_its_tenant(ports).await;
     a_stale_client_is_not_stored(ports).await;
@@ -766,6 +783,84 @@ async fn a_client_is_stored_with_its_secrets_and_keys(ports: Ports<'_>) {
             .code(),
         "oauth.client_modified_concurrently"
     );
+}
+
+async fn a_marked_client_is_stored_with_its_mark_and_found_in_its_tenant(ports: Ports<'_>) {
+    use crate::api::{BrowserAccessTokens, ResponseType};
+    let tenant = tenant();
+    let owner = application("Payroll", MOMENT);
+    store_application(ports, &tenant, &owner).await;
+    let plain = client(owner.id(), MOMENT);
+    let mut marked = client(owner.id(), MOMENT + Duration::minutes(1));
+    let mut settings = marked.snapshot().settings.clone();
+    settings.response_types = vec![ResponseType::Code, ResponseType::CodeIdTokenToken];
+    // A marked client's tokens are bound to nothing.
+    settings.certificate_bound_access_tokens = false;
+    settings.browser_access_tokens = Some(
+        BrowserAccessTokens::asked(vec!["invoices:read".to_owned(), "groups".to_owned()]).stamped(
+            None,
+            hodor_kernel::Actor::User(hodor_kernel::UserId::generate()),
+            MOMENT + Duration::seconds(90),
+        ),
+    );
+    marked.change(settings, MOMENT).expect("marked");
+    store_client(ports, &tenant, &plain).await;
+    store_client(ports, &tenant, &marked).await;
+
+    assert_eq!(
+        load_client(ports, &tenant, marked.id()).await,
+        Some(marked.clone()),
+        "the mark reads back with its scopes in order, who set it and when"
+    );
+    let mut uow = ports.units_of_work.begin(&tenant).await.expect("begin");
+    assert_eq!(
+        ports
+            .clients
+            .marked_for_browser_access_tokens(uow.as_mut())
+            .await
+            .expect("list"),
+        vec![marked.clone()],
+        "only the marked client"
+    );
+    drop(uow);
+
+    let elsewhere = self::tenant();
+    let mut uow = ports.units_of_work.begin(&elsewhere).await.expect("begin");
+    assert!(
+        ports
+            .clients
+            .marked_for_browser_access_tokens(uow.as_mut())
+            .await
+            .expect("list")
+            .is_empty(),
+        "another tenant finds none"
+    );
+    drop(uow);
+
+    // Removing the mark, with the type it allowed, removes it from the
+    // list.
+    let mut unmarked = load_client(ports, &tenant, marked.id())
+        .await
+        .expect("stored");
+    let mut settings = unmarked.snapshot().settings.clone();
+    settings.browser_access_tokens = None;
+    settings.response_types = vec![ResponseType::Code];
+    unmarked.change(settings, MOMENT).expect("unmarked");
+    let mut uow = ports.units_of_work.begin(&tenant).await.expect("begin");
+    ports
+        .clients
+        .update(uow.as_mut(), &unmarked)
+        .await
+        .expect("update");
+    assert!(
+        ports
+            .clients
+            .marked_for_browser_access_tokens(uow.as_mut())
+            .await
+            .expect("list")
+            .is_empty()
+    );
+    uow.commit().await.expect("commit");
 }
 
 async fn a_client_change_replaces_its_secrets_and_keys(ports: Ports<'_>) {

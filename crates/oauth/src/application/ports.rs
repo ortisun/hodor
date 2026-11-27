@@ -127,6 +127,17 @@ pub trait ClientStore: Send + Sync {
         application_id: ApplicationId,
     ) -> Result<Vec<Client>, DomainError>;
 
+    /// The clients of the tenant marked for access tokens through the
+    /// browser, oldest first, enabled or not.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if storage fails.
+    async fn marked_for_browser_access_tokens(
+        &self,
+        uow: &mut dyn UnitOfWork,
+    ) -> Result<Vec<Client>, DomainError>;
+
     /// How many clients an application holds, whoever made them.
     ///
     /// # Errors

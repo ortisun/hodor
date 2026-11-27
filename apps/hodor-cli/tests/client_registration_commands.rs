@@ -130,8 +130,8 @@ async fn an_operator_turns_registration_on_and_hands_out_initial_access_tokens()
         ),
         "oauth.client_registration_policy_invalid",
     );
-    // Only a response type Hodor answers may be allowed: not yet one that
-    // returns an access token (Issue-128).
+    // Never one that returns an access token, which needs an
+    // administrator's mark (Decision 0083).
     refused(
         &run(
             &database,

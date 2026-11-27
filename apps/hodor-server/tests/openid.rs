@@ -365,14 +365,23 @@ async fn the_discovery_document_names_what_answers() {
     assert_eq!(document["request_parameter_supported"], true);
     // The authorization endpoint answers in the query, in the fragment and
     // with the page of `form_post`, with a code, an ID token, both, or
-    // nothing.
+    // nothing, and for a marked client with an access token beside them.
     assert_eq!(
         document["response_modes_supported"],
         serde_json::json!(["query", "fragment", "form_post"])
     );
     assert_eq!(
         document["response_types_supported"],
-        serde_json::json!(["code", "id_token", "code id_token", "none"])
+        serde_json::json!([
+            "code",
+            "id_token",
+            "code id_token",
+            "none",
+            "token",
+            "id_token token",
+            "code token",
+            "code id_token token"
+        ])
     );
     for scope in ["groups", "address", "phone"] {
         assert!(

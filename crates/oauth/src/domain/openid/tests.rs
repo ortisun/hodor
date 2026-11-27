@@ -607,7 +607,16 @@ fn discovery_names_only_what_is_built() {
     assert_eq!(document["grant_types_supported"], grants);
     assert_eq!(
         document["response_types_supported"],
-        json!(["code", "id_token", "code id_token", "none"])
+        json!([
+            "code",
+            "id_token",
+            "code id_token",
+            "none",
+            "token",
+            "id_token token",
+            "code token",
+            "code id_token token"
+        ])
     );
     assert_eq!(
         document["response_modes_supported"],

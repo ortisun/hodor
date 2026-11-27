@@ -9,9 +9,9 @@ use crate::application::ports::{
 };
 use crate::application::userinfo::published_keys;
 use crate::domain::authorization::{
-    AuthorizationCode, AuthorizationParameters, AuthorizationRefusal, AuthorizationRequest,
-    BrowserSecret, CodeHash, CodePresentation, CodeRefusal, CodeValue, Grant, PendingAuthorization,
-    PendingAuthorizationId, SignedInPerson, check_request, trusted_client,
+    AuthorizationCode, AuthorizationError, AuthorizationParameters, AuthorizationRefusal,
+    AuthorizationRequest, BrowserSecret, CodeHash, CodePresentation, CodeRefusal, CodeValue, Grant,
+    PendingAuthorization, PendingAuthorizationId, SignedInPerson, check_request, trusted_client,
 };
 use crate::domain::client::Client;
 use crate::domain::consent::ConsentWait;
@@ -704,6 +704,34 @@ impl AuthorizationCodeService {
                 "no code was issued for the request",
             )
         })
+    }
+
+    /// Whether `request`, checked when it arrived, may still be answered to
+    /// its client as the client is now: for a type that returns an access
+    /// token, the client must still have the type and the mark, and the
+    /// mark still allow every scope. The error to send back, if not; a
+    /// client that is gone is the token's to refuse.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if storage fails.
+    pub async fn still_answerable(
+        &self,
+        tenant: &TenantContext,
+        request: &AuthorizationRequest,
+    ) -> Result<Option<AuthorizationError>, DomainError> {
+        if !request.response_type.returns_access_token() {
+            return Ok(None);
+        }
+        let mut uow = self.ports.units_of_work.begin(tenant).await?;
+        let client = self
+            .ports
+            .clients
+            .get(uow.as_mut(), request.client_id)
+            .await?;
+        drop(uow);
+        Ok(client
+            .and_then(|client| crate::domain::authorization::still_answerable(&client, request)))
     }
 
     /// Makes what the request's response type answers with, for the person

@@ -10,9 +10,10 @@ use crate::application::ports::{
     AccessTokenRecordStore, ApplicationStore, CertificateCheck, ClientAssertionStore, ClientStore,
     GrantStore, PersonMemberships, PersonStanding, RefreshTokenStore, ResourceServerStore,
 };
-use crate::domain::authorization::{AuthorizationRequest, Grant, SignedInPerson};
+use crate::domain::authorization::{AuthorizationRequest, Grant, SignedInPerson, still_answerable};
 use crate::domain::authorization::{CodePresentation, GrantStatus};
 use crate::domain::binding::{CONFIRMATION_CLAIM, CertificateThumbprint};
+use crate::domain::browser_access::{browser_access_token_lifetime, browser_access_token_scopes};
 use crate::domain::claim_mapper::{ClaimTarget, add_mapped_claims};
 use crate::domain::claims_parameter::add_asked_claims;
 use crate::domain::client::{
@@ -148,6 +149,26 @@ impl fmt::Debug for IssuedTokens {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("IssuedTokens")
             .field("token_type", &self.token_type)
+            .field("expires_in", &self.expires_in)
+            .field("scope", &self.scope)
+            .finish_non_exhaustive()
+    }
+}
+
+/// The access token the authorization endpoint answers a marked client
+/// with, through the browser.
+pub struct BrowserAccessToken {
+    /// The token.
+    pub access_token: Secret<String>,
+    /// How many seconds it lives: five minutes at most.
+    pub expires_in: i64,
+    /// Its scopes, separated by spaces.
+    pub scope: String,
+}
+
+impl fmt::Debug for BrowserAccessToken {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("BrowserAccessToken")
             .field("expires_in", &self.expires_in)
             .field("scope", &self.scope)
             .finish_non_exhaustive()
@@ -724,10 +745,144 @@ impl TokenService {
         })
     }
 
+    /// Signs the access token that comes through the browser with the
+    /// answer to `request`, a request for a type that returns one, made by
+    /// `person` under `grant`, for a client still marked for it: the
+    /// access token of a code, with the request's scopes but
+    /// `offline_access`, living five minutes at most and never bound to a
+    /// certificate. It is recorded in the register of access tokens with
+    /// its grant, and with `oauth.browser_access_token_issued`. Specified
+    /// in `docs/architecture/contexts/oauth.md`, "The access token through
+    /// the browser".
+    ///
+    /// # Errors
+    ///
+    /// The outer error is a failure of storage or of signing; the inner
+    /// one a refusal: `unauthorized_client` or `invalid_scope` when the
+    /// client lost its mark, the type or a scope since the request was
+    /// checked, `server_error` when the client is gone or nothing can
+    /// sign.
+    pub async fn browser_access_token(
+        &self,
+        tenant: &TenantContext,
+        issuer: &str,
+        request: &AuthorizationRequest,
+        grant: &Grant,
+        person: &SignedInPerson,
+        correlation_id: CorrelationId,
+    ) -> Result<Result<BrowserAccessToken, TokenError>, DomainError> {
+        let mut uow = self.ports.units_of_work.begin(tenant).await?;
+        let client = self
+            .ports
+            .clients
+            .get(uow.as_mut(), grant.client_id)
+            .await?;
+        drop(uow);
+        let Some(client) = client else {
+            return Ok(Err(TokenError::server_error("the client is gone")));
+        };
+        if !request.response_type.returns_access_token() {
+            return Ok(Err(TokenError::server_error(
+                "the response type returns no access token",
+            )));
+        }
+        if let Some(refused) = still_answerable(&client, request) {
+            return Ok(Err(TokenError {
+                error: refused.error,
+                description: refused.description,
+                reason: "the client's mark changed since the request was checked",
+            }));
+        }
+        let scopes = browser_access_token_scopes(&grant.scopes);
+        let lifetime =
+            browser_access_token_lifetime(client.snapshot().settings.token_policy.access_token);
+        let known_as = subject_for(self.pairwise.as_ref(), tenant, &client, person.user_id).await?;
+        let subject = TokenSubject {
+            subject: known_as,
+            groups: self.groups_for(tenant, person.user_id, &scopes).await?,
+            scopes,
+            audiences: grant.audiences.clone(),
+            signed_in_at: Some(person.signed_in_at),
+            acr: person.acr.clone(),
+            methods: person.methods.clone(),
+            organization: grant.organization,
+            principal_kind: None,
+            act: None,
+            amr: None,
+        };
+        let mapped = self
+            .ports
+            .mapping
+            .read(
+                tenant,
+                MappedToken {
+                    client_id: client.id(),
+                    user_id: person.user_id,
+                    scopes: &subject.scopes,
+                    organization: grant.organization,
+                },
+                &[ClaimTarget::AccessToken],
+            )
+            .await?
+            .of(ClaimTarget::AccessToken);
+        let token_endpoint = format!("{issuer}/oauth2/token");
+        let signed = match self
+            .sign_living(
+                tenant,
+                Issuer {
+                    issuer,
+                    token_endpoint: &token_endpoint,
+                },
+                &client,
+                &subject,
+                lifetime,
+                None,
+                &mapped,
+            )
+            .await?
+        {
+            Ok(signed) => signed,
+            Err(refusal) => return Ok(Err(refusal)),
+        };
+        let caller = Caller {
+            actor: Actor::User(person.user_id),
+            correlation_id,
+        };
+        let mut uow = self.ports.units_of_work.begin(tenant).await?;
+        self.ports
+            .access_tokens
+            .record(
+                uow.as_mut(),
+                &AccessTokenRecord::issued(
+                    signed.token_id.clone(),
+                    client.id(),
+                    Some(grant.id),
+                    None,
+                    signed.expires_at,
+                ),
+            )
+            .await?;
+        let event = OauthEvent::BrowserAccessTokenIssued {
+            client_id: client.id(),
+            grant_id: grant.id,
+            user_id: person.user_id,
+            token_id: signed.token_id.clone(),
+            expires_at: signed.expires_at,
+        };
+        self.record(uow.as_mut(), tenant, caller, &event)?;
+        uow.commit().await?;
+        Ok(Ok(BrowserAccessToken {
+            access_token: Secret::from(signed.token),
+            expires_in: signed.lifetime.whole_seconds(),
+            scope: subject.scopes.join(" "),
+        }))
+    }
+
     /// Signs the ID token that comes through the browser with the answer
-    /// to `request`, a request for `id_token` or `code id_token`, made by
+    /// to `request`, a request for a type that returns one, made by
     /// `person` under `grant`: with `nonce`, `c_hash` of `code` when one
-    /// comes with it, and `s_hash` of the request's `state`. With
+    /// comes with it, `at_hash` of `access_token` when one does, and
+    /// `s_hash` of the request's `state`. With
     /// `id_token`, which issues no access token, it holds the person's
     /// claims of the request's scopes; with either, those `grant` gives the
     /// ID token through the `claims` parameter, then those the client's
@@ -739,6 +894,10 @@ impl TokenService {
     /// The outer error is a failure of storage or of signing; the inner
     /// one a refusal, `server_error` when the client is gone or nothing
     /// can sign.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "each is one part of the ID token; grouping them would only rename them"
+    )]
     pub async fn browser_id_token(
         &self,
         tenant: &TenantContext,
@@ -747,6 +906,7 @@ impl TokenService {
         grant: &Grant,
         person: &SignedInPerson,
         code: Option<&str>,
+        access_token: Option<&str>,
     ) -> Result<Result<Secret<String>, TokenError>, DomainError> {
         let mut uow = self.ports.units_of_work.begin(tenant).await?;
         let client = self
@@ -787,7 +947,7 @@ impl TokenService {
             lifetime,
             self.ports.clock.now(),
             &IdTokenHashes {
-                at_hash: None,
+                at_hash: access_token.map(|token| left_half_hash(token, algorithm, digest)),
                 c_hash: code.map(|code| left_half_hash(code, algorithm, digest)),
                 s_hash: request
                     .state

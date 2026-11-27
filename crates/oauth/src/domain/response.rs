@@ -27,6 +27,18 @@ pub enum ResponseType {
     /// Nothing but `state` and `iss`.
     #[serde(rename = "none")]
     None,
+    /// An access token, and nothing to redeem. Only for a marked client.
+    #[serde(rename = "token")]
+    Token,
+    /// An ID token and an access token. Only for a marked client.
+    #[serde(rename = "id_token token")]
+    IdTokenToken,
+    /// A code and an access token. Only for a marked client.
+    #[serde(rename = "code token")]
+    CodeToken,
+    /// A code, an ID token and an access token. Only for a marked client.
+    #[serde(rename = "code id_token token")]
+    CodeIdTokenToken,
 }
 
 /// How a `response_type` reads.
@@ -34,9 +46,6 @@ pub enum ResponseType {
 pub enum ReadResponseType {
     /// A type Hodor offers.
     Offered(ResponseType),
-    /// A type that returns an access token through the browser: known, and
-    /// not offered (Issue-128). Its default mode is the fragment.
-    ReturnsAccessToken,
     /// Anything else.
     Unknown,
 }
@@ -47,15 +56,24 @@ impl ReadResponseType {
     pub const fn offered(self) -> Option<ResponseType> {
         match self {
             Self::Offered(kind) => Some(kind),
-            Self::ReturnsAccessToken | Self::Unknown => None,
+            Self::Unknown => None,
         }
     }
 }
 
 impl ResponseType {
     /// Every type, in the order a client's are kept and discovery lists
-    /// them.
-    pub const ALL: [Self; 4] = [Self::Code, Self::IdToken, Self::CodeIdToken, Self::None];
+    /// them: those of Issue-127, then those that return an access token.
+    pub const ALL: [Self; 8] = [
+        Self::Code,
+        Self::IdToken,
+        Self::CodeIdToken,
+        Self::None,
+        Self::Token,
+        Self::IdTokenToken,
+        Self::CodeToken,
+        Self::CodeIdTokenToken,
+    ];
 
     /// The name OAuth gives it, which is also the stored name.
     #[must_use]
@@ -65,6 +83,10 @@ impl ResponseType {
             Self::IdToken => "id_token",
             Self::CodeIdToken => "code id_token",
             Self::None => "none",
+            Self::Token => "token",
+            Self::IdTokenToken => "id_token token",
+            Self::CodeToken => "code token",
+            Self::CodeIdTokenToken => "code id_token token",
         }
     }
 
@@ -84,10 +106,10 @@ impl ResponseType {
             ["id_token"] => ReadResponseType::Offered(Self::IdToken),
             ["code", "id_token"] => ReadResponseType::Offered(Self::CodeIdToken),
             ["none"] => ReadResponseType::Offered(Self::None),
-            ["token"]
-            | ["id_token", "token"]
-            | ["code", "token"]
-            | ["code", "id_token", "token"] => ReadResponseType::ReturnsAccessToken,
+            ["token"] => ReadResponseType::Offered(Self::Token),
+            ["id_token", "token"] => ReadResponseType::Offered(Self::IdTokenToken),
+            ["code", "token"] => ReadResponseType::Offered(Self::CodeToken),
+            ["code", "id_token", "token"] => ReadResponseType::Offered(Self::CodeIdTokenToken),
             _ => ReadResponseType::Unknown,
         }
     }
@@ -96,30 +118,40 @@ impl ResponseType {
     ///
     /// # Errors
     ///
-    /// Returns `oauth.client_response_types_invalid` for anything but
-    /// `code`, `id_token`, `code id_token` and `none`.
+    /// Returns `oauth.client_response_types_invalid` for anything but the
+    /// eight types.
     pub fn parse(value: &str) -> Result<Self, DomainError> {
-        match Self::read(value) {
-            ReadResponseType::Offered(kind) => Ok(kind),
-            ReadResponseType::ReturnsAccessToken => Err(response_types_invalid(
-                "a response type that returns an access token is not offered",
-            )),
-            ReadResponseType::Unknown => Err(response_types_invalid(
-                "the response type is not one Hodor knows",
-            )),
-        }
+        Self::read(value)
+            .offered()
+            .ok_or_else(|| response_types_invalid("the response type is not one Hodor knows"))
     }
 
     /// Whether it returns an authorization code.
     #[must_use]
     pub const fn returns_code(self) -> bool {
-        matches!(self, Self::Code | Self::CodeIdToken)
+        matches!(
+            self,
+            Self::Code | Self::CodeIdToken | Self::CodeToken | Self::CodeIdTokenToken
+        )
     }
 
     /// Whether it returns an ID token through the browser.
     #[must_use]
     pub const fn returns_id_token(self) -> bool {
-        matches!(self, Self::IdToken | Self::CodeIdToken)
+        matches!(
+            self,
+            Self::IdToken | Self::CodeIdToken | Self::IdTokenToken | Self::CodeIdTokenToken
+        )
+    }
+
+    /// Whether it returns an access token through the browser, which only
+    /// a marked client may register.
+    #[must_use]
+    pub const fn returns_access_token(self) -> bool {
+        matches!(
+            self,
+            Self::Token | Self::IdTokenToken | Self::CodeToken | Self::CodeIdTokenToken
+        )
     }
 
     /// Whether it makes a grant: every type that signs the person in to
@@ -132,7 +164,7 @@ impl ResponseType {
     /// The mode its answer comes in unless the request names one.
     #[must_use]
     pub const fn default_mode(self) -> ResponseMode {
-        if self.returns_id_token() {
+        if self.returns_id_token() || self.returns_access_token() {
             ResponseMode::Fragment
         } else {
             ResponseMode::Query
@@ -143,7 +175,8 @@ impl ResponseType {
     /// query, and every type may come in the fragment or as a form.
     #[must_use]
     pub const fn allows(self, mode: ResponseMode) -> bool {
-        !(self.returns_id_token() && matches!(mode, ResponseMode::Query))
+        !((self.returns_id_token() || self.returns_access_token())
+            && matches!(mode, ResponseMode::Query))
     }
 }
 
@@ -151,7 +184,9 @@ pub(crate) fn response_types_invalid(reason: &'static str) -> DomainError {
     DomainError::invalid(
         "oauth.client_response_types_invalid",
         "a client with `authorization_code` has at least one response type, of `code`, \
-         `id_token`, `code id_token` and `none`, and a client without it has none",
+         `id_token`, `code id_token`, `none`, and for a client marked for access tokens \
+         through the browser `token`, `id_token token`, `code token` and \
+         `code id_token token`; a client without it has none",
     )
     .with_detail(reason)
 }
@@ -168,16 +203,27 @@ pub(crate) fn same_response_type(one: &str, other: &str) -> bool {
 
 /// The response types of a client after a change that did not name them:
 /// those it had while it keeps `authorization_code`, `code` when it gains
-/// the grant without any, none when it loses it.
+/// the grant without any, none when it loses it; and without the mark for
+/// access tokens through the browser, none of those that return one,
+/// `code` when nothing else remains.
 #[must_use]
-pub fn response_types_kept(current: &[ResponseType], grants: &[GrantType]) -> Vec<ResponseType> {
-    match (
-        grants.contains(&GrantType::AuthorizationCode),
-        current.is_empty(),
-    ) {
-        (false, _) => Vec::new(),
-        (true, true) => vec![ResponseType::Code],
-        (true, false) => current.to_vec(),
+pub fn response_types_kept(
+    current: &[ResponseType],
+    grants: &[GrantType],
+    marked: bool,
+) -> Vec<ResponseType> {
+    if !grants.contains(&GrantType::AuthorizationCode) {
+        return Vec::new();
+    }
+    let kept: Vec<ResponseType> = current
+        .iter()
+        .copied()
+        .filter(|kind| marked || !kind.returns_access_token())
+        .collect();
+    if kept.is_empty() {
+        vec![ResponseType::Code]
+    } else {
+        kept
     }
 }
 
@@ -226,15 +272,11 @@ impl ResponseMode {
 /// The mode an error goes back in, given the `response_type` and the
 /// `response_mode` a request names, as they were given: the mode it names
 /// when Hodor offers it and the type allows it; else the default of the
-/// type when the type can be read, the fragment for a type that returns an
-/// access token; else the query.
+/// type when the type can be read; else the query.
 #[must_use]
 pub fn error_mode(response_type: Option<&str>, response_mode: Option<&str>) -> ResponseMode {
     let default = match response_type.map(ResponseType::read) {
         Some(ReadResponseType::Offered(kind)) => kind.default_mode(),
-        // A type that returns a token defaults to the fragment, as every
-        // such type does, and is never answered in the query.
-        Some(ReadResponseType::ReturnsAccessToken) => ResponseMode::Fragment,
         Some(ReadResponseType::Unknown) | None => ResponseMode::Query,
     };
     match response_mode.and_then(ResponseMode::read) {
@@ -256,6 +298,13 @@ mod tests {
             ("code id_token", ResponseType::CodeIdToken),
             ("id_token code", ResponseType::CodeIdToken),
             ("none", ResponseType::None),
+            ("token", ResponseType::Token),
+            ("id_token token", ResponseType::IdTokenToken),
+            ("token id_token", ResponseType::IdTokenToken),
+            ("code token", ResponseType::CodeToken),
+            ("token code", ResponseType::CodeToken),
+            ("code id_token token", ResponseType::CodeIdTokenToken),
+            ("token code id_token", ResponseType::CodeIdTokenToken),
         ] {
             assert_eq!(ResponseType::read(written), ReadResponseType::Offered(kind));
             assert_eq!(
@@ -271,25 +320,40 @@ mod tests {
         assert!(same_response_type("code", "code"));
         assert!(!same_response_type("code", "code id_token"));
         assert!(same_response_type("token", "token"));
-        assert!(!same_response_type("id_token token", "token id_token"));
+        assert!(same_response_type("id_token token", "token id_token"));
+        assert!(!same_response_type("code token", "code id_token token"));
+        assert!(!same_response_type("device", "Device"));
     }
 
     #[test]
-    fn a_type_that_returns_an_access_token_is_known_and_not_offered() {
-        for written in [
-            "token",
-            "id_token token",
-            "token code",
-            "code token id_token",
-        ] {
-            assert_eq!(
-                ResponseType::read(written),
-                ReadResponseType::ReturnsAccessToken,
-                "{written}"
-            );
-            let error = ResponseType::parse(written).expect_err("not offered");
-            assert_eq!(error.code(), "oauth.client_response_types_invalid");
+    fn four_types_return_an_access_token() {
+        let returning: Vec<ResponseType> = ResponseType::ALL
+            .into_iter()
+            .filter(|kind| kind.returns_access_token())
+            .collect();
+        assert_eq!(
+            returning,
+            [
+                ResponseType::Token,
+                ResponseType::IdTokenToken,
+                ResponseType::CodeToken,
+                ResponseType::CodeIdTokenToken
+            ]
+        );
+        assert!(ResponseType::Token.makes_grant());
+        assert!(!ResponseType::Token.returns_code());
+        assert!(!ResponseType::Token.returns_id_token());
+        assert!(ResponseType::CodeToken.returns_code());
+        assert!(!ResponseType::CodeToken.returns_id_token());
+        assert!(ResponseType::IdTokenToken.returns_id_token());
+        assert!(!ResponseType::IdTokenToken.returns_code());
+        let all = ResponseType::CodeIdTokenToken;
+        assert!(all.returns_code() && all.returns_id_token() && all.returns_access_token());
+        for kind in ResponseType::ALL {
+            assert_eq!(ResponseType::parse(kind.as_str()), Ok(kind));
         }
+        let error = ResponseType::parse("token token").expect_err("unknown");
+        assert_eq!(error.code(), "oauth.client_response_types_invalid");
     }
 
     #[test]
@@ -303,6 +367,9 @@ mod tests {
             "none code",
             "CODE",
             "code id_token none",
+            "none token",
+            "token token",
+            "id_token token none",
             "device_code",
         ] {
             assert_eq!(
@@ -324,6 +391,15 @@ mod tests {
         );
         assert!(!ResponseType::IdToken.allows(ResponseMode::Query));
         assert!(!ResponseType::CodeIdToken.allows(ResponseMode::Query));
+        for kind in [
+            ResponseType::Token,
+            ResponseType::IdTokenToken,
+            ResponseType::CodeToken,
+            ResponseType::CodeIdTokenToken,
+        ] {
+            assert_eq!(kind.default_mode(), ResponseMode::Fragment, "{kind:?}");
+            assert!(!kind.allows(ResponseMode::Query), "{kind:?}");
+        }
         for kind in ResponseType::ALL {
             assert!(kind.allows(ResponseMode::Fragment));
         }
@@ -353,18 +429,34 @@ mod tests {
     fn response_types_follow_the_grant_unless_named() {
         let code = [GrantType::AuthorizationCode];
         assert_eq!(
-            response_types_kept(&[], &code),
+            response_types_kept(&[], &code, false),
             vec![ResponseType::Code],
             "gaining the grant gives code"
         );
         assert_eq!(
-            response_types_kept(&[ResponseType::IdToken], &code),
+            response_types_kept(&[ResponseType::IdToken], &code, false),
             vec![ResponseType::IdToken]
         );
         assert!(
-            response_types_kept(&[ResponseType::IdToken], &[GrantType::ClientCredentials])
-                .is_empty(),
+            response_types_kept(
+                &[ResponseType::IdToken],
+                &[GrantType::ClientCredentials],
+                true
+            )
+            .is_empty(),
             "losing the grant drops them"
+        );
+        // Losing the mark drops the types that return an access token.
+        let marked = [ResponseType::IdToken, ResponseType::IdTokenToken];
+        assert_eq!(response_types_kept(&marked, &code, true), marked);
+        assert_eq!(
+            response_types_kept(&marked, &code, false),
+            [ResponseType::IdToken]
+        );
+        assert_eq!(
+            response_types_kept(&[ResponseType::Token], &code, false),
+            [ResponseType::Code],
+            "code when nothing else remains"
         );
     }
 

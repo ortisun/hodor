@@ -11,8 +11,8 @@ use hodor_kernel::random::testing::FakeDigest;
 use hodor_kernel::{Caller, TenantContext, TenantId, Timestamp};
 use hodor_oauth::api::ClientAssertionStore;
 use hodor_oauth::api::{
-    ApplicationPorts, ApplicationService, ApplicationSettings, ClientSettings, ClientType,
-    CreateClient, GrantType, ResponseType, RotateSecret,
+    ApplicationPorts, ApplicationService, ApplicationSettings, BrowserAccessTokens, ClientSettings,
+    ClientType, CreateClient, GrantType, ResponseType, RotateSecret,
 };
 use hodor_oauth::testing::{
     AssertionStorePorts, AuthorizationStorePorts, ClaimMapperStorePorts, ConsentStorePorts,
@@ -2217,4 +2217,189 @@ async fn a_client_made_before_response_types_answers_code_and_keeps_what_it_is_g
         .await
         .expect("read back");
     assert!(machine.snapshot().settings.response_types.is_empty());
+}
+
+#[tokio::test]
+async fn the_database_keeps_the_mark_for_access_tokens_through_the_browser_to_its_rules() {
+    let database = TestDatabase::start().await;
+    let tenant = sqlx::types::Uuid::now_v7();
+    sqlx::query(
+        "INSERT INTO oauth.application VALUES ($1, $1, 'Billing', false, 'enabled', now(), now(), 0)",
+    )
+    .bind(tenant)
+    .execute(database.owner())
+    .await
+    .expect("application");
+    let insert = |grants: &str, types: &str, bound: &str, mark: &str| {
+        format!(
+            "INSERT INTO oauth.client (tenant_id, id, application_id, name, client_type,
+                 authentication_method, grant_types, redirect_uris, allowed_scopes, require_pkce,
+                 access_token_seconds, id_token_seconds, refresh_token_seconds,
+                 refresh_idle_seconds, status, created_at, updated_at, version, response_types,
+                 certificate_bound_access_tokens, browser_access_tokens)
+             VALUES ($1, gen_random_uuid(), $1, 'Web', 'confidential', 'client_secret_basic',
+                 {grants}, CASE WHEN 'authorization_code' = ANY ({grants})
+                     THEN ARRAY['https://billing.example.com/callback'] ELSE ARRAY[]::text[] END,
+                 ARRAY[]::text[], true, 300, 300, 2592000, 604800, 'enabled', now(), now(), 0,
+                 {types}, {bound}, {mark})"
+        )
+    };
+    let code = "ARRAY['authorization_code']";
+    let mark = r#"'{"scopes": ["invoices:read"], "marked_by": {"kind": "system"}, "marked_at": "2026-11-27T10:00:00Z"}'::jsonb"#;
+    let every = "ARRAY['code', 'id_token', 'code id_token', 'none', 'token', 'id_token token', \
+                 'code token', 'code id_token token']";
+    // Every piece of the statement is a constant of this test.
+    for (case, statement) in [
+        ("every type, marked", insert(code, every, "false", mark)),
+        (
+            "a mark without a type that needs it",
+            insert(code, "ARRAY['code']", "false", mark),
+        ),
+    ] {
+        sqlx::query(sqlx::AssertSqlSafe(statement))
+            .bind(tenant)
+            .execute(database.owner())
+            .await
+            .unwrap_or_else(|error| panic!("{case}: {error}"));
+    }
+    let many: Vec<String> = (0..51).map(|n| format!("\"scope{n}\"")).collect();
+    let too_many = format!(
+        r#"'{{"scopes": [{}], "marked_by": {{"kind": "system"}}, "marked_at": "2026-11-27T10:00:00Z"}}'::jsonb"#,
+        many.join(", ")
+    );
+    for (case, statement) in [
+        (
+            "a type that returns an access token, not marked",
+            insert(code, "ARRAY['code token']", "false", "NULL"),
+        ),
+        (
+            "a mark without the code",
+            insert(
+                "ARRAY['client_credentials']",
+                "ARRAY[]::text[]",
+                "false",
+                mark,
+            ),
+        ),
+        (
+            "a mark with certificate-bound access tokens",
+            insert(code, "ARRAY['token']", "true", mark),
+        ),
+        (
+            "a mark that is not an object",
+            insert(code, "ARRAY['token']", "false", "'[]'::jsonb"),
+        ),
+        (
+            "a mark that does not say who set it",
+            insert(
+                code,
+                "ARRAY['token']",
+                "false",
+                r#"'{"scopes": [], "marked_at": "2026-11-27T10:00:00Z"}'::jsonb"#,
+            ),
+        ),
+        (
+            "a mark of 51 scopes",
+            insert(code, "ARRAY['token']", "false", &too_many),
+        ),
+        (
+            "an unknown type",
+            insert(code, "ARRAY['token token']", "false", mark),
+        ),
+    ] {
+        let refused = sqlx::query(sqlx::AssertSqlSafe(statement))
+            .bind(tenant)
+            .execute(database.owner())
+            .await;
+        assert!(refused.is_err(), "{case}");
+    }
+}
+
+#[tokio::test]
+async fn a_marked_client_keeps_who_set_its_mark_through_the_service() {
+    let database = TestDatabase::start().await;
+    let tenant = TenantContext::assume(TenantId::generate());
+    let clock = Arc::new(FixedClock::at(
+        Timestamp::UNIX_EPOCH + Duration::days(20_000),
+    ));
+    let applications = ApplicationService::new(ApplicationPorts {
+        units_of_work: Arc::new(database.app().clone()),
+        applications: Arc::new(PgApplicationStore),
+        clients: Arc::new(PgClientStore),
+        resource_servers: Arc::new(PgResourceServerStore),
+        digest: Arc::new(FakeDigest),
+        random: Arc::new(DistinctRandom),
+        clock: clock.clone(),
+    });
+    let application = applications
+        .create_application(
+            &tenant,
+            ApplicationSettings {
+                name: "Billing".to_owned(),
+                first_party: false,
+            },
+            Caller::system(),
+        )
+        .await
+        .expect("application");
+    let administrator = hodor_kernel::Actor::User(hodor_kernel::UserId::generate());
+    let mut settings = ClientSettings::new(
+        "Web",
+        ClientType::Public,
+        vec![GrantType::AuthorizationCode],
+        vec!["https://billing.example.com/callback".to_owned()],
+    );
+    settings.response_types = vec![ResponseType::IdTokenToken];
+    settings.browser_access_tokens = Some(BrowserAccessTokens::asked(vec!["groups".to_owned()]));
+    let (marked, _) = applications
+        .create_client(
+            &tenant,
+            CreateClient {
+                application_id: application.id(),
+                client_type: ClientType::Public,
+                settings,
+                secret_lifetime: None,
+            },
+            Caller {
+                actor: administrator,
+                correlation_id: hodor_kernel::CorrelationId::generate(),
+            },
+        )
+        .await
+        .expect("marked");
+    let read = applications
+        .client(&tenant, marked.id())
+        .await
+        .expect("read");
+    let mark = read.browser_access_tokens().expect("a mark");
+    assert_eq!(mark.scopes, ["groups"]);
+    assert_eq!(mark.marked_by, administrator);
+    assert_eq!(mark.marked_at, hodor_kernel::Clock::now(clock.as_ref()));
+    assert_eq!(
+        applications
+            .marked_clients(&tenant)
+            .await
+            .expect("listed")
+            .iter()
+            .map(|client| client.id())
+            .collect::<Vec<_>>(),
+        [marked.id()]
+    );
+
+    // Removed without naming the types: the administration interface drops
+    // them; here the change names `code`, and the list is empty.
+    let mut unmarked = read.snapshot().settings.clone();
+    unmarked.browser_access_tokens = None;
+    unmarked.response_types = vec![ResponseType::Code];
+    applications
+        .change_client(&tenant, marked.id(), unmarked, Caller::system())
+        .await
+        .expect("unmarked");
+    assert!(
+        applications
+            .marked_clients(&tenant)
+            .await
+            .expect("listed")
+            .is_empty()
+    );
 }

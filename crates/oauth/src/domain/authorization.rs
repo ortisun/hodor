@@ -422,6 +422,68 @@ pub fn check_request(
     }
 }
 
+/// Why `client` may not be answered `response_type` for `scopes`, as an
+/// `error` and its description: a type the client did not register, or one
+/// that returns an access token for a client that is not marked for it, is
+/// `unauthorized_client`; a scope the mark does not allow, `invalid_scope`.
+fn browser_access_refusal(
+    client: &Client,
+    response_type: ResponseType,
+    scopes: &[String],
+) -> Option<(&'static str, &'static str)> {
+    if !client
+        .snapshot()
+        .settings
+        .response_types
+        .contains(&response_type)
+    {
+        return Some((
+            "unauthorized_client",
+            "the client may not use this response type",
+        ));
+    }
+    if !response_type.returns_access_token() {
+        return None;
+    }
+    let Some(mark) = client.browser_access_tokens() else {
+        return Some((
+            "unauthorized_client",
+            "the client is not marked for access tokens through the browser",
+        ));
+    };
+    if scopes.iter().any(|scope| !mark.allows(scope)) {
+        return Some((
+            "invalid_scope",
+            "a scope is not one the client's mark for access tokens through the browser allows",
+        ));
+    }
+    None
+}
+
+/// Whether `request`, checked when it arrived and kept while the person
+/// signed in or was asked for consent, may still be answered to `client`
+/// as it is now: for a type that returns an access token, the client must
+/// still have the type and the mark, and the mark still allow every scope.
+/// The error, at the request's redirect address and in its mode, if not.
+#[must_use]
+pub fn still_answerable(
+    client: &Client,
+    request: &AuthorizationRequest,
+) -> Option<AuthorizationError> {
+    if !request.response_type.returns_access_token() {
+        return None;
+    }
+    browser_access_refusal(client, request.response_type, &request.scopes).map(
+        |(error, description)| AuthorizationError {
+            redirect_uri: request.redirect_uri.clone(),
+            error,
+            description,
+            state: request.state.clone(),
+            mode: request.response_mode,
+        },
+    )
+}
+
 /// Checks the parameters of a request, without a request object: those
 /// given, or those a checked request object gave.
 fn check_parameters(
@@ -484,23 +546,15 @@ fn check_parameters(
     let response_type = match parameters.once("response_type").map(ResponseType::read) {
         None => return Err(invalid("response_type is required")),
         Some(ReadResponseType::Offered(kind)) => kind,
-        Some(ReadResponseType::ReturnsAccessToken | ReadResponseType::Unknown) => {
+        Some(ReadResponseType::Unknown) => {
             return Err(refuse(
                 "unsupported_response_type",
-                "the response types are code, id_token, code id_token and none",
+                "the response type is not one of OpenID Connect",
             ));
         }
     };
-    if !client
-        .snapshot()
-        .settings
-        .response_types
-        .contains(&response_type)
-    {
-        return Err(refuse(
-            "unauthorized_client",
-            "the client may not use this response type",
-        ));
+    if let Some((error, description)) = browser_access_refusal(client, response_type, &[]) {
+        return Err(refuse(error, description));
     }
     let response_mode = match parameters.once("response_mode") {
         None => response_type.default_mode(),
@@ -666,6 +720,9 @@ fn check_parameters(
             "invalid_scope",
             "a response type that returns an ID token needs the scope openid",
         ));
+    }
+    if let Some((error, description)) = browser_access_refusal(client, response_type, &scopes) {
+        return Err(refuse(error, description));
     }
     let resources = parameters.all("resource");
     if resources.len() > MAX_RESOURCES {

@@ -206,7 +206,27 @@ fn a_policy_names_only_response_types_hodor_answers() {
             ResponseType::None
         ]
     );
-    for bad in ["token", "id_token token", "Code", "device_code", ""] {
+    // Never those of an access token through the browser (Issue-128): they
+    // need an administrator's mark, which a registered client never has.
+    for kind in [
+        "token",
+        "token id_token",
+        "code token",
+        "code id_token token",
+    ] {
+        let read = RegistrationPolicy::from_json(&serde_json::json!({
+            "response_types": ["code", kind]
+        }))
+        .expect("read");
+        let detail = read
+            .checked()
+            .expect_err("refused")
+            .detail()
+            .unwrap_or_default()
+            .to_owned();
+        assert!(detail.contains("access token"), "{kind}: {detail}");
+    }
+    for bad in ["token token", "Code", "device_code", ""] {
         let detail = RegistrationPolicy::from_json(&serde_json::json!({ "response_types": [bad] }))
             .expect_err("not answered")
             .detail()

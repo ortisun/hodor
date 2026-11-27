@@ -2,6 +2,7 @@
 
 use crate::domain::application::{ApplicationId, Status, stored_data_invalid};
 use crate::domain::backchannel::check_backchannel_logout_uri;
+use crate::domain::browser_access::{BrowserAccessTokens, mark_invalid};
 use crate::domain::consent::{
     DEFAULT_CONSENT_LIFETIME, LONGEST_CONSENT_LIFETIME, SHORTEST_CONSENT_LIFETIME,
 };
@@ -756,6 +757,9 @@ pub struct ClientSettings {
     pub policy_uri: Option<String>,
     /// Its terms of service, its `tos_uri`, shown to a person.
     pub tos_uri: Option<String>,
+    /// The mark an administrator set for it to register the response types
+    /// that return an access token through the browser, or `None`.
+    pub browser_access_tokens: Option<BrowserAccessTokens>,
 }
 
 /// Checks a client's defaults for a sign-in: see
@@ -998,6 +1002,7 @@ impl ClientSettings {
             logo_uri: None,
             policy_uri: None,
             tos_uri: None,
+            browser_access_tokens: None,
         }
     }
 
@@ -1112,6 +1117,29 @@ impl ClientSettings {
                 ));
             }
             _ => {}
+        }
+        let browser_access_tokens = match self.browser_access_tokens {
+            None => None,
+            Some(_) if !has_code => {
+                return Err(mark_invalid(
+                    "only a client with `authorization_code` is marked",
+                ));
+            }
+            Some(_) if self.certificate_bound_access_tokens => {
+                return Err(mark_invalid(
+                    "a client whose access tokens are bound to its certificate is never marked",
+                ));
+            }
+            Some(mark) => Some(mark.checked()?),
+        };
+        if browser_access_tokens.is_none()
+            && response_types
+                .iter()
+                .any(|kind| kind.returns_access_token())
+        {
+            return Err(response_types_invalid(
+                "a response type that returns an access token is only for a client marked for it",
+            ));
         }
         let redirect_uris = without_repeats(self.redirect_uris);
         if redirect_uris.len() > MAX_REDIRECT_URIS {
@@ -1281,6 +1309,7 @@ impl ClientSettings {
             logo_uri: self.logo_uri,
             policy_uri: self.policy_uri,
             tos_uri: self.tos_uri,
+            browser_access_tokens,
         })
     }
 }
@@ -1543,6 +1572,7 @@ impl Client {
             client_type: self.state.client_type.as_str(),
             principal_id: self.state.settings.principal,
         }];
+        events.extend(self.marked_event());
         events.extend(
             self.state
                 .secrets
@@ -1554,6 +1584,27 @@ impl Client {
                 }),
         );
         events
+    }
+
+    /// The event that says the client is marked for access tokens through
+    /// the browser, with the scopes of its mark, if it is.
+    fn marked_event(&self) -> Option<OauthEvent> {
+        self.state
+            .settings
+            .browser_access_tokens
+            .as_ref()
+            .map(|mark| OauthEvent::ClientBrowserAccessTokensMarked {
+                client_id: self.state.id,
+                application_id: self.state.application_id,
+                scopes: mark.scopes.clone(),
+            })
+    }
+
+    /// The mark for access tokens through the browser, if an administrator
+    /// set one.
+    #[must_use]
+    pub const fn browser_access_tokens(&self) -> Option<&BrowserAccessTokens> {
+        self.state.settings.browser_access_tokens.as_ref()
     }
 
     /// Replaces the settings. Moving away from a secret method drops the
@@ -1603,10 +1654,24 @@ impl Client {
                     }),
             );
         }
+        let marked_before = self.state.settings.browser_access_tokens.clone();
         self.state.settings = settings;
         self.state.updated_at = now;
-        events.insert(0, self.changed_event());
-        Ok(events)
+        let mut first = vec![self.changed_event()];
+        match (&marked_before, &self.state.settings.browser_access_tokens) {
+            (None, None) => {}
+            (Some(_), None) => first.push(OauthEvent::ClientBrowserAccessTokensUnmarked {
+                client_id: self.state.id,
+                application_id: self.state.application_id,
+            }),
+            (before, Some(after)) => {
+                if before.as_ref().map(|mark| &mark.scopes) != Some(&after.scopes) {
+                    first.extend(self.marked_event());
+                }
+            }
+        }
+        first.extend(events);
+        Ok(first)
     }
 
     /// Makes a new secret living for `lifetime`. The newest secret that
@@ -2320,8 +2385,11 @@ mod tests {
             } else {
                 web()
             };
-            settings.response_types =
-                crate::domain::response::response_types_kept(&settings.response_types, &grants);
+            settings.response_types = crate::domain::response::response_types_kept(
+                &settings.response_types,
+                &grants,
+                false,
+            );
             settings.grant_types = grants;
             settings.redirect_uris = redirects.into_iter().map(str::to_owned).collect();
             create(client_type, settings).map(|(client, _)| client)
@@ -2390,6 +2458,164 @@ mod tests {
         assert_eq!(tidied.snapshot().settings.redirect_uris, [callback]);
     }
 
+    fn marked(scopes: &[&str]) -> Option<BrowserAccessTokens> {
+        Some(BrowserAccessTokens::asked(
+            scopes.iter().map(|scope| (*scope).to_owned()).collect(),
+        ))
+    }
+
+    #[test]
+    fn only_a_marked_client_registers_a_type_that_returns_an_access_token() {
+        for kind in [
+            ResponseType::Token,
+            ResponseType::IdTokenToken,
+            ResponseType::CodeToken,
+            ResponseType::CodeIdTokenToken,
+        ] {
+            let unmarked = ClientSettings {
+                response_types: vec![ResponseType::Code, kind],
+                ..spa()
+            };
+            assert_eq!(
+                create(ClientType::Public, unmarked)
+                    .expect_err("refused")
+                    .code(),
+                "oauth.client_response_types_invalid",
+                "{kind:?}"
+            );
+            let with_mark = ClientSettings {
+                response_types: vec![ResponseType::Code, kind],
+                browser_access_tokens: marked(&["invoices:read"]),
+                ..spa()
+            };
+            let (client, _) = create(ClientType::Public, with_mark).expect("marked");
+            assert_eq!(
+                client
+                    .browser_access_tokens()
+                    .map(|mark| mark.scopes.clone()),
+                Some(vec!["invoices:read".to_owned()])
+            );
+        }
+        // A mark without such a type is allowed, and still a mark.
+        let (client, _) = create(
+            ClientType::Confidential,
+            ClientSettings {
+                browser_access_tokens: marked(&[]),
+                ..web()
+            },
+        )
+        .expect("marked");
+        assert!(client.browser_access_tokens().is_some());
+    }
+
+    #[test]
+    fn a_mark_needs_the_code_and_tokens_that_are_not_bound() {
+        let machine = ClientSettings {
+            browser_access_tokens: marked(&[]),
+            ..ClientSettings::new(
+                "Nightly export",
+                ClientType::Confidential,
+                vec![GrantType::ClientCredentials],
+                Vec::new(),
+            )
+        };
+        let bound = ClientSettings {
+            browser_access_tokens: marked(&[]),
+            certificate_bound_access_tokens: true,
+            ..web()
+        };
+        let refresh = ClientSettings {
+            browser_access_tokens: marked(&["offline_access"]),
+            ..web()
+        };
+        for (case, settings) in [("machine", machine), ("bound", bound), ("refresh", refresh)] {
+            assert_eq!(
+                create(ClientType::Confidential, settings)
+                    .expect_err(case)
+                    .code(),
+                "oauth.client_browser_access_tokens_invalid",
+                "{case}"
+            );
+        }
+    }
+
+    #[test]
+    fn setting_changing_and_removing_the_mark_are_events_of_their_own() {
+        let (mut client, _) = create(
+            ClientType::Public,
+            ClientSettings {
+                response_types: vec![ResponseType::IdTokenToken],
+                browser_access_tokens: marked(&["invoices:read"]),
+                ..spa()
+            },
+        )
+        .expect("marked");
+        let created: Vec<&str> = client
+            .created_events()
+            .iter()
+            .map(hodor_kernel::DomainEvent::event_type)
+            .collect();
+        assert_eq!(
+            created,
+            [
+                "oauth.client_created",
+                "oauth.client_browser_access_tokens_marked"
+            ]
+        );
+
+        let names = |events: Vec<OauthEvent>| -> Vec<&'static str> {
+            events
+                .iter()
+                .map(hodor_kernel::DomainEvent::event_type)
+                .collect()
+        };
+        // Another name keeps the mark: no event of it.
+        let renamed = ClientSettings {
+            name: "Payroll, renamed".to_owned(),
+            ..client.snapshot().settings.clone()
+        };
+        assert_eq!(
+            names(client.change(renamed, NOW).expect("renamed")),
+            ["oauth.client_changed"]
+        );
+        // Other scopes are a new mark.
+        let widened = ClientSettings {
+            browser_access_tokens: marked(&["invoices:read", "invoices:write"]),
+            ..client.snapshot().settings.clone()
+        };
+        let events = client.change(widened, NOW).expect("widened");
+        assert_eq!(
+            events[1],
+            OauthEvent::ClientBrowserAccessTokensMarked {
+                client_id: client.id(),
+                application_id: client.application_id(),
+                scopes: vec!["invoices:read".to_owned(), "invoices:write".to_owned()],
+            }
+        );
+        // Without the mark, the type that needs it must go too.
+        let refused = ClientSettings {
+            browser_access_tokens: None,
+            ..client.snapshot().settings.clone()
+        };
+        assert_eq!(
+            client.change(refused, NOW).expect_err("refused").code(),
+            "oauth.client_response_types_invalid"
+        );
+        let unmarked = ClientSettings {
+            browser_access_tokens: None,
+            response_types: vec![ResponseType::IdToken],
+            ..client.snapshot().settings.clone()
+        };
+        assert_eq!(
+            names(client.change(unmarked, NOW).expect("unmarked")),
+            [
+                "oauth.client_changed",
+                "oauth.client_browser_access_tokens_unmarked"
+            ]
+        );
+        assert!(client.browser_access_tokens().is_none());
+    }
+
     #[test]
     fn response_types_belong_to_a_client_of_the_authorization_code() {
         // `code` unless chosen.
@@ -2418,7 +2644,10 @@ mod tests {
             ..spa()
         };
         let (client, _) = create(ClientType::Public, every).expect("valid");
-        assert_eq!(client.snapshot().settings.response_types, ResponseType::ALL);
+        assert_eq!(
+            client.snapshot().settings.response_types,
+            &ResponseType::ALL[..4]
+        );
 
         // At least one with the grant, none without it.
         let refused = [

@@ -877,3 +877,44 @@ fn an_object_for_an_unknown_client_is_never_checked() {
         ))
     );
 }
+
+#[test]
+fn a_signed_object_asks_for_an_access_token_for_a_marked_client_alone() {
+    let mut setting = setting(None);
+    let mut object_claims = claims(&setting.client);
+    object_claims["response_type"] = json!("code id_token token");
+    let object = signed(
+        SignatureAlgorithm::Es256,
+        "ec",
+        &setting.keys.ec,
+        &object_claims,
+    );
+    // Repeated outside in another order of its words, as the same type.
+    let parameters = outside(
+        &setting.client,
+        &object,
+        &[("response_type", "token code id_token")],
+    );
+    let (error, _, _, _) = redirected(check(&setting, &parameters));
+    assert_eq!(error, "unauthorized_client", "not marked");
+
+    let mut settings = setting.client.snapshot().settings.clone();
+    settings.response_types = vec![
+        crate::domain::response::ResponseType::Code,
+        crate::domain::response::ResponseType::CodeIdTokenToken,
+    ];
+    settings.browser_access_tokens = Some(
+        crate::domain::browser_access::BrowserAccessTokens::asked(vec!["read".to_owned()]),
+    );
+    setting.client.change(settings, now()).expect("marked");
+    let request = check(&setting, &parameters).expect("accepted");
+    assert_eq!(
+        request.response_type,
+        crate::domain::response::ResponseType::CodeIdTokenToken
+    );
+    assert_eq!(
+        request.response_mode,
+        crate::domain::response::ResponseMode::Fragment
+    );
+    assert_eq!(request.scopes, ["openid", "read"]);
+}

@@ -4,6 +4,7 @@ pub(crate) mod application;
 pub(crate) mod authorization;
 pub(crate) mod backchannel;
 pub(crate) mod binding;
+pub(crate) mod browser_access;
 pub(crate) mod claim_mapper;
 pub(crate) mod claims_parameter;
 pub(crate) mod client;

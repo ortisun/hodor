@@ -2,9 +2,11 @@
 //! server binary against a real database: in the fragment, alone or with a
 //! code, checked with a library of its own against the published key set,
 //! its hashes computed here with another implementation of SHA-256; and
-//! the endpoint refuses what a client did not register. Specified in
-//! `docs/architecture/contexts/oauth.md`, "Response types and modes" and
-//! "The ID token through the browser".
+//! the endpoint refuses what a client did not register. A marked client is
+//! answered with an access token too, which reads UserInfo and lives five
+//! minutes. Specified in `docs/architecture/contexts/oauth.md`, "Response
+//! types and modes", "The ID token through the browser" and "The access
+//! token through the browser".
 
 use aws_lc_rs::digest::{SHA256, digest};
 use base64::Engine as _;
@@ -24,8 +26,8 @@ use hodor_kernel::{Caller, Secret, SystemClock, TenantContext};
 use hodor_keys::api::{KeyAlgorithm, KeyService, RotationPolicy};
 use hodor_oauth::api::{
     ApplicationId, ApplicationPorts, ApplicationService, ApplicationSettings, AuthenticationMethod,
-    ClientId, ClientSettings, ClientType, CreateClient, GrantType, ResponseType, SubjectType,
-    s256_challenge,
+    BrowserAccessTokens, ClientId, ClientSettings, ClientType, CreateClient, GrantType,
+    ResponseType, SubjectType, s256_challenge,
 };
 use hodor_tenant::api::{CreateTenant, TenantService};
 use jsonwebtoken::jwk::JwkSet;
@@ -210,9 +212,19 @@ async fn make_client(
         vec![REDIRECT.to_owned()],
     );
     settings.authentication_method = AuthenticationMethod::None;
+    // The types that return an access token are for a marked client.
+    if response_types
+        .iter()
+        .any(|kind| kind.returns_access_token())
+    {
+        settings.browser_access_tokens = Some(BrowserAccessTokens::asked(Vec::new()));
+    }
     settings.response_types = response_types;
     settings.subject_type = subject_type;
-    settings.allowed_scopes = ["openid", "profile", "email"].map(str::to_owned).to_vec();
+    // `groups` is allowed, and not in the mark of the marked clients.
+    settings.allowed_scopes = ["openid", "profile", "email", "groups"]
+        .map(str::to_owned)
+        .to_vec();
     applications
         .create_client(
             context,
@@ -605,12 +617,20 @@ async fn the_endpoint_answers_none_with_the_state_and_refuses_what_breaks_the_ru
             "invalid_request",
         ),
         (
-            "an access token through the browser",
-            clients.every,
+            "an access token through the browser, for a client that is not marked",
+            clients.code_only,
             "id_token token",
             vec![("nonce", NONCE)],
             "fragment",
-            "unsupported_response_type",
+            "unauthorized_client",
+        ),
+        (
+            "an access token in the query",
+            clients.every,
+            "token",
+            vec![("response_mode", "query")],
+            "fragment",
+            "invalid_request",
         ),
         (
             "an unknown type",
@@ -741,4 +761,291 @@ async fn a_code_and_an_id_token_come_posted_by_the_page_of_form_post() {
     let (_, fields) = posted_fields(&body);
     assert_eq!(fields["error"], "invalid_request", "no nonce");
     assert!(!fields.contains_key("id_token"));
+}
+
+/// The claims of an access token, checked with a library of its own
+/// against the tenant's published key set, for the issuer as an audience.
+async fn checked_access_token(server: &Server, slug: &str, token: &str) -> Value {
+    let key_set: JwkSet = reqwest::get(format!("{}/t/{slug}/oauth2/jwks", server.base))
+        .await
+        .expect("key set")
+        .json()
+        .await
+        .expect("JSON");
+    let header = decode_header(token).expect("header");
+    assert_eq!(header.typ.as_deref(), Some("at+jwt"));
+    let jwk = key_set
+        .find(&header.kid.expect("kid"))
+        .expect("the signing key is published");
+    let mut validation = Validation::new(header.alg);
+    validation.set_audience(&[issuer(slug)]);
+    validation.set_issuer(&[issuer(slug)]);
+    decode::<Value>(
+        token,
+        &DecodingKey::from_jwk(jwk).expect("key"),
+        &validation,
+    )
+    .expect("the access token checks")
+    .claims
+}
+
+async fn userinfo(server: &Server, slug: &str, token: &str) -> (StatusCode, Value) {
+    let response = reqwest::Client::new()
+        .get(format!("{}/t/{slug}/oauth2/userinfo", server.base))
+        .bearer_auth(token)
+        .send()
+        .await
+        .expect("response");
+    let status = response.status();
+    (status, response.json().await.unwrap_or(Value::Null))
+}
+
+#[tokio::test]
+async fn a_marked_client_gets_an_access_token_in_the_fragment_that_lives_five_minutes() {
+    let database = TestDatabase::start().await;
+    let clients = tenant(&database, "acme").await;
+    let server = server(&database).await;
+    let mut browser = Browser::not_following(&server);
+    browser.sign_in("acme", "ana@example.com", PASSWORD).await;
+
+    let query = authorize_query(
+        clients.every,
+        "id_token token",
+        "openid profile",
+        &[("nonce", NONCE), ("state", STATE)],
+    );
+    let response = browser
+        .client
+        .get(format!("{}/t/acme/oauth2/authorize?{query}", server.base))
+        .header(
+            "cookie",
+            browser
+                .cookies
+                .iter()
+                .map(|(name, value)| format!("{name}={value}"))
+                .collect::<Vec<_>>()
+                .join("; "),
+        )
+        .send()
+        .await
+        .expect("response");
+    assert_eq!(response.status(), StatusCode::FOUND);
+    assert_eq!(response.headers()["cache-control"], "no-store");
+    let location = response.headers()["location"]
+        .to_str()
+        .expect("ascii")
+        .to_owned();
+    assert!(
+        location.starts_with(&format!("{REDIRECT}#")),
+        "in the fragment alone: {location}"
+    );
+    let answer = sent_back(&location);
+    assert!(answer.query.is_empty());
+    assert_eq!(
+        answer
+            .fragment
+            .keys()
+            .map(String::as_str)
+            .collect::<Vec<_>>(),
+        [
+            "access_token",
+            "expires_in",
+            "id_token",
+            "iss",
+            "scope",
+            "state",
+            "token_type"
+        ],
+        "no code and no refresh token"
+    );
+    assert_eq!(answer.fragment["token_type"], "Bearer");
+    assert_eq!(answer.fragment["expires_in"], "300");
+    assert_eq!(answer.fragment["scope"], "openid profile");
+    let access_token = &answer.fragment["access_token"];
+
+    // The ID token names the access token by `at_hash`, computed here with
+    // another implementation of SHA-256.
+    let id_token = checked(&server, "acme", clients.every, &answer.fragment["id_token"]).await;
+    assert_eq!(id_token["at_hash"], left_half(access_token));
+    assert_eq!(id_token["s_hash"], left_half(STATE));
+    assert_eq!(id_token["nonce"], NONCE);
+    assert!(id_token.get("name").is_none(), "read at UserInfo");
+
+    // The access token checks against the key set, lives five minutes,
+    // and reads UserInfo.
+    let claims = checked_access_token(&server, "acme", access_token).await;
+    assert_eq!(claims["client_id"], clients.every.to_string());
+    assert_eq!(claims["sub"], id_token["sub"]);
+    assert_eq!(claims["scope"], "openid profile");
+    assert_eq!(
+        claims["exp"].as_i64().expect("exp") - claims["iat"].as_i64().expect("iat"),
+        300
+    );
+    let (status, person) = userinfo(&server, "acme", access_token).await;
+    assert_eq!(status, StatusCode::OK, "{person}");
+    assert_eq!(person["sub"], id_token["sub"]);
+    assert_eq!(person["name"], "Ana Lima");
+
+    // `token` alone, the access token and nothing else of OpenID Connect.
+    let answer = answered(
+        &mut browser,
+        "acme",
+        &authorize_query(clients.every, "token", "openid", &[]),
+    )
+    .await;
+    assert!(answer.fragment.contains_key("access_token"));
+    assert!(!answer.fragment.contains_key("id_token"));
+    assert!(!answer.fragment.contains_key("code"));
+}
+
+#[tokio::test]
+async fn a_code_comes_with_an_access_token_and_the_code_redeems_as_any_code() {
+    let database = TestDatabase::start().await;
+    let clients = tenant(&database, "acme").await;
+    let server = server(&database).await;
+    let mut browser = Browser::not_following(&server);
+    browser.sign_in("acme", "ana@example.com", PASSWORD).await;
+
+    let answer = answered(
+        &mut browser,
+        "acme",
+        &authorize_query(
+            clients.every,
+            "code id_token token",
+            "openid email",
+            &[("nonce", NONCE), ("state", STATE)],
+        ),
+    )
+    .await;
+    let code = &answer.fragment["code"];
+    let browser_token = &answer.fragment["access_token"];
+    let front = checked(&server, "acme", clients.every, &answer.fragment["id_token"]).await;
+    assert_eq!(front["c_hash"], left_half(code));
+    assert_eq!(front["at_hash"], left_half(browser_token));
+
+    // The token endpoint answers the code with a token of its own, of the
+    // client's lifetime, and no refresh token: the client has no such
+    // grant, and none ever comes through the browser.
+    let tokens = redeem(&server, "acme", clients.every, code).await;
+    assert_ne!(tokens["access_token"], Value::from(browser_token.as_str()));
+    assert!(tokens.get("refresh_token").is_none());
+    let back = checked(
+        &server,
+        "acme",
+        clients.every,
+        tokens["id_token"].as_str().expect("an ID token"),
+    )
+    .await;
+    assert_eq!(back["sub"], front["sub"]);
+
+    // `code token`: the code and the access token, no ID token.
+    let answer = answered(
+        &mut browser,
+        "acme",
+        &authorize_query(clients.every, "code token", "openid", &[]),
+    )
+    .await;
+    assert!(answer.fragment.contains_key("code") && answer.fragment.contains_key("access_token"));
+    assert!(!answer.fragment.contains_key("id_token"));
+}
+
+#[tokio::test]
+async fn a_request_for_a_token_asks_only_for_what_the_mark_allows_and_comes_posted_as_a_form() {
+    let database = TestDatabase::start().await;
+    let clients = tenant(&database, "acme").await;
+    let server = server(&database).await;
+    let mut browser = Browser::not_following(&server);
+    browser.sign_in("acme", "ana@example.com", PASSWORD).await;
+
+    // `groups` is the client's, and not in its mark.
+    let answer = answered(
+        &mut browser,
+        "acme",
+        &authorize_query(clients.every, "token", "openid groups", &[("state", STATE)]),
+    )
+    .await;
+    assert_eq!(answer.fragment["error"], "invalid_scope");
+    assert!(!answer.fragment.contains_key("access_token"));
+
+    // Posted by the page of `form_post`, as any answer can be.
+    let query = authorize_query(
+        clients.every,
+        "code id_token token",
+        "openid",
+        &[
+            ("nonce", NONCE),
+            ("state", STATE),
+            ("response_mode", "form_post"),
+        ],
+    );
+    let (status, location, body) = browser
+        .navigate(
+            Method::GET,
+            &format!("/t/acme/oauth2/authorize?{query}"),
+            None,
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert!(location.is_none());
+    let (action, fields) = posted_fields(&body);
+    assert_eq!(action, REDIRECT);
+    assert_eq!(
+        fields.keys().map(String::as_str).collect::<Vec<_>>(),
+        [
+            "access_token",
+            "code",
+            "expires_in",
+            "id_token",
+            "iss",
+            "scope",
+            "state",
+            "token_type"
+        ]
+    );
+    let claims = checked(&server, "acme", clients.every, &fields["id_token"]).await;
+    assert_eq!(claims["at_hash"], left_half(&fields["access_token"]));
+    assert_eq!(claims["c_hash"], left_half(&fields["code"]));
+}
+
+#[tokio::test]
+async fn a_pushed_request_for_an_access_token_is_answered_in_the_fragment() {
+    let database = TestDatabase::start().await;
+    let clients = tenant(&database, "acme").await;
+    let server = server(&database).await;
+    let mut browser = Browser::not_following(&server);
+    browser.sign_in("acme", "ana@example.com", PASSWORD).await;
+
+    let id = clients.every.to_string();
+    let pushed = reqwest::Client::new()
+        .post(format!("{}/t/acme/oauth2/par", server.base))
+        .header("content-type", "application/x-www-form-urlencoded")
+        .body(
+            form_urlencoded::Serializer::new(String::new())
+                .extend_pairs([
+                    ("client_id", id.as_str()),
+                    ("response_type", "token id_token"),
+                    ("redirect_uri", REDIRECT),
+                    ("scope", "openid"),
+                    ("nonce", NONCE),
+                    ("state", STATE),
+                ])
+                .finish(),
+        )
+        .send()
+        .await
+        .expect("response");
+    assert_eq!(pushed.status(), StatusCode::CREATED);
+    let pushed: Value = pushed.json().await.expect("JSON");
+    let reference = pushed["request_uri"].as_str().expect("a reference");
+    let query = form_urlencoded::Serializer::new(String::new())
+        .extend_pairs([("client_id", id.as_str()), ("request_uri", reference)])
+        .finish();
+    let answer = answered(&mut browser, "acme", &query).await;
+    assert!(answer.query.is_empty(), "the pushed request's fragment");
+    assert_eq!(answer.fragment["state"], STATE);
+    let claims = checked(&server, "acme", clients.every, &answer.fragment["id_token"]).await;
+    assert_eq!(
+        claims["at_hash"],
+        left_half(&answer.fragment["access_token"])
+    );
 }

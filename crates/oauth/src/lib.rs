@@ -59,7 +59,9 @@ pub mod api {
         CreateResourceServer, MOST_REGISTRATIONS_PER_ADDRESS, REGISTRATION_WINDOW, RegisterClient,
         RotateSecret,
     };
-    pub use crate::application::token::{IssuedTokens, Issuer, TokenPorts, TokenService};
+    pub use crate::application::token::{
+        BrowserAccessToken, IssuedTokens, Issuer, TokenPorts, TokenService,
+    };
     pub use crate::application::userinfo::{UserInfoAnswer, UserInfoPorts, UserInfoService};
     pub use crate::domain::application::{
         Application, ApplicationId, ApplicationSettings, ApplicationSnapshot, MAX_APPLICATIONS,
@@ -70,7 +72,7 @@ pub mod api {
         AuthorizationRequest, BrowserSecret, CODE_LIFETIME, CodeHash, CodePresentation,
         CodeRefusal, CodeValue, Grant, GrantId, GrantStatus, MAX_RESOURCES, PENDING_LIFETIME,
         PendingAuthorization, PendingAuthorizationId, Proof, SessionDecision, SignedInPerson,
-        check_request, s256_challenge,
+        check_request, s256_challenge, still_answerable,
     };
     pub use crate::domain::backchannel::{
         BACKCHANNEL_LOGOUT_EVENT, LOGOUT_TOKEN_LIFETIME, LOGOUT_TOKEN_TYPE, LogoutDelivery,
@@ -81,6 +83,10 @@ pub mod api {
     pub use crate::domain::binding::{
         CERTIFICATE_THUMBPRINT_MEMBER, CONFIRMATION_CLAIM, CertificateThumbprint,
         check_confirmation,
+    };
+    pub use crate::domain::browser_access::{
+        BrowserAccessTokens, LONGEST_BROWSER_ACCESS_TOKEN_LIFETIME, OPENID_CONNECT_SCOPES,
+        browser_access_token_lifetime, browser_access_token_scopes,
     };
     pub use crate::domain::claim_mapper::{
         ClaimMapper, ClaimMapperId, ClaimMapperSettings, ClaimMapperSnapshot, ClaimSource,

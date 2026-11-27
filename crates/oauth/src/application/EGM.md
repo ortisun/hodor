@@ -40,7 +40,12 @@ clients, resource_servers, digest, random, clock })`:
   `revoke_client_secret`, `add_client_key` (the key as JSON),
   `remove_client_key`, `set_client_status`, `client`, `clients`,
   `service_account_of(tenant, &WorkloadIdentity)` (the principal of the
-  enabled clients bound to the identity, or `None`; Decision 0058).
+  enabled clients bound to the identity, or `None`; Decision 0058), and
+  `marked_clients(tenant)` (the clients marked for access tokens through
+  the browser, the one marked longest first, for the security posture).
+  `create_client` and `change_client` stamp the mark with the caller's
+  actor and the time (`BrowserAccessTokens::stamped`), keeping the record
+  of a mark whose scopes are the same (Decision 0083).
 - `with_destinations(check)` gives it the kernel's `DestinationCheck`: a
   client's back-channel logout address is checked through it when it is
   set by `create_client`, or new or changed by `change_client`, and the
@@ -168,7 +173,13 @@ memberships, verifier, digest, random, clock })`:
   `issue_code_consented` makes it, with a code for a type that returns one
   (`oauth.authorization_code_issued`) and `oauth.id_token_issued` for a type
   that returns an ID token. The ID token itself is signed by
-  `TokenService::browser_id_token`.
+  `TokenService::browser_id_token`, and an access token by
+  `TokenService::browser_access_token`.
+- `still_answerable(tenant, request)`: for a request of a type that
+  returns an access token, the error to send back when its client lost the
+  type or the mark since it was checked (`unauthorized_client`), or the
+  mark no longer allows one of its scopes (`invalid_scope`); `None`
+  otherwise, and for a client that is gone.
 - `with_pairwise_subjects(pairwise)` and `names_another(tenant, request,
   user)`: whether the request asked through `claims` for a `sub` that is
   not the person as its client knows them, pairwise for a pairwise client
@@ -380,10 +391,20 @@ certificates; without them every JWT-SVID, and every client of
     with the client's ID token algorithm
     (`ClientSettings::id_token_algorithm`, ES256, RS256, PS256 or EdDSA) and
     lifetime, header `typ` `JWT`.
-  - `browser_id_token(tenant, issuer, request, grant, person, code)`: the
-    ID token of `id_token` and `code id_token`, from `id_token_claims_for`
-    with the request's `nonce`, the person's sign-in, `c_hash` of the code
-    when one comes with it and `s_hash` of the request's `state`; then the
+  - `browser_access_token(tenant, issuer, request, grant, person,
+    correlation_id) -> BrowserAccessToken { access_token, expires_in,
+    scope }`: the access token of a type that returns one, for a client
+    still marked for it (`still_answerable`, else `unauthorized_client` or
+    `invalid_scope`): the code's access token over a `TokenSubject` of the
+    person and the grant, with the request's scopes but `offline_access`,
+    living `browser_access_token_lifetime` of the client's, five minutes at
+    most, never bound; recorded in the register with its grant and with
+    `oauth.browser_access_token_issued`, whose actor is the person.
+  - `browser_id_token(tenant, issuer, request, grant, person, code,
+    access_token)`: the ID token of every type that returns one, from
+    `id_token_claims_for` with the request's `nonce`, the person's sign-in,
+    `c_hash` of the code and `at_hash` of the access token when they come
+    with it, and `s_hash` of the request's `state`; then the
     person's claims of the request's scopes (`claims_of_scopes`) for
     `id_token` alone, with the grant's `GrantClaims::id_token`, within the
     bound, then the mappers' claims of the ID token, signed as above. A

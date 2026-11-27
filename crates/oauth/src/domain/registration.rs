@@ -153,7 +153,8 @@ pub struct RegistrationPolicy {
     /// The grants a registration may name: `authorization_code` and
     /// `refresh_token` only.
     pub grant_types: Vec<GrantType>,
-    /// The response types it may name, among those Hodor answers.
+    /// The response types it may name, among those Hodor answers, never
+    /// one that returns an access token.
     pub response_types: Vec<ResponseType>,
     /// The scopes it may ask for.
     pub scopes: Vec<String>,
@@ -218,6 +219,16 @@ impl RegistrationPolicy {
         if response_types.is_empty() {
             return Err(policy_invalid(
                 "the policy allows at least one response type",
+            ));
+        }
+        // Those need an administrator's mark, which a client that
+        // registers itself never has (Decision 0083).
+        if response_types
+            .iter()
+            .any(|kind| kind.returns_access_token())
+        {
+            return Err(policy_invalid(
+                "a registered client never has a response type that returns an access token",
             ));
         }
         let scopes = once(self.scopes);
