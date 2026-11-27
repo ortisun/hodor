@@ -199,7 +199,7 @@ The chart installs it with `certManagerIssuer.enabled`, beside Hodor, or alone w
 
 ## For Linkerd and Istio
 
-These follow Linkerd's and Istio's documentation on cert-manager; the demonstration of Milestone 12 runs them on kind (Issue-119).
+These follow Linkerd's and Istio's documentation on cert-manager, and [the demonstration of Milestone 12](quick-start.md#the-demonstration-of-milestone-12) runs them on kind, with Linkerd edge-26.10.2 and Istio 1.30.8.
 
 Linkerd's identity issuer, for 2 days and renewed 25 hours before it expires, with the trust anchor in `ca.crt`, which Linkerd reads with `identity.externalCA`:
 
@@ -256,6 +256,11 @@ spec:
 
 The tenant's authority must hold `cluster.local`, or whatever trust domain the mesh uses, among its trust domains.
 
+What else each mesh needs:
+
+- **Linkerd** is installed with `identity.externalCA=true` and `identity.issuer.scheme=kubernetes.io/tls`, so that it reads its issuer from the Secret cert-manager keeps, and reloads it when it is renewed. Its trust anchors are read from the ConfigMap `linkerd-identity-trust-roots`, key `ca-bundle.crt`, which nothing makes for it: fill it with the tenant's root, from the authority's bundle or from `ca.crt`, before Linkerd starts. Linkerd's proxy refuses every SPIFFE identity under an authority that constrains URIs: when a Linkerd mesh must accept the identities of the tenant's Istio meshes or SPIRE servers, create the authority with `uri_constraints` `false` ([Decision 0076](../decisions/0076-names-an-authority-leaves-to-its-meshes.md)). It also takes client certificates of ECDSA keys alone: give Istio's workloads ECDSA keys, with `ECC_SIGNATURE_ALGORITHM: ECDSA` in `meshConfig.defaultConfig.proxyMetadata`, or they present none to Linkerd.
+- **Istio** signs istiod's own serving certificate with the intermediate, for `istiod.istio-system.svc` and `istio-pilot.istio-system.svc`: create the authority with `istio-system.svc`, or the namespace istiod runs in, among its `additional_dns_names`, or the Kubernetes interface and the sidecars refuse istiod ([Decision 0076](../decisions/0076-names-an-authority-leaves-to-its-meshes.md)). It reads `cacerts` as cert-manager writes it, `tls.crt`, `tls.key` and `ca.crt`, when istiod starts: restart istiod once the `Certificate` is ready, then the pods of the mesh, so that each takes a certificate under the tenant's root. A mesh that ran on a root of its own until then cannot reach the pods not yet restarted.
+
 ## What it does not do yet
 
 | Missing | Until then |
@@ -263,4 +268,3 @@ The tenant's authority must hold `cluster.local`, or whatever trust domain the m
 | A JWT-SVID as its credential | It proves who it is with its mesh identity or its key |
 | More than one replica, with a leader | One pod, replaced with `Recreate` |
 | Hodor's address, tenant or client per issuer resource | One installation of the issuer per tenant |
-| Being tried with Linkerd and Istio | The demonstration of Milestone 12 (Issue-119) |
