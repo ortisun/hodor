@@ -340,14 +340,16 @@ jobs:
           export KUBECONFIG="$RUNNER_TEMP/kubeconfig"
           kubectl get pods --all-namespaces --output wide
           kubectl get networkpolicies --all-namespaces
-          kubectl logs --namespace hodor deployment/hodor-server --all-containers --tail 200
-          kubectl logs --namespace hodor deployment/hodor-ext-authz --all-containers --tail 200
-          kubectl logs --namespace shop deployment/orders --all-containers --tail 100
+          kubectl logs --namespace hodor deployment/hodor-server --all-containers --tail 200 || true
+          kubectl logs --namespace hodor deployment/hodor-ext-authz --all-containers --tail 200 || true
+          kubectl logs --namespace shop deployment/orders --all-containers --tail 100 || true
           if [ "$MESH" = istio ]; then
             kubectl logs --namespace istio-system deployment/istio-ingressgateway --tail 100
             kubectl logs --namespace istio-system deployment/istiod --tail 100
           else
             kubectl get gateways,httproutes,securitypolicies,referencegrants --all-namespaces --output yaml
+            kubectl get pods --namespace envoy-gateway-system --output yaml
+            kubectl logs --namespace linkerd deployment/linkerd-proxy-injector --all-containers --tail 100
             kubectl logs --namespace envoy-gateway-system deployment/edge-gateway --all-containers --tail 200
             kubectl logs --namespace envoy-gateway-system deployment/envoy-gateway --tail 100
           fi

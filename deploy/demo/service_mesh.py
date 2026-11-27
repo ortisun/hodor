@@ -224,6 +224,25 @@ def linkerd(cluster):
                  "--set-file", f"identity.issuer.tls.crtPEM={files / 'issuer.crt'}",
                  "--set-file", f"identity.issuer.tls.keyPEM={files / 'issuer.key'}")
     check(cluster.exists("--namespace", "linkerd", "deployment/linkerd-identity"), "Linkerd's control plane is ready")
+    # Linkerd's injector lets a pod through unchanged while it cannot answer,
+    # so its deployments being ready is not enough: wait until it injects a
+    # pod asked for on a dry run.
+    probe = json.dumps({"apiVersion": "v1", "kind": "Pod",
+                        "metadata": {"name": "injected", "namespace": "default",
+                                     "annotations": {"linkerd.io/inject": "enabled"}},
+                        "spec": {"containers": [{"name": "app", "image": "python:3.13.9-alpine"}]}})
+
+    def injects():
+        done = cluster.run("kubectl", "create", "--dry-run=server", "--output", "json", "--filename", "-",
+                           given=probe, allowed=(0, 1))
+        if done.returncode != 0:
+            return False
+        spec = json.loads(done.stdout)["spec"]
+        return any(container["name"] == "linkerd-proxy"
+                   for container in spec.get("initContainers", []) + spec["containers"])
+
+    until("Linkerd's proxy injector injecting pods", injects, seconds=180)
+    shown("its proxy injector injects a pod asked for on a dry run")
 
 
 def orders_certificate(cluster):
@@ -289,11 +308,15 @@ def the_mesh(cluster, mesh):
         cluster.rolled_out("envoy-gateway-system", "deployment/edge-gateway")
         pod = json.loads(cluster.kubectl("get", "pods", "--namespace", "envoy-gateway-system", "--selector",
                                          "gateway.envoyproxy.io/owning-gateway-name=edge", "--output", "json"))
-        spec = pod["items"][0]["spec"]
+        found = pod["items"][0]
+        spec = found["spec"]
         sidecars = [container["name"] for container in spec.get("initContainers", []) + spec["containers"]]
         check("linkerd-proxy" in sidecars and spec["serviceAccountName"] == "edge-gateway",
               "Envoy Gateway's proxy is meshed, as "
-              "edge-gateway.envoy-gateway-system.serviceaccount.identity.linkerd.cluster.local")
+              "edge-gateway.envoy-gateway-system.serviceaccount.identity.linkerd.cluster.local"
+              + ("" if "linkerd-proxy" in sidecars else
+                 f" (its containers: {sidecars}; its account: {spec['serviceAccountName']}; "
+                 f"its annotations: {found['metadata'].get('annotations')})"))
     cluster.apply((HERE / "workloads.yaml").read_text())
     for name, namespace_name in (("orders", "shop"), ("web", "shop"), ("stranger", "shop"),
                                  ("visitor-a", "outside"), ("visitor-b", "outside")):
