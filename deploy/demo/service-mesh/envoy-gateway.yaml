@@ -16,8 +16,8 @@ metadata:
   name: meshed
   namespace: envoy-gateway-system
 spec:
-  # The caller sends the claims of its token beside it, which hodor-ext-authz believes only once the token is
-  # checked: the JWT check comes first, which Envoy Gateway's own order of filters does not do.
+  # The JWT check comes first, which Envoy Gateway's own order of filters does not do. hodor-ext-authz checks the
+  # token's signature itself; this order makes a bad token a 401 from the gateway before anyone is asked.
   filterOrder:
     - name: envoy.filters.http.jwt_authn
       before: envoy.filters.http.ext_authz
