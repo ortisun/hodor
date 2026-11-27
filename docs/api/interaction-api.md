@@ -411,9 +411,25 @@ Answers who is signed in:
 
 `DELETE /interaction/session` ends the session this browser holds and removes the session cookie. The answer is `204`.
 
+When a client the person signed in to with the session has a [front-channel logout address](../architecture/contexts/oauth.md#front-channel-logout), the answer also sets the cookie `__Secure-hodor_signed_out`, which names the frames the server made and kept for the signed-out page; when none has, the answer tells the browser to forget that cookie. The pages then ask [`GET /interaction/signed-out`](#the-frames-of-a-sign-out) for the frames, and go to `/account/signed-out`, which loads them and goes on, only when there are some ([the hosted pages](../architecture/hosted-pages.md#the-pages)).
+
 The session is ended on the server, not merely forgotten by the browser: a copy of the token made earlier stops working at the same moment. The next request with it gets `401`.
 
 Signing out ends one session. The person's sessions in other browsers continue.
+
+### The frames of a sign-out
+
+`GET /interaction/signed-out` answers, for the signed-out page, the addresses it loads in its frames:
+
+```json
+{
+  "frames": [
+    "https://payroll.example.com/frontchannel-logout?iss=https%3A%2F%2Fid.example.com%2Ft%2Facme&sid=0193f1c9-…"
+  ]
+}
+```
+
+They are the ones the server kept when the session ended, read by the handle in the cookie `__Secure-hodor_signed_out` ([kept on the server](../architecture/contexts/oauth.md#kept-on-the-server)). The answer is `200` with an empty list when there is no cookie, or when its handle is unknown, expired, of another tenant or not a handle: the person has signed out by then, so this route needs no session and changes nothing. It carries `Cache-Control: no-store`. The browser never sends an address to it.
 
 ### Listing sessions
 
@@ -439,7 +455,7 @@ Signing out ends one session. The person's sessions in other browsers continue.
 
 ### Ending other sessions
 
-`DELETE /interaction/sessions/{session_id}` ends one session of the person: `204`. A session that is not theirs, does not exist or has already ended is answered with `404` and `session.not_found`, all three in the same way, so that one person cannot learn about another's sessions. Ending the current session this way is the same as signing out, and removes the cookie.
+`DELETE /interaction/sessions/{session_id}` ends one session of the person: `204`. A session that is not theirs, does not exist or has already ended is answered with `404` and `session.not_found`, all three in the same way, so that one person cannot learn about another's sessions. Ending the current session this way is the same as signing out: it removes the cookie and makes the frames of front-channel logout, as `DELETE /interaction/session` does. Ending another session makes none: that session's browser is not here to load them.
 
 `DELETE /interaction/sessions` ends every session of the person except the current one: `200` with `{ "ended": 2 }`.
 

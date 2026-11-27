@@ -145,7 +145,10 @@ person sees from who they are (`Client.me`).
   sources, with what it needs). `ApplicationClient` has `principal`, the
   workload it acts as, `spiffeId`, `linkerdIdentity` and
   `certificateBoundAccessTokens`; `ClientSettings` has the same four, the
-  first three `null` when not sent. `User` has `claims`, the
+  first three `null` when not sent. Both have `frontchannelLogoutUri`
+  (`null` for none; in a change `null` removes one) and
+  `frontchannelLogoutSessionRequired`, sent `true` only with an address.
+  `User` has `claims`, the
   person's standard claims that have a value as `[name, value]` pairs in the
   order of `CLAIMS` (none for a workload), and `phoneNumberVerified`.
 - `client.ts:CLAIMS` - the standard claims in the order the console shows

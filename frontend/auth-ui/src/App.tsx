@@ -11,6 +11,7 @@ import { ProfilePage } from "./pages/ProfilePage";
 import { SecurityPage } from "./pages/SecurityPage";
 import { SignInLinkPage } from "./pages/SignInLinkPage";
 import { SignInPage } from "./pages/SignInPage";
+import { SignedOutPage } from "./pages/SignedOutPage";
 import { SignOutPage } from "./pages/SignOutPage";
 import { Frame } from "./parts/Frame";
 import { PageLink, Ways, Words } from "./parts/Words";
@@ -38,6 +39,8 @@ export interface AppProps {
   afterSignIn?: PageName;
   /** Sends the person to sign in again and come back to the security page. */
   reauthenticate?: () => void;
+  /** The signed-out page goes on to the finish of an application's request to sign out. */
+  continuesLogout?: boolean;
 }
 
 /** Shows the page the address names. */
@@ -55,6 +58,7 @@ export function App({
   loginHint = null,
   afterSignIn = "account",
   reauthenticate = () => undefined,
+  continuesLogout = false,
 }: AppProps) {
   const { tenant } = place;
   const page = { tenant, client, text, go, leave, path: (name: PageName) => pathOf(tenant, name) };
@@ -82,6 +86,8 @@ export function App({
       return <AccountPage {...page} />;
     case "sign-out":
       return <SignOutPage {...page} />;
+    case "signed-out":
+      return <SignedOutPage {...page} continuesLogout={continuesLogout} />;
     case "security":
       return <SecurityPage {...page} reauthenticate={reauthenticate} />;
     case "profile":

@@ -17,20 +17,24 @@ its header); the pages see plain values.
   not `null`, it picks the language with `chooseMessages` from
   `uiLocalesOf(location.search)` followed by `navigator.languages`, sets
   `document.documentElement.lang`, reads `noticeOf`, `providerAnswerOf`,
-  `tokenOf`, `continuesAuthorization` and `loginHintOf`, and renders `<Theme
+  `tokenOf`, `continuesAuthorization`, `loginHintOf` and `continuesLogout`,
+  and renders `<Theme
   theme={themes[defaultThemeSlug]} mode="light"><App .../></Theme>` with
   `client={new Client(place.tenant)}`, `go` (`window.location.assign(pathOf(...))`)
   and `leave` (`window.location.assign(url)`).
 - `App.tsx:App(AppProps)` - `AppProps` is `{ place, client, text, notice,
   token, go, leave, providerAnswer, signInAgain?, forApplication?,
-  loginHint?, afterSignIn?, reauthenticate? }`; `signInAgain`, `loginHint`
-  and `afterSignIn` go to `SignInPage`, `forApplication` (from
-  `continuesAuthorization`) to the registration `AskPage`; `main.tsx` sets `signInAgain`, `afterSignIn` and
+  loginHint?, afterSignIn?, reauthenticate?, continuesLogout? }`;
+  `signInAgain`, `loginHint` and `afterSignIn` go to `SignInPage`,
+  `forApplication` (from `continuesAuthorization`) to the registration
+  `AskPage`, `continuesLogout` (`false` unless given) to `SignedOutPage`;
+  `main.tsx` sets `signInAgain`, `afterSignIn` and
   `reauthenticate` from `continuationOf(location.search)` and
   `signInAgainPath`. It renders `sign-in` as `SignInPage`,
   `register` / `recover` as `AskPage`, `complete-registration` /
   `reset-password` as `FinishPage`, `account` as `AccountPage`, `sign-out`
-  as `SignOutPage`, `security` as `SecurityPage`, `profile` as
+  as `SignOutPage`, `signed-out` as `SignedOutPage`, `security` as
+  `SecurityPage`, `profile` as
   `ProfilePage`, `sign-in-link` as
   `SignInLinkPage` (`main.tsx` reads the token and takes the fragment out of
   the address for it),
@@ -39,7 +43,8 @@ its header); the pages see plain values.
 - `address.ts`:
   - `PAGES` / `PageName` - `sign-in`, `register`, `complete-registration`,
     `recover`, `reset-password`, `consent`, `account`, `sign-out`,
-    `security`, `profile`, `accept-invitation`, `sign-in-link`.
+    `security`, `profile`, `accept-invitation`, `sign-in-link`,
+    `signed-out`.
   - `continuationOf(search)` - `"authorization"`, `"security"` or `null`, from
     `?continue=`; `signInAgainPath(tenant)` is
     `/t/{tenant}/account/sign-in?continue=security`.
@@ -55,6 +60,9 @@ its header); the pages see plain values.
     `/t/{tenant}/account/{page}`, with `?notice={notice}` when given.
   - `noticeOf(search)` - the `notice` query parameter if it is in `NOTICES`.
   - `continuesAuthorization(search)` - whether `continue=authorization`.
+  - `continuesLogout(search)` - whether `continue=logout`: the signed-out
+    page goes on to the finish of an application's request to sign out,
+    rather than to the sign-in page.
   - `loginHintOf(search)` - `login_hint`, or `null` when missing, blank or
     longer than 255 characters.
   - `uiLocalesOf(search)` - the tags of `ui_locales`, separated by spaces, in
@@ -89,6 +97,7 @@ its header); the pages see plain values.
     | --- | --- |
     | `session()` | `GET /session` (401 gives `null`) |
     | `signOut()` | `DELETE /session` |
+    | `signedOutFrames()` | `GET /signed-out` (answers the `frames` that are text starting with `http://` or `https://`; none when `frames` is not a list) |
     | `currentSignIn()` | `GET /sign-in` (404 gives `null`) |
     | `startSignIn()` | `POST /sign-in` |
     | `abandonSignIn()` | `DELETE /sign-in` |
@@ -137,7 +146,9 @@ its header); the pages see plain values.
 - `auth-ui.css` - page layout only (`.auth-page`, `.auth-card`,
   `.auth-title`, `.auth-ways`, `.auth-hidden`, `.auth-divider`, and
   `.auth-fieldset`, a group of fields whose legend reads as a heading,
-  without a frame), using theme tokens only.
+  without a frame), using theme tokens only, and `.signed-out-frame`, a
+  frame of the signed-out page placed absolutely, of no size, without a
+  border, hidden and taking no clicks (`pointer-events: none`).
 - `testing.ts` (unit test support) - `json`, `problem` (a problem document
   with `type: urn:hodor:error:{code}` and `request_id: "request-1"`),
   `empty`, and `scripted(script)`, which returns a `Client` of tenant `acme`
@@ -148,8 +159,8 @@ its header); the pages see plain values.
   - [messages](./messages/EGM.md) - the English and Portuguese catalogs,
     `chooseMessages`, `describe`, `fieldProblem`.
   - [pages](./pages/EGM.md) - `SignInPage`, `AskPage`, `FinishPage`,
-    `AccountPage`, `ProfilePage`, `SignOutPage`, `ComingBackPage`,
-    `PageProps`.
+    `AccountPage`, `ProfilePage`, `SignOutPage`, `SignedOutPage`,
+    `ComingBackPage`, `PageProps`.
   - [parts](./parts/EGM.md) - `Frame`, `Form`, `Field`, `PasswordField`,
     `Submit`, `Action`, `Notice`, `Words`, `PageLink`, `Ways`.
   - [themes](./themes/EGM.md) - the Hodor theme source and its compiled

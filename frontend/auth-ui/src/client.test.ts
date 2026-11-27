@@ -109,6 +109,28 @@ describe("the client for the interaction interface", () => {
     expect(sent[1]?.csrfToken).toBe("of-the-session");
   });
 
+  it("reads the frames of a sign-out, and only web addresses among them", async () => {
+    const { client, sent } = scripted({
+      "GET /signed-out": [
+        json(200, {
+          frames: [
+            "https://payroll.example.com/fc?iss=x&sid=y",
+            "javascript:alert(1)",
+            42,
+            "http://127.0.0.1:8080/fc?iss=x&sid=z",
+          ],
+        }),
+        json(200, { frames: "nothing" }),
+      ],
+    });
+    expect(await client.signedOutFrames()).toEqual([
+      "https://payroll.example.com/fc?iss=x&sid=y",
+      "http://127.0.0.1:8080/fc?iss=x&sid=z",
+    ]);
+    expect(sent[0]).toMatchObject({ method: "GET", path: "/signed-out" });
+    expect(await client.signedOutFrames()).toEqual([]);
+  });
+
   it("turns a problem document into a failure with its code, identifier and wait", async () => {
     const { client } = scripted({
       "POST /recovery": [problem(429, "authentication.too_many_attempts", { "Retry-After": "90" })],

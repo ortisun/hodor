@@ -128,3 +128,14 @@ body {
     padding-top: var(--spacing-6);
   }
 }
+
+/* The frames of the signed-out page: each loads an application's
+   front-channel logout address, unseen and out of reach of clicks. */
+.signed-out-frame {
+  position: absolute;
+  width: 0;
+  height: 0;
+  border: 0;
+  visibility: hidden;
+  pointer-events: none;
+}

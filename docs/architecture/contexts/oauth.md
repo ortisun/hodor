@@ -4,7 +4,7 @@ The `oauth` context makes Hodor an OAuth 2.x authorization server and an OpenID 
 
 It does not sign anyone in. When a request needs a person, it hands the request to the `authentication` context and takes the session that comes back. The two contexts do not depend on each other: the HTTP layer joins them ([crates.md](../crates.md)).
 
-This page specifies what Issue-53 builds: applications, clients and resource servers, and the rules they keep; what Issue-55 builds: the authorization endpoint, grants and authorization codes; what Issue-56 builds: the token endpoint, client authentication and access tokens; what Issue-59 builds: the OpenID Provider; what Issue-60 builds: logout initiated by the relying party; what Issue-62 builds: [consent](#consent); what Issue-93 builds: [clients that act as a workload](#clients-that-act-as-a-workload); what Issue-106 builds: [a JWT-SVID as a client's proof](#checking-a-jwt-svid); what Issue-107 builds: [an identity forwarded by a proxy](#an-identity-forwarded-by-a-proxy) as a client's proof; what Issue-95 builds: [token exchange](#token-exchange); what Issue-100 builds: [back-channel logout](#back-channel-logout); what Issue-98 builds: [pairwise subject identifiers](#pairwise-subject-identifiers); and what Issue-99 builds: [claim mappers](#claim-mappers); what Issue-120 builds: [request objects](#request-objects); what Issue-121 builds: [pushed authorization requests](#pushed-authorization-requests); what Issue-122 builds: [request objects at a client's address](#request-objects-at-a-clients-address); and what Issue-125 builds: the parameters of a request that were still ignored, `id_token_hint`, `display` and `prompt=create`, a client's [defaults for a sign-in](#defaults-for-a-sign-in), the access token in a form body at [UserInfo](#userinfo); and what Issue-132 builds: [the settings of client registration](#client-registration) and initial access tokens; and what Issue-127 builds: [response types and modes](#response-types-and-modes) and [the ID token through the browser](#the-id-token-through-the-browser); and what Issue-133 builds: [the registration endpoint](#the-registration-endpoint), where a client registers itself. The other endpoints and tokens are added by Issue-57 and Issue-58, under the headings at the end of this page.
+This page specifies what Issue-53 builds: applications, clients and resource servers, and the rules they keep; what Issue-55 builds: the authorization endpoint, grants and authorization codes; what Issue-56 builds: the token endpoint, client authentication and access tokens; what Issue-59 builds: the OpenID Provider; what Issue-60 builds: logout initiated by the relying party; what Issue-62 builds: [consent](#consent); what Issue-93 builds: [clients that act as a workload](#clients-that-act-as-a-workload); what Issue-106 builds: [a JWT-SVID as a client's proof](#checking-a-jwt-svid); what Issue-107 builds: [an identity forwarded by a proxy](#an-identity-forwarded-by-a-proxy) as a client's proof; what Issue-95 builds: [token exchange](#token-exchange); what Issue-100 builds: [back-channel logout](#back-channel-logout); what Issue-98 builds: [pairwise subject identifiers](#pairwise-subject-identifiers); and what Issue-99 builds: [claim mappers](#claim-mappers); what Issue-120 builds: [request objects](#request-objects); what Issue-121 builds: [pushed authorization requests](#pushed-authorization-requests); what Issue-122 builds: [request objects at a client's address](#request-objects-at-a-clients-address); and what Issue-125 builds: the parameters of a request that were still ignored, `id_token_hint`, `display` and `prompt=create`, a client's [defaults for a sign-in](#defaults-for-a-sign-in), the access token in a form body at [UserInfo](#userinfo); and what Issue-132 builds: [the settings of client registration](#client-registration) and initial access tokens; what Issue-139 builds: [front-channel logout](#front-channel-logout); what Issue-127 builds: [response types and modes](#response-types-and-modes) and [the ID token through the browser](#the-id-token-through-the-browser); and what Issue-133 builds: [the registration endpoint](#the-registration-endpoint), where a client registers itself. The other endpoints and tokens are added by Issue-57 and Issue-58, under the headings at the end of this page.
 
 ## Applications
 
@@ -37,6 +37,8 @@ A client is what talks to Hodor's endpoints. Its identifier is the `client_id` o
 | Post-logout redirect addresses | Where [logout](#logout-initiated-by-the-relying-party) may send a person back to. At most 10 |
 | Back-channel logout address | Optional: where Hodor sends a [logout token](#back-channel-logout) when a session the client signed a person in with ends, its `backchannel_logout_uri` of OpenID Connect Back-Channel Logout. See [the back-channel logout address](#the-back-channel-logout-address) |
 | Back-channel logout session required | Whether the client needs `sid` in its logout tokens, its `backchannel_logout_session_required`. `false` unless chosen. Hodor puts `sid` in every logout token, so this only records what the client relies on |
+| Front-channel logout address | Optional: the address Hodor's [signed-out page](#the-signed-out-page) loads in an invisible frame when a session the client signed a person in with ends in the person's browser, its `frontchannel_logout_uri` of OpenID Connect Front-Channel Logout. See [the front-channel logout address](#the-front-channel-logout-address) |
+| Front-channel logout session required | Whether the client needs `iss` and `sid` in the address of its frame, its `frontchannel_logout_session_required`. `false` unless chosen. Hodor puts both in the address of every frame, so this only records what the client relies on |
 | Scopes | The scopes it may ask for. At most 50 |
 | PKCE | Whether it must send a code challenge. Always for a public client; on by default for a confidential one |
 | ID token algorithm | How its [ID tokens](#the-id-token) are signed, its `id_token_signed_response_alg` of OpenID Connect Registration: `ES256` unless changed, or `RS256`, `PS256` or `EdDSA`. See [which algorithm](#the-id-token) |
@@ -76,6 +78,7 @@ Every change to a client is checked against all of these at once; a change that 
 - **A client with `authorization_code` has at least one response type, and one without it has none.** The grant is what lets a client send people to the authorization endpoint, whatever it is answered with there ([response types of a client](#response-types-of-a-client)).
 - **Only a client with `authorization_code` has post-logout redirect addresses**, since only it gets ID tokens and signs people in. It may have none.
 - **Only a client with `authorization_code` has a back-channel logout address**, for the same reason. It may have none. Back-channel logout session required is `true` only for a client with an address.
+- **Only a client with `authorization_code` has a front-channel logout address**, for the same reason, and its scheme, host and port are those of one of the client's redirect addresses. It may have none. Front-channel logout session required is `true` only for a client with an address.
 - **Only a client with `authorization_code` has request object addresses**, since only it sends authorization requests. It may have none.
 - **Only a client with `authorization_code` may be pairwise**, since only it signs people in; a client of client credentials alone, and so one with a principal, is public. **A pairwise client has a sector**: a sector identifier address, or redirect addresses that all name one host. **Only a pairwise client has a sector identifier address.**
 - **Only a client with `authorization_code` has a default max age, default assurance levels, or requires the time of the sign-in**, since only it signs people in.
@@ -134,6 +137,16 @@ Issue-100. The back-channel logout address is not where a browser goes: Hodor's 
 - **Only a new or changed address is checked.** Changing a client's other settings does not check its address again, so a name that resolves elsewhere since does not stop an administrator from changing the client's name.
 - **Checked again at every delivery**, by the guarded client, on the resolution it connects with: a name can lead elsewhere later. An attempt to an address that may not be called fails like one the client did not answer.
 - **The addresses of the development exception** (`HODOR_OUTBOUND_DEVELOPMENT_HOSTS`) are accepted over plain HTTP, when set and when called, as the guarded client accepts them. Nowhere real has any.
+
+### The front-channel logout address
+
+Issue-139. The front-channel logout address is never called by Hodor: the person's browser loads it, in a frame of Hodor's [signed-out page](#the-signed-out-page), as it follows a redirect address. So it is checked as a [redirect address](#redirect-addresses) is, not as an address Hodor calls:
+
+- **One absolute HTTPS address**, with a host, without a name and password, a fragment, a `*` or a backslash, at most 2000 characters, all of them printable ASCII without spaces. **Plain HTTP only to a loopback address** written as an address, `127.0.0.1` or `[::1]`, for an application on the person's own machine. A private-use scheme is refused: a frame loads only web addresses. A port, a path and a query are allowed ([Front-Channel Logout, section 2](https://openid.net/specs/openid-connect-frontchannel-1_0.html#RPLogout)). It is kept exactly as it was given.
+- **Its scheme, host and port are those of one of the client's redirect addresses**, as the specification requires: the frame goes only to a site the client already receives codes at, so a client cannot make Hodor's page load someone else's site. A host is compared without regard to case, and a port left out is the scheme's own, 443 or 80.
+- **Checked at every change of the client**, against the redirect addresses the change leaves it with: a change that takes away the last redirect address of the address's site is refused like an address of another site.
+- Refused with `oauth.client_frontchannel_logout_uri_invalid`, whose detail says which rule the address broke. The message never repeats the address.
+- **Nothing resolves or calls it** on Hodor's side, so `DestinationCheck` plays no part and the development exception of outbound HTTP does not apply.
 
 ### Request object addresses
 
@@ -296,7 +309,7 @@ For an operator who can reach the database, as for tenants and identity provider
 | `hodor-cli application add --tenant acme --name Billing [--first-party]` | Registers an application, enabled; third party unless `--first-party` is given. Prints its identifier |
 | `hodor-cli application list --tenant acme` | One line per application: identifier, status, first or third party, name |
 | `hodor-cli application disable --tenant acme --id …`, `enable` | |
-| `hodor-cli client add --tenant acme --application … --name … --type confidential --grant authorization_code --redirect-uri https://… --scope openid` | Creates a client. `--grant`, `--redirect-uri`, `--post-logout-redirect-uri`, `--scope` and `--response-type` are given once per value, a [response type](#response-types-of-a-client) of two words in quotes, `code` alone unless given; `--method` chooses the authentication method, `--secret-days` the lifetime of the first secret, `--without-pkce` lets a confidential client redeem a code without PKCE, `--id-token-algorithm` signs its ID tokens with `RS256`, `PS256` or `EdDSA` instead of `ES256`, `--userinfo-signed-response-alg` signs its [UserInfo answers](#signed-userinfo-answers) with one of the four, `--request-object-signing-alg` chooses its [request object algorithm](#request-objects), `ES256`, `RS256`, `PS256` or `none`, `--require-pushed-authorization-requests` has every request of it [pushed](#pushed-authorization-requests) first, `--request-uri`, once per value, gives it a [request object address](#request-object-addresses), checked with the development exception of `HODOR_OUTBOUND_DEVELOPMENT_HOSTS` as the server has it, `--backchannel-logout-uri` gives it a [back-channel logout address](#the-back-channel-logout-address), checked with the development exception of `HODOR_OUTBOUND_DEVELOPMENT_HOSTS` as the server has it, `--backchannel-logout-session-required` records that it needs `sid`, `--subject-type pairwise` makes it [pairwise](#pairwise-subject-identifiers), `--sector-identifier-uri` gives it a [sector identifier address](#the-sector-identifier-address), fetched through a guarded client with the same development exception, `--jwks-uri` gives a client using `private_key_jwt` its [key set address](#keys-at-the-clients-address), checked with the same development exception, `--principal` binds it to a service account or an agent, `--exchange-rule '<subject audience>=><audience>'`, once per rule, gives an agent's client its exchange rules, `--spiffe-id` and `--linkerd-identity` bind a service account's client using `spiffe_jwt`, `spiffe_x509`, `tls_client_auth` or `linkerd_identity` to [its workload's identity](#an-identity-forwarded-by-a-proxy), and `--bound-tokens` asks for [certificate-bound access tokens](#certificate-bound-access-tokens). Prints the `client_id` and, for a client with a secret method, the secret, once |
+| `hodor-cli client add --tenant acme --application … --name … --type confidential --grant authorization_code --redirect-uri https://… --scope openid` | Creates a client. `--grant`, `--redirect-uri`, `--post-logout-redirect-uri`, `--scope` and `--response-type` are given once per value, a [response type](#response-types-of-a-client) of two words in quotes, `code` alone unless given; `--method` chooses the authentication method, `--secret-days` the lifetime of the first secret, `--without-pkce` lets a confidential client redeem a code without PKCE, `--id-token-algorithm` signs its ID tokens with `RS256`, `PS256` or `EdDSA` instead of `ES256`, `--userinfo-signed-response-alg` signs its [UserInfo answers](#signed-userinfo-answers) with one of the four, `--request-object-signing-alg` chooses its [request object algorithm](#request-objects), `ES256`, `RS256`, `PS256` or `none`, `--require-pushed-authorization-requests` has every request of it [pushed](#pushed-authorization-requests) first, `--request-uri`, once per value, gives it a [request object address](#request-object-addresses), checked with the development exception of `HODOR_OUTBOUND_DEVELOPMENT_HOSTS` as the server has it, `--backchannel-logout-uri` gives it a [back-channel logout address](#the-back-channel-logout-address), checked with the development exception of `HODOR_OUTBOUND_DEVELOPMENT_HOSTS` as the server has it, `--backchannel-logout-session-required` records that it needs `sid`, `--frontchannel-logout-uri` gives it a [front-channel logout address](#the-front-channel-logout-address), `--frontchannel-logout-session-required` records that it needs `iss` and `sid` in it, `--subject-type pairwise` makes it [pairwise](#pairwise-subject-identifiers), `--sector-identifier-uri` gives it a [sector identifier address](#the-sector-identifier-address), fetched through a guarded client with the same development exception, `--jwks-uri` gives a client using `private_key_jwt` its [key set address](#keys-at-the-clients-address), checked with the same development exception, `--principal` binds it to a service account or an agent, `--exchange-rule '<subject audience>=><audience>'`, once per rule, gives an agent's client its exchange rules, `--spiffe-id` and `--linkerd-identity` bind a service account's client using `spiffe_jwt`, `spiffe_x509`, `tls_client_auth` or `linkerd_identity` to [its workload's identity](#an-identity-forwarded-by-a-proxy), and `--bound-tokens` asks for [certificate-bound access tokens](#certificate-bound-access-tokens). Prints the `client_id` and, for a client with a secret method, the secret, once |
 | `hodor-cli client list --tenant acme --application …` | One line per client: `client_id`, status, type, authentication method, name |
 | `hodor-cli client rotate-secret --tenant acme --id … [--lifetime-days 365] [--keep-previous-days 7]` | Gives a client a new secret and prints it, once |
 | `hodor-cli client disable --tenant acme --id …`, `enable` | |
@@ -366,6 +379,8 @@ Every table is a tenant table under row-level security, in the schema `oauth`. R
 | `request_uris` | `text[]` | The [request object addresses](#request-object-addresses), compared byte for byte (`COLLATE "C"`); empty for a client made before it existed. Check constraints allow at most 10, and any only with the `authorization_code` grant |
 | `backchannel_logout_uri` | `text` | The [back-channel logout address](#the-back-channel-logout-address), or null. At most 2000 characters, `https://` or `http://`, compared byte for byte (`COLLATE "C"`); a check constraint allows it only with the `authorization_code` grant |
 | `backchannel_logout_session_required` | `boolean` | `false` for a client made before it existed; a check constraint allows `true` only with an address |
+| `frontchannel_logout_uri` | `text` | The [front-channel logout address](#the-front-channel-logout-address), or null (migration 0124). At most 2000 characters, `https://` or `http://`, compared byte for byte (`COLLATE "C"`); a check constraint (`client_frontchannel_logout_needs_code`) allows it only with the `authorization_code` grant. That it shares its site with a redirect address is checked by the domain, as the rules of redirect addresses are |
+| `frontchannel_logout_session_required` | `boolean` | `false` for a client made before it existed; a check constraint allows `true` only with an address |
 | `subject_type` | `text` | `public` or `pairwise`, by a check constraint; `public` for a client made before it existed. A check constraint allows `pairwise` only with the `authorization_code` grant |
 | `default_max_age` | `integer` | The default max age in seconds, or null. A check constraint keeps it from 0 to 31 536 000 |
 | `default_acr_values` | `text[]` | The default assurance levels, in order; empty for a client made before it existed |
@@ -1515,6 +1530,7 @@ It names only what is built:
 | `claims_parameter_supported` | `true`: [the `claims` parameter](#the-claims-parameter) is read |
 | `require_pushed_authorization_requests` | Whether the tenant [requires pushed requests](#requiring-pushed-requests) of every client: `false` unless it does |
 | `backchannel_logout_supported`, `backchannel_logout_session_supported` | `true`: [back-channel logout](#back-channel-logout) is offered, and every logout token carries `sid` |
+| `frontchannel_logout_supported`, `frontchannel_logout_session_supported` | `true`: [front-channel logout](#front-channel-logout) is offered, and the address of every frame carries `iss` and `sid` |
 | `tls_client_certificate_bound_access_tokens` | `true` when the operator names a header that forwards certificates, `client-cert` or `x-forwarded-client-cert`: [certificate-bound access tokens](#certificate-bound-access-tokens) are offered (RFC 8705, section 3.3). Left out otherwise |
 
 **`spiffe_jwt` follows draft-ietf-oauth-spiffe-client-auth-03**, the version of the Internet-Draft Hodor implements ([checking a JWT-SVID](#checking-a-jwt-svid)). The draft is not yet a standard and may change; a change of the version Hodor follows is a change to Hodor, written in the changelog ([Decision 0029](../../decisions/0029-hodor-in-a-service-mesh.md#consequences)). `spiffe_x509` follows the same version, section 3.3 ([an identity forwarded by a proxy](#an-identity-forwarded-by-a-proxy)); the draft's `spiffe_wit` is not offered.
@@ -1576,19 +1592,21 @@ A `POST` always asks. A form that another site posts does not carry the session 
 
 The person is asked whenever the request does not prove that it comes from the session it ends, as the specification requires: otherwise any site could sign a person out of Hodor by sending their browser to this address.
 
-**Ending the session** is what signing out does ([the interaction interface](../../api/interaction-api.md#routes-for-a-signed-in-person)): the session is revoked, with the reason `relying_party_logout` in its event and so in the audit log, and the browser is told to forget the session cookie. With it ends every refresh token family made in that session without `offline_access` (Issue-57). Access tokens already issued live out their few minutes; revoking them is Issue-58. Grants are not revoked: access the person gave with `offline_access` goes on. Every client the person signed in to with the session, the one that asked included, is then told through [back-channel logout](#back-channel-logout) if it has an address for it.
+**Ending the session** is what signing out does ([the interaction interface](../../api/interaction-api.md#routes-for-a-signed-in-person)): the session is revoked, with the reason `relying_party_logout` in its event and so in the audit log, and the browser is told to forget the session cookie. With it ends every refresh token family made in that session without `offline_access` (Issue-57). Access tokens already issued live out their few minutes; revoking them is Issue-58. Grants are not revoked: access the person gave with `offline_access` goes on. Every client the person signed in to with the session, the one that asked included, is then told through [back-channel logout](#back-channel-logout) if it has an address for it, and through [front-channel logout](#front-channel-logout) if it has an address for that.
+
+**When the session ends at once** and a client of the session has a front-channel logout address, the browser is not sent back yet: the return address and `state` are kept in the cookie `__Secure-hodor_logout`, as when the person is [asked](#asking-the-person), and the browser is sent to the [signed-out page](#the-signed-out-page), `/t/{slug}/account/signed-out?continue=logout`, with `ui_locales` when the request had it. The page loads the frames and then goes on to the [finish](#finishing). When no client has such an address, the request finishes at once, as before.
 
 ### Asking the person
 
 1. The checked request is kept in the cookie `__Secure-hodor_logout`: the client, the return address and `state`. It holds nothing secret; it only says where to go afterwards, and it is checked again when it is used. It is `HttpOnly`, `Secure`, `SameSite=Strict`, with `Path=/t/{slug}` and a `Max-Age` of 600 seconds.
 2. The browser is sent to the hosted pages, `/t/{slug}/account/sign-out`, with `ui_locales` when the request had it.
 3. The page asks who is signed in. When nobody is, it goes on to the [finish](#finishing) at once. Otherwise it asks "Sign out of {tenant}?", with two buttons:
-   - **Sign out** ends the session through the interaction interface, as the account page does, and goes on to the finish.
+   - **Sign out** ends the session through the interaction interface, as the account page does, and goes on to the finish: through the [signed-out page](#the-signed-out-page) with `continue=logout`, which loads the frames of [front-channel logout](#front-channel-logout), when the server kept some for the sign-out, and straight there otherwise.
    - **Stay signed in** goes to the account page. The application is not told: the person stays signed in to Hodor and can sign in to the application again.
 
 ### Finishing
 
-`GET /t/{slug}/oauth2/logout/finish` is where a request that was asked about ends; a request that was not asked about ends the same way without it.
+`GET /t/{slug}/oauth2/logout/finish` is where a request that was asked about ends, and one that ended the session at once while clients were told through the browser; any other request ends the same way without it.
 
 - The cookie is read and removed. Its client must still be a client of the tenant, enabled, and its return address still one of the client's post-logout redirect addresses; otherwise the return address is dropped.
 - When the browser still has a valid session, the person chose to stay or came here some other way: the browser is sent to the account page.
@@ -1787,6 +1805,116 @@ Settings of `hodor-worker`; see [local setup](../../development/local-setup.md#h
 |---|---|
 | `hodor.backchannel_logout.attempts` | Attempts, by `outcome`: `delivered`, `retrying`, `set_aside` or `skipped` |
 | `hodor.backchannel_logout.passes` | Passes of the delivery loop, by `outcome`: `ok` or `error` |
+
+## Front-channel logout
+
+Issue-139. When a person's session at Hodor ends in their browser, every application they signed in to with it that registered a [front-channel logout address](#the-front-channel-logout-address) is told through that same browser: Hodor's signed-out page loads each address in an invisible frame, with `iss` and `sid`, and the application ends its own session for that person ([OpenID Connect Front-Channel Logout 1.0](https://openid.net/specs/openid-connect-frontchannel-1_0.html)). It reaches applications that have no server of their own to be told at, such as a single-page application. Why it is built this way is [Decision 0050](../../decisions/0050-logout-and-session-state-in-the-browser.md), with the choices of [Decision 0081](../../decisions/0081-the-frames-of-the-signed-out-page.md).
+
+```mermaid
+sequenceDiagram
+    participant Person as The person's browser
+    participant Server as hodor-server
+    participant Kept as oauth.frontchannel_logout
+    participant Client as Each client's front-channel logout address
+
+    Person->>Server: sign out, or logout initiated by the relying party
+    Server->>Server: end the session
+    Server->>Kept: the frames of the session's clients, under the hash of a new handle
+    Server->>Person: the handle in a cookie; go to the signed-out page
+    Person->>Server: GET /account/signed-out, with the handle
+    Server->>Person: the page, its policy allowing the frames' sites only
+    Person->>Server: GET /interaction/signed-out, with the handle
+    Server->>Person: the frames' addresses, read from the kept row
+    Person->>Client: each address in a hidden frame, with iss and sid
+    Note over Person: every frame loaded, or five seconds passed
+    Person->>Server: the finish of the logout, or the sign-in page
+```
+
+### When, and which clients
+
+**When.** A session ends in the browser that holds it: the person signs out, on the account page or on the [sign-out page](#asking-the-person), through `DELETE /interaction/session` of [the interaction interface](../../api/interaction-api.md#routes-for-a-signed-in-person), or ends that same session from the list of their sessions; or the end-session endpoint ends the session [at once](#what-happens) for a hint that proves it. A session ended any other way, by the person ending their other sessions, by an administrator, by a password reset or by a SCIM directory deprovisioning the person, has no page in its own browser to load frames in: its clients are told through [back-channel logout](#back-channel-logout) if they have an address for it, or not at all. The console says so beside the address.
+
+**Which clients.** Those [back-channel logout](#which-sessions-which-clients) finds: every client with a grant made in the session with `openid` among its scopes, whatever the grant's status since. Of those, the ones that, when the session ends, have a front-channel logout address and are enabled, and so is their application. A client gets **one** frame, however many codes it got in the session. A client with both addresses is told both ways, and handles the second notice of one logout as it handles a repeated logout token.
+
+**A tenant's sessions only ever frame its own clients.** The frames are made in the session's tenant, from that tenant's grants and clients only, under row-level security, and kept in that tenant.
+
+### The address of a frame
+
+The client's front-channel logout address, with two parameters added to its query, form encoded: after `&` when the address has a query, after `?` when it has none.
+
+| Parameter | Value |
+|---|---|
+| `iss` | The tenant's issuer, `{HODOR_PUBLIC_URL}/t/{slug}`, as in the client's ID tokens |
+| `sid` | The session as that client knows it: the session's identifier, or for a [pairwise client](#pairwise-subject-identifiers) the pairwise identifier of the session, the `sid` of the client's ID tokens |
+
+Both are always there, whether or not the client set front-channel logout session required. A frame never carries the `sid` another client knows the session by.
+
+### Kept on the server
+
+The frames are made by the server, once, when the session ends, and **never taken from the browser**:
+
+1. The server makes a **handle** of 32 random bytes and keeps the frames' addresses in `oauth.frontchannel_logout`, under the SHA-256 of the handle, for 120 seconds.
+2. The browser gets the handle, in base64url, in the cookie `__Secure-hodor_signed_out`: `HttpOnly`, `Secure`, `SameSite=Lax`, with `Path=/t/{slug}` and a `Max-Age` of 120 seconds. `Lax` and not `Strict`, because the signed-out page is reached by a redirect that a request from the application's site started, and the page needs the cookie to be sent with it.
+3. The [signed-out page](#the-signed-out-page) and `GET /interaction/signed-out` read the row by the hash of the handle the cookie holds, in the tenant the address names. A handle that is unknown, expired, of another tenant or not a handle at all finds no row, and the page loads no frame.
+
+A session that ends with no client to frame keeps no row, and its answer tells the browser to forget a cookie of an earlier sign-out. The row is not removed when it is read: the page may be loaded again during its life, which tells the clients again of a logout they already know of. [The cleanup](../../operations/deployment.md#cleanup) removes it once it has expired (`frontchannel_logouts`).
+
+**If the frames cannot be made**, because storage fails, the session has ended all the same: the person is signed out, the failure is logged, and the page loads no frame. Back-channel logout does not depend on it.
+
+### The signed-out page
+
+`/t/{slug}/account/signed-out` is a page of [the hosted pages](../hosted-pages.md#the-pages).
+
+- The browser comes to it only when there are frames to load: the end-session endpoint sends it there when it kept some, and the account page and the sign-out page ask `GET /interaction/signed-out` first and go on without it when the answer is empty.
+- It asks `GET /interaction/signed-out` for its frames, and loads each address in a frame of its own. A frame is invisible, takes no clicks (`pointer-events: none`) and is sandboxed with `allow-scripts allow-same-origin` only: the client's page may run its script and reach its own cookies, but may not navigate Hodor's page, open a window or submit a form.
+- It says, while it waits, that the person's applications are being told they signed out.
+- It goes on when every frame has loaded or **five seconds** have passed, whichever comes first. A frame that never loads does not keep the person waiting longer.
+- **Where it goes on to:** with `continue=logout` in its address, to the [finish](#finishing) of the end-session endpoint, which sends the person back to the application or to the sign-in page; without it, when the person signed out from the account page, to the sign-in page, which says the person is signed out. `continue` names one of these two places of Hodor's own, never an address.
+- Without frames, or when its request fails, it goes on at once.
+
+### The policy of the signed-out page
+
+The page is sent with the [policy of the hosted pages](../hosted-pages.md#content-security-policy), with one directive more for that answer only: `frame-src`, naming the sites of the frames it loads, each once. A site is the address's scheme, host and port, such as `https://payroll.example.com` or `https://payroll.example.com:8443`. Without a frame, the page has no `frame-src`, and `default-src 'none'` forbids every frame.
+
+The answer carries `Cache-Control: no-store`: it is made for one browser's sign-out. The policy names sites, not whole addresses: an address may be 2000 characters long and a session may have many clients, while a response header that grows that long is refused by some proxies; and a browser no longer compares the path once a frame is redirected. A site is the client's own, since it shares the site of one of the client's redirect addresses. The policy's `frame-ancestors 'none'` stays: Hodor's page is never framed itself.
+
+### Bounds
+
+| What | Bound |
+|---|---|
+| A client's front-channel logout address | 1, at most 2000 characters |
+| Frames for one client and one sign-out | 1 |
+| How long the page waits for its frames | 5 seconds |
+| The life of the kept frames, and of the cookie that names them | 120 seconds |
+| How long expired frames are kept | Until the next pass of [the cleanup](../../operations/deployment.md#cleanup) (`frontchannel_logouts`, retention 0) |
+
+### Ports
+
+| Port | Purpose |
+|---|---|
+| `SessionClients` | The clients issued a code with `openid` in a session, as for back-channel logout |
+| `ClientStore`, `ApplicationStore` | Whether a client has a front-channel logout address, and whether it and its application are enabled |
+| `FrontChannelLogoutStore` | Keep the frames of a sign-out under the hash of its handle; find them by that hash while they live |
+| `PairwiseSubjects` | The pairwise `sid` of a pairwise client |
+| `Digest` (kernel) | The SHA-256 of the handle |
+| `RandomSource` (kernel) | The handle |
+| `Clock` (kernel) | When the frames stop being readable |
+
+The HTTP layer ends the session through the session context, then asks the OAuth context for the frames; the session context does not know it does.
+
+### Storage
+
+`oauth.frontchannel_logout` is a tenant table under row-level security (migration 0124).
+
+| Column | Type | Notes |
+|---|---|---|
+| `tenant_id`, `id` | `uuid` | Primary key |
+| `handle_hash` | `bytea` | The SHA-256 of the handle; 32 bytes, unique in the tenant. The handle itself is never stored |
+| `session_id` | `uuid` | The session that ended. Not a reference: contexts do not reference each other's tables |
+| `frames` | `text[]` | The addresses of the frames, in the order they are loaded; at least one |
+| `created_at`, `expires_at` | `timestamptz` | `expires_at` is 120 seconds after `created_at`, by a check constraint |
+
+An index on `expires_at` serves the cleanup.
 
 ## Pairwise subject identifiers
 
@@ -2216,6 +2344,7 @@ Every member Hodor supports becomes a setting of the client, checked by the rule
 | `request_object_signing_alg` | Its [request object algorithm](#request-objects) | None chosen |
 | `default_max_age`, `default_acr_values`, `require_auth_time` | Its [defaults for a sign-in](#defaults-for-a-sign-in) | None, none, `false` |
 | `backchannel_logout_uri`, `backchannel_logout_session_required` | Its [back-channel logout address](#the-back-channel-logout-address), checked through the guarded outbound client, and whether it needs `sid` | None, `false` |
+| `frontchannel_logout_uri`, `frontchannel_logout_session_required` | Its [front-channel logout address](#the-front-channel-logout-address), checked by the rules of every client, on the site of one of its redirect addresses, and bounded by the policy's hosts as every address of a registration is; and whether it needs `iss` and `sid` | None, `false` |
 | `tls_client_certificate_bound_access_tokens` | Whether its access tokens are [bound to its certificate](#certificate-bound-access-tokens) | `false` |
 
 A member of the wrong kind, such as a text where a list of texts is expected, is refused with `oauth.client_metadata_invalid`, whose detail names the member.
@@ -2229,7 +2358,7 @@ A member of the wrong kind, such as a text where a list of texts is expected, is
 | `id_token_encrypted_response_alg`, `id_token_encrypted_response_enc`, `userinfo_encrypted_response_alg`, `userinfo_encrypted_response_enc`, `request_object_encryption_alg`, `request_object_encryption_enc`, `authorization_encrypted_response_alg`, `authorization_encrypted_response_enc` | Encryption, 0.6.0 ([Decision 0048](../../decisions/0048-encryption.md)) |
 | `software_statement` | Software statements, Issue-135: refused with `oauth.software_statement_unapproved`, since the tenant trusts no issuer yet |
 
-**Ignored**, and left out of the answer, so that the client sees they were not kept: `contacts`, `software_id`, `software_version`, `initiate_login_uri` (Issue-134), `frontchannel_logout_uri` and `frontchannel_logout_session_required` (Milestone 16), every member written with a language tag such as `client_name#ja`, and every member Hodor does not know.
+**Ignored**, and left out of the answer, so that the client sees they were not kept: `contacts`, `software_id`, `software_version`, `initiate_login_uri` (Issue-134), every member written with a language tag such as `client_name#ja`, and every member Hodor does not know.
 
 #### What a registration goes through
 

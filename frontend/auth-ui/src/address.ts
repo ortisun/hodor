@@ -14,6 +14,7 @@ export const PAGES = [
   "profile",
   "accept-invitation",
   "sign-in-link",
+  "signed-out",
 ] as const;
 
 export type PageName = (typeof PAGES)[number];
@@ -83,6 +84,15 @@ export function noticeOf(search: string): NoticeName | null {
 export function continuationOf(search: string): "authorization" | "security" | null {
   const named = new URLSearchParams(search).get("continue");
   return named === "authorization" || named === "security" ? named : null;
+}
+
+/**
+ * Whether the signed-out page goes on to the finish of an application's
+ * request to sign out, rather than to the sign-in page. It names one of
+ * those two places of Hodor's own, never an address.
+ */
+export function continuesLogout(search: string): boolean {
+  return new URLSearchParams(search).get("continue") === "logout";
 }
 
 /**

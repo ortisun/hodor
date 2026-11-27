@@ -33,7 +33,7 @@ the set of re-exports in `lib.rs`.
 | `consent_routes(state)`, `ConsentState` | `consent.rs` | The consent routes of the interaction interface, merged with `interaction_routes` under `/interaction`, behind the origin check: `GET` and `POST /consent` (what the waiting request asks for, with `registered` and, for a client that registered itself, its own name and the addresses it named; the answer; `404 oauth.consent_request_not_found` for any request that is not this browser's, this person's and this session's, or was answered), `GET /consents` and `DELETE /consents/{client_id}` (`404 oauth.consent_not_found`). The two that change something need the session's CSRF token. `ConsentState { consents, sessions, digest }`. |
 | `token_routes(state)`, `TokenState` | `token.rs` | The OAuth token, revocation, introspection and pushed request endpoints (`/token`, `/revoke`, `/introspect`, `/par`): each reads the form and the `Basic` credentials, and answers what `TokenService` decides: tokens in the JSON of RFC 6749 (with `issued_token_type` for a token exchange, RFC 8693), an empty `200` for every revocation by a client that proved who it is (RFC 7009), the JSON of RFC 7662, and `201` with `request_uri` and `expires_in` (RFC 9126) for a pushed request, read with `PushedRequest::parse` and given the tenant's `pushed_policy` of its settings. Every answer carries `no-store`. The `ForwardedIdentity` extension of the request, when a trusted proxy forwarded one, is given to the token request (`TokenRequest::with_forwarded`), for the client a request names with its identifier alone and for binding tokens to its certificate, and to the client of a revocation or introspection (`PresentedClient::with_forwarded`). `TokenState { tokens: TokenService, tenants: TenantService, public_url }`. |
 | `userinfo_routes(state)`, `UserInfoState` | `openid.rs` | UserInfo at `GET` and `POST /oauth2/userinfo`, mounted under a tenant: reads `Authorization: Bearer`, or `access_token` from a `POST` whose body is `application/x-www-form-urlencoded` (RFC 6750, section 2.2; Issue-125), never the query; both ways at once, or `access_token` twice, is `400` with `WWW-Authenticate: Bearer error="invalid_request"`. It answers what `UserInfoService::answer` decides, given the request's `ForwardedIdentity` for a bound token, however the token came: JSON or, for a client with a UserInfo algorithm, the signed answer as `application/jwt`, with `Cache-Control: no-store`; a refusal is `401` with `WWW-Authenticate: Bearer` (with `error="invalid_token"` when a token was sent) or `403` with `error="insufficient_scope"`. `UserInfoState { userinfo, public_url }`. |
-| `logout_routes(state)`, `LogoutState` | `logout.rs` | The end-session endpoint at `GET` and `POST /oauth2/logout` and `GET /oauth2/logout/finish`, mounted under a tenant. A refused request is the page of `error_page` (status `400`), never a redirect. A `GET` whose hint names the browser's session revokes it (`relying_party_logout`) and forgets the cookie; otherwise, and always for a form, the checked return address is kept in `__Secure-hodor_logout` (`SameSite=Strict`, 600 seconds) and the browser goes to `/account/sign-out`. The finish sends a browser still signed in to `/account`, else to the return address checked again (`LogoutService::still_returns`) with `state`, else to `/account/sign-in?notice=signed-out`. Every answer is `Cache-Control: no-store`. `LogoutState { logout, sessions, public_url }`. |
+| `logout_routes(state)`, `LogoutState` | `logout.rs` | The end-session endpoint at `GET` and `POST /oauth2/logout` and `GET /oauth2/logout/finish`, mounted under a tenant. A refused request is the page of `error_page` (status `400`), never a redirect. A `GET` whose hint names the browser's session revokes it (`relying_party_logout`) and forgets the cookie; otherwise, and always for a form, the checked return address is kept in `__Secure-hodor_logout` (`SameSite=Strict`, 600 seconds) and the browser goes to `/account/sign-out`. When a session so revoked had clients to tell through the browser (`sign_out_frames`), the browser goes to `/account/signed-out?continue=logout`, with the request's `ui_locales`, its return address kept in `__Secure-hodor_logout` as when it is asked; otherwise straight back. Either way it gets the cookie of the frames (`frames_cookie`), which forgets an earlier one when there are none. The finish sends a browser still signed in to `/account`, else to the return address checked again (`LogoutService::still_returns`) with `state`, else to `/account/sign-in?notice=signed-out`. Every answer is `Cache-Control: no-store`. `LogoutState { logout, sessions, public_url, front_channel: Option<FrontChannel> }`; `None` tells no client through the browser. |
 | `registration_routes(RegistrationState { applications, registration, public_url, digest })` | `registration.rs` | `POST /oauth2/register`, mounted under a tenant: reads the bearer token (any other `Authorization` header is presented as an empty token, refused once registration is known to be on), the JSON body when the request says `application/json` (anything else is `null`), and the SHA-256 of the client address, and answers what `ApplicationService::register_client` decides: `201` with `registration_answer`; `404 route.not_found` while registration is off; `401` with `invalid_token` and `WWW-Authenticate: Bearer realm="{issuer}"` (and `error="invalid_token"` for a token presented); `429` with `temporarily_unavailable` and `Retry-After`; `403` with `access_denied`; `400` with `invalid_redirect_uri`, `unapproved_software_statement` or `invalid_client_metadata`, the description the message and its detail. Every answer carries `Cache-Control: no-store` and `Pragma: no-cache`. |
 | `discovery_routes(DiscoveryState { public_url, tenants, identity_header, client_registration })` | `openid.rs` | `GET /.well-known/openid-configuration` and `GET /.well-known/oauth-authorization-server`, mounted under a tenant: the same `discovery_document`, with `registration_endpoint` (`with_registration_endpoint`) while the tenant's client registration is on, naming the tenant's assurance levels in `acr_values_supported` and its `pushed_requests.required` as `require_pushed_authorization_requests`, through `with_registration` `create` in `prompt_values_supported` when the tenant's registration policy is open, and, when a header of the caller's identity is named, the methods it makes usable (`advertise_forwarded_methods`) and, for a header that forwards certificates, `tls_client_certificate_bound_access_tokens` (`advertise_certificate_bound_tokens`), with `Cache-Control: public, max-age=300` and `Access-Control-Allow-Origin: *`. |
 | `authorization_api_routes(state)`, `AuthorizationApiState`, `AUTHORIZATION_API_AUDIENCE`, `EVALUATE_SCOPE`, `SIMULATE_SCOPE`, `EXPLAIN_SCOPE`, `AUTHORIZATION_OPENAPI`, `AUTHORIZATION_OPERATIONS` | `authorization_api.rs` | The Authorization API, mounted under a tenant at `/api/v1/authorization`: `POST /evaluate`, `/batch` (at most 100; a request that cannot be read is a problem object in its place) and `/simulate` (`against`: exactly one of `published: true`, `revision`, `draft`), and `GET /openapi.json` (`include_str!("../openapi/authorization-v1.json")`; a unit test holds it and `AUTHORIZATION_OPERATIONS` together). The caller comes from `ResourceAccessService::caller` with the audience `urn:hodor:authorization` and the request's `ForwardedIdentity`, or, for a value that `looks_like_api_key`, from `ApiKeyAccess` (the key good in the tenant, its holder a workload that may act, its application an enabled one of the tenant, whose resource server is asked about), then the route's scope; the namespace is the audience of the token client's application's resource server (`authorization.no_resource_server` when it has none) and the context's application is that application. A subject `{"type": "workload_identity", "id": …}` is resolved first by `resolve_workload`, through `ApplicationService::service_account_of`, to `{"type": "user"}` naming the service account the tenant's enabled clients bound to it act as, or the identity itself when none is bound; one that `WorkloadIdentity::parse` refuses is `authorization.workload_identity_invalid` (Decision 0058). Bodies are `deny_unknown_fields` (`request.body_invalid`). Answers name `decision` (`ALLOW`, `DENY`, `INDETERMINATE`), `decision_id`, `evaluated_at`, `engine`, `policy_version`, `reason`, and with `authz:explain` `matched_policies` and a simulation's `trace`; every answer carries `no-store`. `AuthorizationApiState { access, keys: ApiKeyAccess { keys, identity, applications }, evaluation, public_url }`. |
@@ -48,8 +48,9 @@ the set of re-exports in `lib.rs`.
 | `authority_bundle_routes(authority: AuthorityService)` | `authority_bundle.rs` | `GET /certificate-authority/bundle`, mounted under a tenant only when the installation turns the authority on: the bundle of the tenant's active authority as kept, `content-type: application/json` and `Cache-Control: public, max-age=300`; `404` `keys.authority_not_found` without one. |
 | `key_set_routes(keys: KeyService)` | `key_set.rs` | `GET /oauth2/jwks`, mounted under a tenant: first `KeyService::ensure_active` for each `IdTokenAlgorithm` (ES256, RS256, PS256, EdDSA), so that the set names the key of the next token; an Ed25519 key is written `kty` `OKP`, `crv` `Ed25519`, `x`; then the published key set as a JSON Web Key Set, with `Cache-Control: public, max-age=300` (`RotationPolicy::PUBLISHED_FOR`) and `Access-Control-Allow-Origin: *`. |
 | `policy_agent_routes(bundles: BundleService)` | `policy_agent.rs` | Mounted at the root, for Open Policy Agent instances, each by its bearer credential: `GET /opa/bundles/{name}` (`application/gzip`, `ETag`, `304` for a matching `If-None-Match`, `Cache-Control: no-store`; `404 authorization.bundle_not_found` for anything the instance may not pull), `POST /opa/status` and `POST /opa/logs` (`204`; a body with `Content-Encoding: gzip` is expanded). A missing, unknown or disabled credential is `401` with `WWW-Authenticate: Bearer`. |
-| `Pages` | `pages.rs` | A static application read from a directory: `load` (hosted pages), `load_console` (admin console), `page_routes`, `asset_routes`. |
+| `Pages` | `pages.rs` | A static application read from a directory: `load` (hosted pages, with the signed-out page), `load_console` (admin console, without it), `with_front_channel(FrontChannel)` (the signed-out page's frames are read through it; without it the page allows no frame), `page_routes`, `asset_routes`. |
 | `PAGE_PATHS`, `PROVIDER_CALLBACK_PAGE`, `PAGE_ASSETS_PATH`, `CONSOLE_PATHS`, `CONSOLE_ASSETS_PATH`, `PAGES_CONTENT_SECURITY_POLICY`, `CONSOLE_CONTENT_SECURITY_POLICY` | `pages.rs` | Paths and the content security policies of the static applications: the hosted pages' allows images from any HTTPS address, for a registered client's logo; the console's loads nothing from elsewhere. |
+| `FrontChannel { service: FrontChannelLogoutService, public_url }`, `SIGNED_OUT_PAGE` | `signed_out.rs` | Front-channel logout at the HTTP layer: its use cases and the address the tenants' issuers start with, given to `InteractionState`, `LogoutState` and `Pages::with_front_channel`; and the signed-out page's path under `/t/{slug}`, `/account/signed-out`. |
 
 `InteractionState` holds `authentication: AuthenticationService`,
 `accounts: AccountService` (both `hodor_authentication::api`),
@@ -57,7 +58,8 @@ the set of re-exports in `lib.rs`.
 `factors: FactorService` (`hodor_authentication::api`),
 `external: Option<ExternalSignIn>` (`hodor_federation::api`; `None` means no
 provider is offered), `digest: Arc<dyn Digest>` and `clock: Arc<dyn Clock>`
-(`hodor_kernel`).
+(`hodor_kernel`), and `front_channel: Option<FrontChannel>` (`None` when the
+installation issues no ID token: no client knows a session then).
 
 `AdminState` holds `tokens: AccessTokenService` (`hodor_credential`),
 `authorization: AuthorizationService` (`hodor_authorization`),
@@ -166,6 +168,7 @@ routes and the whole router.
 | POST | `/sign-in/providers/{alias}/callback` | `finish_with_provider` |
 | POST | `/sign-in/providers/{alias}/password` | `sign_in_with_directory` (LDAP directory sign-in) |
 | GET, DELETE | `/session` | `current_session`, `sign_out` |
+| GET | `/signed-out` | `frames_of_sign_out` (`{ "frames": [...] }`, the frames kept under the handle of `__Secure-hodor_signed_out`, `no-store`; no session needed) |
 | GET, DELETE | `/sessions` | `list_sessions`, `end_other_sessions` |
 | DELETE | `/sessions/{session_id}` | `end_session` |
 | POST | `/webauthn/registrations` | `begin_webauthn_registration` (session and CSRF token; `{ "passkey": true }` asks for a passkey) |
@@ -341,7 +344,8 @@ A client's secret is written only by `create_client` (`client_secret` in
 
 `Pages::page_routes` answers `GET` with the in-memory `index.html` on every
 path of `PAGE_PATHS` plus `PROVIDER_CALLBACK_PAGE` (hosted pages) or of
-`CONSOLE_PATHS` (console), to be mounted under `/t/{slug}`.
+`CONSOLE_PATHS` (console), to be mounted under `/t/{slug}`. The hosted pages
+also answer `SIGNED_OUT_PAGE` with `signed_out_page` (`signed_out.rs`).
 `Pages::asset_routes` serves the `assets` directory with
 `.nest_service(PAGE_ASSETS_PATH | CONSOLE_ASSETS_PATH, ServeDir)`, at the
 root, outside any tenant.
@@ -417,6 +421,12 @@ root, outside any tenant.
   the time left until the session's absolute expiry; it is set when a
   sign-in completes and cleared on sign-out or when the current session is
   ended.
+  `__Secure-hodor_signed_out` holds the handle of a sign-out's frames, with
+  `Path=/t/{slug}; Max-Age=120; HttpOnly; Secure; SameSite=Lax`
+  (`FRAMES_LIFETIME`); it is set, or cleared when there is no frame, on
+  sign-out, when the current session is ended through
+  `/sessions/{session_id}`, and when the end-session endpoint ends the
+  session at once.
 - Cross-site request forgery: the token is the hexadecimal SHA-256 of
   `csrf:` followed by the sign-in secret or the session token
   (`csrf_token`). It must be sent in the `x-csrf-token` header on step
@@ -448,6 +458,22 @@ root, outside any tenant.
   `state` and `receipt` when a response was kept.
 - Registration and recovery requests answer `202 {"status":"accepted"}`
   whether or not the address has an account (`accepted`).
+
+### Front-channel logout (`signed_out.rs`)
+
+- The frames are made only when a session ends in its own browser:
+  `sign_out` and `end_session` of the current session (`keep_frames`), and
+  the end-session endpoint ending the session at once (`sign_out_frames`),
+  each after the session has ended. The issuer given is
+  `{public_url}/t/{slug}`. A failure to make them is logged with its code
+  and counts as no frame: the session has ended all the same.
+- `kept_frames` reads the frames by the handle the cookie holds, in the
+  tenant of the address; none without `FrontChannel`, without the cookie,
+  or when they cannot be read (logged).
+- `signed_out_policy`: `PAGES_CONTENT_SECURITY_POLICY`, with
+  `; frame-src` and the sites of the frames (`frame_sources`) only when
+  there are any; a policy that is not a valid header value falls back to
+  the pages' own.
 
 ### Administration and console interfaces (`admin.rs`)
 
@@ -486,7 +512,9 @@ root, outside any tenant.
 - One `index.html`, read once at startup, answers every page of every
   tenant with its policy, `PAGES_CONTENT_SECURITY_POLICY` for the hosted
   pages and `CONSOLE_CONTENT_SECURITY_POLICY` for the console, and
-  `Cache-Control: no-cache`.
+  `Cache-Control: no-cache`,
+  except the signed-out page, sent with `signed_out_policy` and
+  `Cache-Control: no-store`.
 - Assets get `Cache-Control: public, max-age=31536000, immutable`;
   directories are never listed, and anything that is not a file gets
   `404 route.not_found` (`asset_answer`).
@@ -500,10 +528,13 @@ root, outside any tenant.
 - Disk: `Pages::load` and `Pages::load_console` read `index.html`;
   `asset_routes` serves files from the `assets` directory.
 - Cookies: the sign-in and session cookies set and cleared by
-  `interaction.rs`. The console only reads the session cookie.
+  `interaction.rs`, and the cookie of a sign-out's frames set and cleared
+  by `interaction.rs` and `logout.rs` (`signed_out.rs`). The console only
+  reads the session cookie.
 - State changes happen only through the domain services the handlers call:
   sign-in steps, sessions revoked (`sign_out`, `ended_by_user`,
-  `revoked_by_administrator`), registration, recovery, a person's own
+  `revoked_by_administrator`), the frames of a sign-out kept,
+  registration, recovery, a person's own
   profile, user creation, suspension and standard claims, and identity provider creation, change, secret change and
   status change. Each authenticated or anonymous `Caller` carries a freshly
   generated `CorrelationId`.

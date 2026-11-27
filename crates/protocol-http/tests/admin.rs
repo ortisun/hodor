@@ -3306,6 +3306,121 @@ async fn a_client_gets_a_back_channel_logout_address_checked_as_a_webhook_endpoi
 }
 
 #[tokio::test]
+async fn a_client_gets_a_front_channel_logout_address_on_the_site_of_a_redirect_address() {
+    let world = world().await;
+    let application = new_application(&world, "Billing", true).await;
+    let path = format!("/applications/{application}/clients");
+    let mut body = web_client();
+    body["frontchannel_logout_uri"] = "https://billing.example.com/frontchannel-logout".into();
+    body["frontchannel_logout_session_required"] = true.into();
+    let created = world
+        .as_administrator(Method::POST, &path, Some(body))
+        .await;
+    assert_eq!(created.status, StatusCode::CREATED, "{}", created.body);
+    assert_eq!(
+        created.body["frontchannel_logout_uri"],
+        "https://billing.example.com/frontchannel-logout"
+    );
+    assert_eq!(created.body["frontchannel_logout_session_required"], true);
+    let client = created.body["id"].as_str().expect("client").to_owned();
+
+    // Unless given, a client has none.
+    let plain = world
+        .as_administrator(Method::POST, &path, Some(web_client()))
+        .await;
+    assert_eq!(
+        plain.body["frontchannel_logout_uri"],
+        serde_json::Value::Null
+    );
+    assert_eq!(plain.body["frontchannel_logout_session_required"], false);
+
+    // Hodor never calls it, so an address it could not reach is accepted,
+    // as long as it is on the client's own site.
+    for address in [
+        "https://evil.example.net/logout",
+        "https://billing.example.com:8443/logout",
+        "http://billing.example.com/logout",
+        "https://billing.example.com/logout#fragment",
+        "com.example.billing:/logout",
+    ] {
+        let refused = world
+            .as_administrator(
+                Method::PATCH,
+                &format!("/clients/{client}"),
+                Some(serde_json::json!({ "frontchannel_logout_uri": address })),
+            )
+            .await;
+        assert_eq!(
+            refused.status,
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "{address}: {}",
+            refused.body
+        );
+        assert_eq!(
+            refused.code(),
+            "oauth.client_frontchannel_logout_uri_invalid",
+            "{address}"
+        );
+    }
+
+    // Moving the redirect addresses to another site leaves the address on
+    // none of them.
+    let moved = world
+        .as_administrator(
+            Method::PATCH,
+            &format!("/clients/{client}"),
+            Some(serde_json::json!({ "redirect_uris": ["https://billing.example.net/callback"] })),
+        )
+        .await;
+    assert_eq!(moved.status, StatusCode::UNPROCESSABLE_ENTITY);
+    assert_eq!(moved.code(), "oauth.client_frontchannel_logout_uri_invalid");
+
+    // Removing the address while `iss` and `sid` are still required breaks
+    // a rule; removing both is a change.
+    let alone = world
+        .as_administrator(
+            Method::PATCH,
+            &format!("/clients/{client}"),
+            Some(serde_json::json!({ "frontchannel_logout_uri": null })),
+        )
+        .await;
+    assert_eq!(alone.status, StatusCode::UNPROCESSABLE_ENTITY);
+    assert_eq!(alone.code(), "oauth.client_frontchannel_logout_uri_invalid");
+    let removed = world
+        .as_administrator(
+            Method::PATCH,
+            &format!("/clients/{client}"),
+            Some(serde_json::json!({
+                "frontchannel_logout_uri": null,
+                "frontchannel_logout_session_required": false,
+            })),
+        )
+        .await;
+    assert_eq!(removed.status, StatusCode::OK, "{}", removed.body);
+    assert_eq!(
+        removed.body["frontchannel_logout_uri"],
+        serde_json::Value::Null
+    );
+
+    // A client that signs nobody in has no address.
+    let mut service = web_client();
+    service["grant_types"] = serde_json::json!(["client_credentials"]);
+    service
+        .as_object_mut()
+        .expect("object")
+        .remove("redirect_uris");
+    service["frontchannel_logout_uri"] = "https://billing.example.com/logout".into();
+    let refused = world
+        .as_administrator(Method::POST, &path, Some(service))
+        .await;
+    assert_eq!(refused.status, StatusCode::UNPROCESSABLE_ENTITY);
+    assert_eq!(
+        refused.code(),
+        "oauth.client_frontchannel_logout_uri_invalid"
+    );
+}
+
+#[tokio::test]
 async fn a_client_has_defaults_for_a_sign_in() {
     let world = world().await;
     let application = new_application(&world, "Billing", true).await;

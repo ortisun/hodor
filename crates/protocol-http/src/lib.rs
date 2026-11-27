@@ -32,6 +32,7 @@ mod registration;
 mod request;
 mod scim;
 mod server;
+mod signed_out;
 mod tenant;
 mod token;
 
@@ -67,5 +68,6 @@ pub use registration::{RegistrationState, registration_routes};
 pub use request::ClientAddress;
 pub use scim::{SCIM_AUDIENCE, SCIM_MEDIA_TYPE, SCIM_SCOPE, ScimState, scim_routes};
 pub use server::{Limits, public_router, public_router_behind, serve};
+pub use signed_out::{FrontChannel, SIGNED_OUT_PAGE};
 pub use tenant::{ResolvedTenant, TenantResolver, TenantSlug, TenantStatus};
 pub use token::{TokenState, token_routes};

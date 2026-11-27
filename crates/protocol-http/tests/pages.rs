@@ -7,8 +7,8 @@ use axum::http::{HeaderMap, Method, Request, StatusCode, header};
 use hodor_kernel::{DomainError, TenantContext, TenantId};
 use hodor_protocol_http::{
     CONSOLE_ASSETS_PATH, CONSOLE_CONTENT_SECURITY_POLICY, CONSOLE_PATHS, Limits, PAGE_PATHS,
-    PAGES_CONTENT_SECURITY_POLICY, Pages, ResolvedTenant, TenantResolver, TenantStatus,
-    public_router,
+    PAGES_CONTENT_SECURITY_POLICY, Pages, ResolvedTenant, SIGNED_OUT_PAGE, TenantResolver,
+    TenantStatus, public_router,
 };
 use http_body_util::BodyExt as _;
 use std::path::{Path, PathBuf};
@@ -142,6 +142,43 @@ async fn every_page_is_answered_with_the_application_and_its_policy() {
         assert_eq!(reply.header(header::REFERRER_POLICY), "no-referrer");
         assert!(!reply.header(header::STRICT_TRANSPORT_SECURITY).is_empty());
     }
+}
+
+/// The signed-out page is the application too. Without front-channel
+/// logout it is sent with the pages' own policy, which allows no frame, and
+/// never kept by a cache: it is made for one browser's sign-out.
+#[tokio::test]
+async fn the_signed_out_page_is_the_application_and_allows_no_frame_by_itself() {
+    let built = Built::new();
+    let router = built.router();
+    let reply = get(&router, &format!("/t/acme{SIGNED_OUT_PAGE}")).await;
+    assert_eq!(reply.status, StatusCode::OK);
+    assert_eq!(reply.body, INDEX);
+    assert_eq!(
+        reply.header(header::CONTENT_SECURITY_POLICY),
+        PAGES_CONTENT_SECURITY_POLICY
+    );
+    assert!(
+        !reply
+            .header(header::CONTENT_SECURITY_POLICY)
+            .contains("frame-src")
+    );
+    assert_eq!(reply.header(header::CACHE_CONTROL), "no-store");
+    assert_eq!(reply.header(header::X_FRAME_OPTIONS), "DENY");
+    // The console has no such page.
+    let console = Pages::load_console(&built.directory()).expect("console");
+    let console = public_router(
+        Arc::new(Tenants),
+        console.page_routes(),
+        console.asset_routes(),
+        Limits::default(),
+    );
+    assert_eq!(
+        get(&console, &format!("/t/acme{SIGNED_OUT_PAGE}"))
+            .await
+            .status,
+        StatusCode::NOT_FOUND
+    );
 }
 
 /// The directives of a content security policy, by name.

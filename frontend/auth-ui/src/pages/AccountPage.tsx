@@ -10,7 +10,7 @@ import type { Messages } from "../messages";
 import { asFailure, type PageProps } from "./shared";
 
 /** Where a signed-in person lands: who they are to the server, their second factors, and the way out. */
-export function AccountPage({ tenant, client, text, go, path }: PageProps) {
+export function AccountPage({ tenant, client, text, go, leave, path }: PageProps) {
   const [session, setSession] = useState<Session | null>(null);
   const [consents, setConsents] = useState<GivenConsent[]>([]);
   const [withdrawn, setWithdrawn] = useState<string | null>(null);
@@ -54,7 +54,15 @@ export function AccountPage({ tenant, client, text, go, path }: PageProps) {
     setFailure(null);
     try {
       await client.signOut();
-      go("sign-in", "signed-out");
+      // When the server kept frames for this sign-out, the applications of
+      // the session are told through the browser first, and that page then
+      // goes on to the sign-in page; otherwise the person goes there at once.
+      const frames = await client.signedOutFrames().catch((): string[] => []);
+      if (frames.length > 0) {
+        leave(`/t/${tenant}/account/signed-out`);
+      } else {
+        go("sign-in", "signed-out");
+      }
     } catch (thrown) {
       const failed = asFailure(thrown);
       if (failed.status === 401) {

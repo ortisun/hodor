@@ -360,6 +360,8 @@ async fn the_discovery_document_names_what_answers() {
     // Back-channel logout is offered, and every logout token carries `sid`.
     assert_eq!(document["backchannel_logout_supported"], true);
     assert_eq!(document["backchannel_logout_session_supported"], true);
+    assert_eq!(document["frontchannel_logout_supported"], true);
+    assert_eq!(document["frontchannel_logout_session_supported"], true);
     // The `claims` parameter is read, and request objects by value.
     assert_eq!(document["claims_parameter_supported"], true);
     assert_eq!(document["request_parameter_supported"], true);

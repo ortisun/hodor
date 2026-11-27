@@ -240,6 +240,7 @@ async fn world() -> World {
         external: None,
         digest,
         clock: clock.clone(),
+        front_channel: None,
     };
     let router = public_router(
         Arc::new(Tenants {

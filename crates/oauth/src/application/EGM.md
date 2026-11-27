@@ -4,7 +4,8 @@
 
 The use cases of applications, clients and resource servers, those of the
 authorization endpoint and of the token endpoint, those of back-channel
-logout, and the storage ports they need. Every use case runs in a unit of work bound to one
+and front-channel logout, and the storage ports they need. Every use case
+runs in a unit of work bound to one
 tenant and records its events in it.
 
 ## Interface
@@ -52,7 +53,9 @@ clients, resource_servers, digest, random, clock })`:
   becoming `oauth.client_request_uri_forbidden`,
   `oauth.client_request_uri_unresolvable` and
   `oauth.client_request_uri_invalid`; without it, a client with any is
-  refused with `oauth.client_request_uri_forbidden`.
+  refused with `oauth.client_request_uri_forbidden`. A client's
+  front-channel logout address is not checked through it: Hodor never
+  calls that address, and its rules are all in `ClientSettings::checked`.
 - A key set address (`jwks_uri`) is checked through the same
   `DestinationCheck` when it is set by `create_client`, or new or changed
   by `change_client`, and never fetched then; the codes are
@@ -589,11 +592,38 @@ two servers use the one stored first. A secret that does not open is
   then records the answer if the delivery `is_as_leased`, answering a
   `LogoutOutcome`; a signing failure is a failed attempt.
 
+### Front-channel logout (`frontchannel.rs`)
+
+- `FrontChannelLogoutStore`: `insert` (the frames of one sign-out) and
+  `find(hash)` (the frames kept under that handle hash in the tenant, live
+  or not).
+- `FrontChannelLogoutService::new(FrontChannelLogoutPorts { units_of_work,
+  sessions, clients, applications, store, digest, random, clock })`, with
+  `with_pairwise_subjects`:
+  - `frames_for(tenant, issuer, session)`: one frame address
+    (`frame_address`, with `iss` and `sid`) for each client of
+    `SessionClients::clients_of(session)` that has a front-channel logout
+    address and is enabled with its application, read in one unit of work;
+    the `sid` is the session as the client knows it (`session_for`). A
+    pairwise client is left out when the service has no `PairwiseSubjects`
+    (`oauth.pairwise_unavailable`); any other error is returned.
+  - `sign_out(tenant, issuer, session)`: `frames_for`, then
+    `FrontChannelLogout::keep` and `insert` in a unit of work of its own;
+    answers the `SignedOutHandle`, or `None`, keeping nothing, when no
+    client is to be told.
+  - `frames(tenant, presented)`: the frames kept under the hash of the
+    handle the browser presented while they live; none for a value without
+    the shape of a handle (nothing is computed), an unknown or expired
+    handle, or one of another tenant.
+
 ## Invariants
 
 - A change that changes nothing stores nothing and announces nothing.
 - A logout token is signed for each attempt and kept nowhere; no event
   carries it or the client's address.
+- The handle of a sign-out's frames is given to the browser once and kept
+  nowhere; only its SHA-256 hash is stored. Front-channel logout records
+  no event.
 - No event carries a pairwise identifier: events name people by their user
   identifier.
 - Not found is `oauth.application_not_found`, `oauth.client_not_found` or
@@ -608,6 +638,7 @@ two servers use the one stored first. A secret that does not open is
   `cargo test -p hodor-oauth --test revocation`,
   `cargo test -p hodor-oauth --test consent`,
   `cargo test -p hodor-oauth --test backchannel`,
+  `cargo test -p hodor-oauth --test frontchannel`,
   `cargo test -p hodor-oauth --test pairwise`; `cargo test -p hodor-oauth
   --lib openid` for the OpenID Provider's domain and `--lib logout` for
   logout's

@@ -399,6 +399,79 @@ async fn a_client_is_given_a_key_set_address_checked_and_not_fetched() {
     assert_eq!(stored.as_deref(), Some("http://127.0.0.1:9/jwks"));
 }
 
+#[tokio::test]
+async fn a_client_is_given_a_front_channel_logout_address_on_its_own_site() {
+    let database = TestDatabase::start().await;
+    let created = run(
+        &database,
+        &["tenant", "create", "--slug", "acme", "--name", "Acme"],
+    );
+    assert!(created.status.success(), "{created:?}");
+    let added = run(
+        &database,
+        &[
+            "application",
+            "add",
+            "--tenant",
+            "acme",
+            "--name",
+            "Billing",
+            "--first-party",
+        ],
+    );
+    let application = value(&added, "application");
+    let client = |address: &str| {
+        run(
+            &database,
+            &[
+                "client",
+                "add",
+                "--tenant",
+                "acme",
+                "--application",
+                &application,
+                "--name",
+                "Billing web site",
+                "--type",
+                "public",
+                "--grant",
+                "authorization_code",
+                "--redirect-uri",
+                "https://billing.example.com/callback",
+                "--frontchannel-logout-uri",
+                address,
+                "--frontchannel-logout-session-required",
+            ],
+        )
+    };
+
+    // Another site than the redirect address's is refused.
+    let refused = client("https://evil.example.net/logout");
+    assert!(!refused.status.success());
+    assert!(
+        text(&refused.stderr).contains("oauth.client_frontchannel_logout_uri_invalid"),
+        "{refused:?}"
+    );
+    let made = client("https://billing.example.com/frontchannel-logout");
+    assert!(made.status.success(), "{made:?}");
+    let id = value(&made, "client");
+    let stored: (Option<String>, bool) = sqlx::query_as(
+        "SELECT frontchannel_logout_uri, frontchannel_logout_session_required
+         FROM oauth.client WHERE id = $1::uuid",
+    )
+    .bind(&id)
+    .fetch_one(database.owner())
+    .await
+    .expect("client");
+    assert_eq!(
+        stored,
+        (
+            Some("https://billing.example.com/frontchannel-logout".to_owned()),
+            true
+        )
+    );
+}
+
 /// Answers every request on a port of this machine with `body` as JSON,
 /// as a sector identifier address would; answers the address.
 fn sector_document(body: &'static str) -> String {

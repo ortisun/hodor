@@ -29,6 +29,7 @@ mod oauth_access_token;
 mod oauth_authorization;
 mod oauth_claim_mapper;
 mod oauth_consent;
+mod oauth_frontchannel;
 mod oauth_logout;
 mod oauth_pairwise;
 mod oauth_refresh;
@@ -82,6 +83,7 @@ pub use oauth_authorization::{
 };
 pub use oauth_claim_mapper::PgClaimMapperStore;
 pub use oauth_consent::PgConsentStore;
+pub use oauth_frontchannel::PgFrontChannelLogoutStore;
 pub use oauth_logout::{PgDueLogoutDeliveries, PgLogoutDeliveryStore, PgSessionClients};
 pub use oauth_pairwise::PgPairwiseSecretStore;
 pub use oauth_refresh::PgRefreshTokenStore;

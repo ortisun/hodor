@@ -7,6 +7,7 @@ pub(crate) mod client_keys;
 pub(crate) mod consent;
 pub(crate) mod exchange;
 pub(crate) mod forwarded;
+pub(crate) mod frontchannel;
 pub(crate) mod introspection;
 pub(crate) mod logout;
 pub(crate) mod pairwise;

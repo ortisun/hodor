@@ -35,10 +35,13 @@ policy and its initial access tokens, with the admission the registration
 endpoint asks for; and Issue-124: the `claims` parameter, which puts a
 person's claims in the ID token or at UserInfo as asked when a scope
 consented to for the client covers them, reads an essential `acr` as
-`acr_values` and a `sub` with a value as the person expected; and Issue-133: the registration endpoint's use case,
+`acr_values` and a `sub` with a value as the person expected; Issue-133: the registration endpoint's use case,
 reading a client's metadata into its settings, checking them as an
 administrator's change and against the policy, and storing the client
-under the bounds, never first party. Storage,
+under the bounds, never first party; and
+Issue-139: front-channel logout, with the front-channel logout address of
+clients and the frames the signed-out page loads, kept on the server for
+one sign-out under the hash of a handle the browser holds. Storage,
 randomness, hashing, signature checking and time are reached through ports
 and kernel traits.
 
@@ -66,7 +69,9 @@ and kernel traits.
   `PersonStanding`, by `ServerStanding` in `apps/hodor-server/src/standing.rs`;
   `SessionClients`, `LogoutDeliveryStore` and `DueLogoutDeliveries`, by
   `PgSessionClients`, `PgLogoutDeliveryStore` and `PgDueLogoutDeliveries`
-  in `crates/adapters-postgres/src/oauth_logout.rs`; `TenantIssuer`, by
+  in `crates/adapters-postgres/src/oauth_logout.rs`;
+  `FrontChannelLogoutStore`, by `PgFrontChannelLogoutStore` in
+  `crates/adapters-postgres/src/oauth_frontchannel.rs`; `TenantIssuer`, by
   `TenantIssuers` in `apps/hodor-worker/src/main.rs`.
 - Used by `apps/hodor-worker/src/main.rs`: `BackChannelLogoutFanOut` among
   the outbox handlers, and `BackChannelLogoutSender` in a sending loop.
@@ -75,13 +80,17 @@ and kernel traits.
   interaction interface), `crates/protocol-http/src/admin.rs` (a user's
   consents), `crates/protocol-http/src/token.rs` and
   `crates/protocol-http/src/openid.rs` (UserInfo and discovery) and
-  `crates/protocol-http/src/logout.rs` (the end-session endpoint) over HTTP.
+  `crates/protocol-http/src/logout.rs` (the end-session endpoint) over HTTP;
+  `FrontChannelLogoutService` by `crates/protocol-http/src/signed_out.rs`
+  (the frames of a sign-out and the signed-out page), built in
+  `apps/hodor-server/src/main.rs`.
 - Workspace dependencies: `hodor-identity` (`IdentityService` reads the
   person for UserInfo), `hodor-kernel`, `hodor-keys` (`KeyService` signs
   access and ID tokens and lists the published keys;
   `RotationPolicy::LONGEST_SIGNED_LIFETIME` bounds the token policy) and
-  `hodor-session` (for `SessionId`), plus `async-trait`, `base64`, `serde`,
-  `serde_json` and `time`. The architecture rules also allow `hodor-tenant`,
+  `hodor-session` (for `SessionId`), plus `async-trait`, `base64`,
+  `form_urlencoded` (the query of a frame's address), `serde`, `serde_json`
+  and `time`. The architecture rules also allow `hodor-tenant`,
   which later issues use.
 - Feature `testing`: enables the public `testing` module,
   `hodor-kernel/testing` and `hodor-keys/testing`.
@@ -123,6 +132,12 @@ and kernel traits.
   `BackChannelLogoutSender::send` makes to a client's back-channel logout
   address; it is signed anew for every attempt and stored nowhere, and
   `oauth.backchannel_logout_set_aside` carries neither it nor the address.
+- The handle of a sign-out's frames leaves the crate once, from
+  `FrontChannelLogoutService::sign_out`; only its SHA-256 hash is stored,
+  and the frames are read back only by that hash, in their own tenant,
+  while they live (`FRAMES_LIFETIME`, 120 seconds). A frame never carries
+  the `sid` another client knows the session by: a pairwise client this
+  service cannot name the session to gets no frame.
 - A pairwise client is never given a person's user identifier: every
   service that names a person to it goes through `PairwiseSubjects`, and
   a service given none refuses (`oauth.pairwise_unavailable`). A token
@@ -142,7 +157,8 @@ and kernel traits.
   servers, pending authorization requests, grants, codes, the `jti`s of
   client assertions, refresh token families with their tokens' hashes,
   the records of access tokens by `jti`, consents with their history, and
-  logout deliveries, and the tenant's sealed pairwise secret. Through
+  logout deliveries, the frames of sign-outs, and the tenant's sealed
+  pairwise secret. Through
   `HttpClient`: posts logout tokens, and fetches a sector identifier
   document when a client is saved with one. Through
   `KeyService`: signs access, ID and logout tokens, and lists the
@@ -162,6 +178,9 @@ and kernel traits.
   binary; `cargo test -p hodor-adapters-postgres --test backchannel_logout`,
   `cargo test -p hodor-server --test logout` and
   `cargo test -p hodor-worker --test backchannel_logout` for back-channel
+  logout; `cargo test -p hodor-oauth --test frontchannel`,
+  `cargo test -p hodor-adapters-postgres --test frontchannel_logout` and
+  `cargo test -p hodor-server --test frontchannel_logout` for front-channel
   logout; `cargo test -p hodor-oauth --test pairwise` and
   `cargo test -p hodor-server --test pairwise` for pairwise subject
   identifiers; `cargo test -p hodor-oauth --test spiffe` and

@@ -354,6 +354,21 @@ export class Client {
     this.#csrfToken = null;
   }
 
+  /**
+   * The addresses the signed-out page loads in its frames: the ones the
+   * server kept when the session ended. Only web addresses are kept.
+   */
+  async signedOutFrames(): Promise<string[]> {
+    const reply = await this.#send("GET", "/signed-out");
+    const listed = reply.body["frames"];
+    if (!Array.isArray(listed)) {
+      return [];
+    }
+    return listed.filter(
+      (frame): frame is string => typeof frame === "string" && /^https?:\/\//.test(frame),
+    );
+  }
+
   /** Where the sign-in of this browser stands; `null` when there is none. */
   async currentSignIn(): Promise<SignInAnswer | null> {
     try {

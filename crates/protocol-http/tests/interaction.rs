@@ -291,6 +291,7 @@ async fn world_behind(proxies: TrustedProxies) -> World {
         external: None,
         digest,
         clock: clock.clone(),
+        front_channel: None,
     };
     let router = public_router_behind(
         Arc::new(Tenants {

@@ -136,6 +136,12 @@ sequenceDiagram
     Browser->>Server: GET /t/acme/oauth2/logout
     Server->>OAuth: validate hint and registered post_logout_redirect_uri
     Server->>Server: revoke SsoSession, enqueue back-channel logout
+    alt a client of the session has a frontchannel_logout_uri
+        Server->>Server: keep the frames, each with iss and the sid that client knows
+        Server-->>Browser: 302 /t/acme/account/signed-out?continue=logout
+        Browser->>RelyingParty: GET frontchannel_logout_uri?iss&sid, in a hidden frame
+        Browser->>Server: GET /t/acme/oauth2/logout/finish, after the frames or five seconds
+    end
     Server-->>Browser: 302 post_logout_redirect_uri?state
     Server->>RelyingParty: POST backchannel_logout_uri {logout_token} from the worker
 ```

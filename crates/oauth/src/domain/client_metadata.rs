@@ -300,6 +300,9 @@ pub fn read_client_metadata(
     settings.backchannel_logout_uri = members.text("backchannel_logout_uri")?;
     settings.backchannel_logout_session_required =
         members.boolean("backchannel_logout_session_required")?;
+    settings.frontchannel_logout_uri = members.text("frontchannel_logout_uri")?;
+    settings.frontchannel_logout_session_required =
+        members.boolean("frontchannel_logout_session_required")?;
     settings.certificate_bound_access_tokens =
         members.boolean("tls_client_certificate_bound_access_tokens")?;
     // `code` unless named, as for every client of the code grant; checked
@@ -431,6 +434,14 @@ pub fn registration_answer(client: &Client, secret: Option<&ClientSecretValue>) 
     put(
         "backchannel_logout_session_required",
         json!(settings.backchannel_logout_session_required),
+    );
+    put(
+        "frontchannel_logout_uri",
+        json!(settings.frontchannel_logout_uri),
+    );
+    put(
+        "frontchannel_logout_session_required",
+        json!(settings.frontchannel_logout_session_required),
     );
     put(
         "tls_client_certificate_bound_access_tokens",

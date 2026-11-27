@@ -913,3 +913,47 @@ async fn response_types_are_kept_within_the_policy() {
     assert_eq!(answer["response_types"], json!(["code", "id_token"]));
     assert_eq!(answer["grant_types"], json!(["authorization_code"]));
 }
+
+#[tokio::test]
+async fn a_client_registers_a_front_channel_logout_address_on_its_own_site() {
+    let world = world();
+    let acme = tenant();
+    world.turned_on(&acme, &[RegistrationWay::Open]).await;
+    let (client, _) = world
+        .register(
+            &acme,
+            None,
+            json!({
+                "redirect_uris": [CALLBACK],
+                "frontchannel_logout_uri": "https://portal.partner.example/front",
+                "frontchannel_logout_session_required": true
+            }),
+        )
+        .await
+        .expect("registered");
+    assert_eq!(
+        client.frontchannel_logout_uri(),
+        Some("https://portal.partner.example/front")
+    );
+    let answer = hodor_oauth::api::registration_answer(&client, None);
+    assert_eq!(
+        answer["frontchannel_logout_uri"],
+        "https://portal.partner.example/front"
+    );
+    assert_eq!(answer["frontchannel_logout_session_required"], true);
+
+    // Another site than the redirect address's: refused by the rules of
+    // every client, and nothing stored.
+    let error = world
+        .register(
+            &acme,
+            None,
+            json!({
+                "redirect_uris": [CALLBACK],
+                "frontchannel_logout_uri": "https://elsewhere.example/front"
+            }),
+        )
+        .await
+        .expect_err("another site");
+    assert_eq!(error.code(), "oauth.client_frontchannel_logout_uri_invalid");
+}

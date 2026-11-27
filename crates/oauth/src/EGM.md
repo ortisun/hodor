@@ -16,7 +16,8 @@ follows is `docs/architecture/contexts/oauth.md`.
     `PersonClaimSources`, `ClientRegistrationStore`,
     `InitialAccessTokenStore`, and those of
     back-channel logout: `SessionClients`, `LogoutDeliveryStore`,
-    `DueLogoutDeliveries`, `TenantIssuer`; `PairwiseSecretStore`, and
+    `DueLogoutDeliveries`, `TenantIssuer`; that of front-channel logout,
+    `FrontChannelLogoutStore`; `PairwiseSecretStore`, and
     `HmacSha256`, implemented by the crypto adapter.
   - Services: `ApplicationService`, `ApplicationPorts`, `CreateClient`,
     `RotateSecret`, `CreateResourceServer`; `AuthorizationCodeService`,
@@ -33,9 +34,11 @@ follows is `docs/architecture/contexts/oauth.md`.
     `ConsentPorts`, `ConsentQuestion`, `AskedScope`, `ListedConsent`;
     `BackChannelLogoutFanOut`, `BackChannelLogoutSender`,
     `LogoutSenderPorts`, `LogoutDeliverySettings`, `LogoutLease`,
-    `LogoutOutcome`; `PairwiseSubjects`, `PairwisePorts`, given to
-    `TokenService`, `LogoutService` and `BackChannelLogoutSender` with
-    `with_pairwise_subjects`; `ApplicationService::with_sector_documents`.
+    `LogoutOutcome`; `FrontChannelLogoutService`,
+    `FrontChannelLogoutPorts`; `PairwiseSubjects`, `PairwisePorts`, given to
+    `TokenService`, `LogoutService`, `BackChannelLogoutSender` and
+    `FrontChannelLogoutService` with `with_pairwise_subjects`;
+    `ApplicationService::with_sector_documents`.
   - Pushed authorization requests' domain: `PushedRequestPolicy`,
     `PushedRequest`, `PushedAnswer`, `PushedAuthorization`, `ReferenceHash`,
     `RequestReference`, `Reference`, `check_reference`,
@@ -62,6 +65,10 @@ follows is `docs/architecture/contexts/oauth.md`.
     `check_backchannel_logout_uri`, and `BACKCHANNEL_LOGOUT_EVENT`,
     `LOGOUT_TOKEN_TYPE`, `LOGOUT_TOKEN_LIFETIME`, `SESSION_REVOKED`,
     `MAX_BACKCHANNEL_LOGOUT_URI_LENGTH`, `MAX_LOGOUT_ERROR_LENGTH`.
+  - Front-channel logout's domain: `FrontChannelLogout`,
+    `FrontChannelLogoutId`, `HandleHash`, `SignedOutHandle`,
+    `check_frontchannel_logout_uri`, `frame_address`, `frame_sources`, and
+    `FRAMES_LIFETIME`, `FRAMES_WAIT`, `MAX_FRONTCHANNEL_LOGOUT_URI_LENGTH`.
     `ClaimMapperService`, `ClaimMapperPorts`, `ClaimMapping` (read by
     `TokenPorts::mapping` and `UserInfoPorts::mapping`), `MappedToken`,
     `MappedClaims`.
@@ -209,6 +216,10 @@ follows is `docs/architecture/contexts/oauth.md`.
     without a resolver; `RecordingClients` with `ClientAnswer`, an outbound
     client that keeps the requests (`tokens_to(url)`); and
     `LogoutDeliveryStorePorts` with `run_logout_delivery_contract(ports)`.
+  - `testing/frontchannel.rs`: `InMemoryFrontChannelLogouts`, keyed by
+    tenant and handle hash, with `all(tenant)`;
+    `FrontChannelLogoutStorePorts` and
+    `run_frontchannel_logout_contract(ports)`.
   - `testing/pairwise.rs`: `FakeHmac`; `InMemoryPairwiseSecrets` (with
     `damage(tenant)`, `len`); `SectorDocuments`, an outbound client that
     answers set documents and counts fetches; `pairwise_subjects(units,
@@ -260,6 +271,9 @@ follows is `docs/architecture/contexts/oauth.md`.
   calls answer `false`); that records of tokens expired at the moment, that
   one included, are removed a batch at a time and no other; and that no
   record is seen, revoked, removed or made for a client of another tenant.
+- The front-channel logout contract requires that the frames of a sign-out
+  load back whole, in their order, by the hash of their handle; that an
+  unknown hash finds nothing; and that another tenant never finds them.
 
 ## Side Effects
 

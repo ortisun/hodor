@@ -96,7 +96,7 @@ Rules:
 | `session.revoked` | A session was ended on purpose; carries the reason |
 | `session.raised` | A step-up raised a session; carries the user, the new assurance and the methods proven |
 
-Expiry produces no event, since nothing happens at that moment. Events carry identifiers and never a token or its hash. The address and browser description stay in the session row. The OAuth context hears `session.revoked`, with its `session_id` and `user_id`, to tell the applications signed in to with the session that it ended ([back-channel logout](oauth.md#back-channel-logout)); the session context does not know it does.
+Expiry produces no event, since nothing happens at that moment. Events carry identifiers and never a token or its hash. The address and browser description stay in the session row. The OAuth context hears `session.revoked`, with its `session_id` and `user_id`, to tell the applications signed in to with the session that it ended ([back-channel logout](oauth.md#back-channel-logout)); the session context does not know it does. When the session ends in its own browser, the HTTP layer also asks the OAuth context for the frames of [front-channel logout](oauth.md#front-channel-logout), which tell the same applications through that browser; the session context does not take part in that either.
 
 ### Ports
 

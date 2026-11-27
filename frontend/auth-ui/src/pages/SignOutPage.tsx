@@ -14,6 +14,9 @@ import { asFailure, type PageProps } from "./shared";
  */
 export function SignOutPage({ tenant, client, text, go, leave }: PageProps) {
   const finish = `/t/${tenant}/oauth2/logout/finish`;
+  // The applications of the session are told through the browser first;
+  // that page then goes on to the finish.
+  const signedOut = `/t/${tenant}/account/signed-out?continue=logout`;
   const [signedIn, setSignedIn] = useState(false);
   const [busy, setBusy] = useState(false);
   const [failure, setFailure] = useState<Failure | null>(null);
@@ -51,7 +54,10 @@ export function SignOutPage({ tenant, client, text, go, leave }: PageProps) {
     setFailure(null);
     try {
       await client.signOut();
-      leave(finish);
+      // Without frames to load there is nothing to wait for: straight on to
+      // the finish.
+      const frames = await client.signedOutFrames().catch((): string[] => []);
+      leave(frames.length > 0 ? signedOut : finish);
     } catch (thrown) {
       const failed = asFailure(thrown);
       if (failed.status === 401) {

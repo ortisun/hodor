@@ -63,8 +63,8 @@ crates and of this crate itself.
 ## Verification
 
 - Run: `cargo test -p hodor-adapters-postgres`
-- Requires a running Docker daemon. All fourteen integration test files in
-  `tests/` use `TestDatabase`, which starts a PostgreSQL container
+- Requires a running Docker daemon. All thirty-five integration test files
+  in `tests/` use `TestDatabase`, which starts a PostgreSQL container
   (`testcontainers_modules::postgres::Postgres`, tag `17-alpine`) through
   `hodor-test-containers` (`src/testing.rs`), with its port published on
   `127.0.0.1` alone. The crate depends on itself

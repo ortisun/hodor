@@ -75,6 +75,7 @@ fn addresses_of(client: &Client) -> Vec<&str> {
         .chain(&settings.request_uris)
         .map(String::as_str)
         .chain(settings.backchannel_logout_uri.as_deref())
+        .chain(settings.frontchannel_logout_uri.as_deref())
         .chain(settings.jwks_uri.as_deref())
         .chain(settings.sector_identifier_uri.as_deref())
         .chain(settings.display_uris().into_iter().map(|(_, uri)| uri))

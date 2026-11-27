@@ -4328,6 +4328,176 @@ async fn a_pairwise_id_token_of_one_tenant_ends_no_session_at_another() {
     assert_eq!(status, StatusCode::OK, "Globex's session goes on");
 }
 
+/// Gives `client` of `tenant` a front-channel logout address on the site
+/// of `REDIRECT`, the same in both tenants.
+async fn with_frontchannel_address(world: &World, tenant: &Tenant, client: &str) {
+    use hodor_adapters_postgres::{PgApplicationStore, PgClientStore, PgResourceServerStore};
+    use hodor_oauth::api::{ApplicationPorts, ApplicationService};
+    let applications = ApplicationService::new(ApplicationPorts {
+        units_of_work: Arc::new(world.database.app().clone()),
+        applications: Arc::new(PgApplicationStore),
+        clients: Arc::new(PgClientStore),
+        resource_servers: Arc::new(PgResourceServerStore),
+        digest: Arc::new(Sha256Digest),
+        random: Arc::new(OsRandom),
+        clock: Arc::new(SystemClock),
+    });
+    let id = client.parse().expect("a client identifier");
+    let mut settings = applications
+        .client(&tenant.context, id)
+        .await
+        .expect("client")
+        .snapshot()
+        .settings
+        .clone();
+    settings.frontchannel_logout_uri =
+        Some("https://billing.example.com/frontchannel-logout".to_owned());
+    applications
+        .change_client(&tenant.context, id, settings, Caller::system())
+        .await
+        .expect("an address");
+}
+
+/// The frames a tenant's signed-out page is given for the cookies sent,
+/// and the `frame-src` of its policy.
+async fn signed_out_frames(
+    world: &World,
+    slug: &str,
+    browser: &mut Browser,
+) -> (Vec<String>, Option<String>) {
+    let cookies = browser
+        .cookies
+        .iter()
+        .map(|(name, value)| format!("{name}={value}"))
+        .collect::<Vec<_>>()
+        .join("; ");
+    let page = Client::new()
+        .get(format!("{}/t/{slug}/account/signed-out", world.server.base))
+        .header(COOKIE, cookies)
+        .send()
+        .await
+        .expect("page");
+    assert_eq!(page.status(), StatusCode::OK);
+    let frame_src = page.headers()["content-security-policy"]
+        .to_str()
+        .expect("policy")
+        .split(';')
+        .map(str::trim)
+        .find_map(|part| part.strip_prefix("frame-src ").map(str::to_owned));
+    let (status, body) = browser
+        .send(
+            Method::GET,
+            &format!("/t/{slug}/interaction/signed-out"),
+            None,
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    let frames = body["frames"]
+        .as_array()
+        .expect("frames")
+        .iter()
+        .map(|frame| frame.as_str().expect("an address").to_owned())
+        .collect();
+    (frames, frame_src)
+}
+
+#[tokio::test]
+async fn one_tenants_sign_out_never_frames_another_tenants_client() {
+    let pages = std::env::temp_dir().join(format!(
+        "hodor-cross-tenant-pages-{}",
+        hodor_kernel::TenantId::generate()
+    ));
+    std::fs::create_dir_all(pages.join("assets")).expect("directory");
+    std::fs::write(pages.join("index.html"), "<!doctype html>").expect("index");
+    let world = world_with(&[
+        ("HODOR_SECRET_KEYS", ROOT_KEY),
+        (
+            "HODOR_PAGES_DIRECTORY",
+            pages.to_str().expect("a UTF-8 path"),
+        ),
+    ])
+    .await;
+    let (acme, globex) = (&world.acme, &world.globex);
+    // The person is signed in to a pairwise client of each tenant, both
+    // with the same front-channel logout address.
+    let (acme_client, in_acme, mut acme_browser) = pairwise_tokens(&world, acme).await;
+    let (globex_client, in_globex, mut globex_browser) = pairwise_tokens(&world, globex).await;
+    with_frontchannel_address(&world, acme, &acme_client.0).await;
+    with_frontchannel_address(&world, globex, &globex_client.0).await;
+    let acme_claims = id_token_claims(&in_acme);
+    let globex_claims = id_token_claims(&in_globex);
+
+    // Signing out of Acme with a hint that proves the session.
+    let hint = in_acme["id_token"].as_str().expect("an ID token");
+    let (status, location, _) = acme_browser
+        .navigate(Method::GET, &end_session_path(acme.slug, hint), None)
+        .await;
+    assert_eq!(status, StatusCode::FOUND);
+    assert_eq!(
+        location.as_deref(),
+        Some("/t/acme/account/signed-out?continue=logout")
+    );
+
+    // Where it belongs: Acme's client alone, with Acme's issuer and the
+    // `sid` of Acme's ID token.
+    let (frames, frame_src) = signed_out_frames(&world, acme.slug, &mut acme_browser).await;
+    assert_eq!(frames.len(), 1, "{frames:?}");
+    let parameters: std::collections::BTreeMap<String, String> =
+        form_urlencoded::parse(frames[0].split_once('?').expect("a query").1.as_bytes())
+            .into_owned()
+            .collect();
+    assert_eq!(parameters["iss"], acme_claims["iss"].as_str().expect("iss"));
+    assert_eq!(parameters["sid"], acme_claims["sid"].as_str().expect("sid"));
+    assert_ne!(
+        parameters["sid"],
+        globex_claims["sid"].as_str().expect("sid")
+    );
+    assert_eq!(frame_src.as_deref(), Some("https://billing.example.com"));
+
+    // The same cookie, carried to Globex's page and route: nothing, and no
+    // frame allowed by the policy.
+    let (frames, frame_src) = signed_out_frames(&world, globex.slug, &mut acme_browser).await;
+    assert!(frames.is_empty(), "{frames:?}");
+    assert_eq!(frame_src, None);
+    // Nor is anything kept in Globex for Acme's sign-out.
+    let kept_in_globex: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM oauth.frontchannel_logout WHERE tenant_id = $1")
+            .bind(globex.context.tenant_id().as_uuid())
+            .fetch_one(world.database.owner())
+            .await
+            .expect("count");
+    assert_eq!(kept_in_globex, 0);
+
+    // Globex's session goes on; its own sign-out frames Globex's client
+    // alone, with Globex's issuer, and Acme's page knows nothing of it.
+    let (status, _) = globex_browser
+        .send(Method::GET, "/t/globex/interaction/session", None)
+        .await;
+    assert_eq!(status, StatusCode::OK, "Globex's session goes on");
+    let (status, _) = globex_browser
+        .send(Method::DELETE, "/t/globex/interaction/session", None)
+        .await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+    let (frames, _) = signed_out_frames(&world, globex.slug, &mut globex_browser).await;
+    assert_eq!(frames.len(), 1, "{frames:?}");
+    assert!(
+        frames[0].contains("iss=http%3A%2F%2Flocalhost%3A8080%2Ft%2Fglobex"),
+        "{}",
+        frames[0]
+    );
+    assert!(
+        frames[0].contains(&format!(
+            "sid={}",
+            globex_claims["sid"].as_str().expect("sid")
+        )),
+        "{}",
+        frames[0]
+    );
+    let (frames, _) = signed_out_frames(&world, acme.slug, &mut globex_browser).await;
+    assert!(frames.is_empty(), "{frames:?}");
+    let _ = std::fs::remove_dir_all(&pages);
+}
+
 /// The ID token a person gets at a tenant's first-party client, as it
 /// came, signed in with the shared address in `browser`.
 async fn raw_id_token(

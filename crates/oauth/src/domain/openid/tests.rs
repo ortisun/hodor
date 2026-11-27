@@ -597,6 +597,11 @@ fn discovery_names_only_what_is_built() {
         document["backchannel_logout_session_supported"],
         json!(true)
     );
+    assert_eq!(document["frontchannel_logout_supported"], json!(true));
+    assert_eq!(
+        document["frontchannel_logout_session_supported"],
+        json!(true)
+    );
     // The token endpoint's grants, and `implicit` for an ID token through
     // the browser, which the authorization endpoint answers alone.
     let mut grants = json!(SUPPORTED_GRANT_TYPES);

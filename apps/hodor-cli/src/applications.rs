@@ -155,6 +155,16 @@ pub(crate) enum ClientCommand {
         /// back-channel logout address.
         #[arg(long)]
         backchannel_logout_session_required: bool,
+        /// The address Hodor's signed-out page loads in a hidden frame
+        /// when a session the client signed a person in with ends in the
+        /// person's browser; on the scheme, host and port of one of its
+        /// redirect addresses. Hodor never calls it.
+        #[arg(long)]
+        frontchannel_logout_uri: Option<String>,
+        /// Record that it needs `iss` and `sid` in the address of its
+        /// frame; only with a front-channel logout address.
+        #[arg(long)]
+        frontchannel_logout_session_required: bool,
         /// How it knows a person: `public` unless given, or `pairwise`, by
         /// an identifier of its sector alone.
         #[arg(long)]
@@ -518,6 +528,8 @@ pub(crate) async fn run_client(
             request_uris,
             backchannel_logout_uri,
             backchannel_logout_session_required,
+            frontchannel_logout_uri,
+            frontchannel_logout_session_required,
             subject_type,
             sector_identifier_uri,
             jwks_uri,
@@ -581,6 +593,8 @@ pub(crate) async fn run_client(
                 .collect::<Result<_, _>>()?;
             settings.backchannel_logout_uri = backchannel_logout_uri;
             settings.backchannel_logout_session_required = backchannel_logout_session_required;
+            settings.frontchannel_logout_uri = frontchannel_logout_uri;
+            settings.frontchannel_logout_session_required = frontchannel_logout_session_required;
             if let Some(subject_type) = subject_type {
                 settings.subject_type = SubjectType::parse(&subject_type)?;
             }

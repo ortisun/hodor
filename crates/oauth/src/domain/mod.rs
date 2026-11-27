@@ -12,6 +12,7 @@ pub(crate) mod consent;
 pub(crate) mod event;
 pub(crate) mod exchange;
 pub(crate) mod forwarded;
+pub(crate) mod frontchannel;
 pub(crate) mod initial_access_token;
 pub(crate) mod introspection;
 pub(crate) mod key;

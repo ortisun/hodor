@@ -313,7 +313,9 @@ randomness and hashing are passed in. Every module is `pub(crate)` in
   `userinfo_claims_with(subject, scopes, asked, person)`, which adds the
   claims a grant was asked for UserInfo to those of the scopes;
   `PersonClaims::from_attributes`; and `claims_parameter_supported` true in
-  discovery.
+  discovery, as are `backchannel_logout_supported`,
+  `backchannel_logout_session_supported`, `frontchannel_logout_supported`
+  and `frontchannel_logout_session_supported`.
 - `claims_parameter.rs`: the `claims` parameter (Decisions 0047 and 0068).
   `read_claims(text)` (at most `MAX_CLAIMS_BYTES`, 4096, and
   `MAX_CLAIMS_NAMED`, 64 claims across `id_token` and `userinfo`; a member
@@ -366,7 +368,13 @@ randomness and hashing are passed in. Every module is `pub(crate)` in
   `check_backchannel_logout_uri`, and
   `backchannel_logout_session_required`, `true` only with an address
   (`oauth.client_backchannel_logout_uri_invalid`);
-  `Client::backchannel_logout_uri`. And `subject_type`, `pairwise` only
+  `Client::backchannel_logout_uri`. And `frontchannel_logout_uri`, only
+  with `authorization_code`, checked by `check_frontchannel_logout_uri`
+  against the redirect addresses the client is left with, and
+  `frontchannel_logout_session_required`, `true` only with an address
+  (`oauth.client_frontchannel_logout_uri_invalid`);
+  `Client::frontchannel_logout_uri`. `check_redirect_uri` is crate-visible
+  for that check. And `subject_type`, `pairwise` only
   with `authorization_code` (`oauth.client_subject_type_invalid`), with a
   sector from `sector_of` or `oauth.client_sector_identifier_uri_required`,
   and `sector_identifier_uri`, only for a pairwise client, its form checked
@@ -419,6 +427,26 @@ randomness and hashing are passed in. Every module is `pub(crate)` in
   `LOGOUT_TOKEN_TYPE`, `LOGOUT_TOKEN_LIFETIME`, `SESSION_REVOKED`,
   `MAX_BACKCHANNEL_LOGOUT_URI_LENGTH`, `MAX_LOGOUT_ERROR_LENGTH`. Its cases
   are in `backchannel/tests.rs`.
+- `frontchannel.rs`: front-channel logout (Decision 0081).
+  `check_frontchannel_logout_uri(value, redirect_uris)` (`https://` or
+  `http://`, the rules of a redirect address of a confidential client, a
+  host that is a name or an address, and the scheme, host and port of one
+  of `redirect_uris`, a host compared in lowercase and a port left out
+  being the scheme's own; `oauth.client_frontchannel_logout_uri_invalid`,
+  whose detail names the rule broken); `Site` (crate-visible: `of`,
+  `same_as`, `source`, the site as a source of a content security policy);
+  `frame_address(uri, issuer, sid)` (`iss` and `sid` added to the query,
+  form encoded, after `&` or `?`); `frame_sources(frames)` (the site of
+  each frame once, in order, a frame without one left out);
+  `HandleHash` (`of_presented`, `None` for a value without the shape of a
+  token, `from_stored`, `as_bytes`; its `Debug` prints no bytes);
+  `SignedOutHandle` (`expose`; its `Debug` is redacted);
+  `FrontChannelLogout` (`keep(session, frames, now, random, digest)`, a
+  random token as the handle and its SHA-256 kept, expiring
+  `FRAMES_LIFETIME` later, `None` for no frame; `is_live_at`),
+  `FrontChannelLogoutId`, and `FRAMES_LIFETIME` (120 seconds),
+  `FRAMES_WAIT` (5 seconds), `MAX_FRONTCHANNEL_LOGOUT_URI_LENGTH` (that of
+  a redirect address). Its cases are in `frontchannel/tests.rs`.
 - `consent.rs`: consent. `Consent` (`stands_at`, `covers`: every scope and
   audience of a request, never `offline_access`; `give`, which adds to a
   consent that stands and starts over one that does not; `withdraw`,

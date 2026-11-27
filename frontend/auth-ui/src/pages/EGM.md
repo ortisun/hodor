@@ -4,7 +4,9 @@
 
 The hosted pages a person sees: sign-in, asking for a registration or
 recovery link, finishing a registration or a password reset, the account
-page, the profile page where a person gives their standard claims, and the page an identity provider sends the person back to. Each page
+page, the profile page where a person gives their standard claims, the
+signed-out page that tells the person's applications they signed out, and
+the page an identity provider sends the person back to. Each page
 is a React component given `PageProps`. It talks to the server only through
 the `Client` of `../client.ts`, moves between pages only through `go` and
 `leave`, and builds its screens from [parts](../parts/EGM.md) and words from
@@ -122,7 +124,10 @@ address.
   that calls `client.withdrawConsent(clientId)` and says so
   (`consentWithdrawn`), links to the
   profile page (`text.profileLink`) and the security page, and a sign-out `Action` that calls
-  `client.signOut()` and `go("sign-in", "signed-out")`.
+  `client.signOut()`, then `client.signedOutFrames()` (a failure counts
+  as none): with frames it `leave`s to `/t/{tenant}/account/signed-out`,
+  whose frames tell the session's applications before it goes on to the
+  sign-in page; without, it goes straight to `go("sign-in", "signed-out")`.
 - `ProfilePage.tsx:ProfilePage(PageProps)` - the person's display name and
   standard claims. `client.session()` (none means `go("sign-in")`), then
   `client.profile()`. One form: the display name (`autocomplete="name"`),
@@ -157,9 +162,23 @@ address.
   logout asks. `client.session()`: none means `leave` to
   `/t/{tenant}/oauth2/logout/finish` at once; else it shows
   `signOutQuestion(tenant)` with a primary `signOut` `Action` (calls
-  `client.signOut()`, then `leave` to the finish; a 401 counts as signed
-  out) and `staySignedIn` (`go("account")`). It never learns the return
+  `client.signOut()`, then `client.signedOutFrames()`: with frames `leave`
+  to `/t/{tenant}/account/signed-out?continue=logout`, which goes on to the
+  finish, and without `leave` to the finish at once; a 401 counts as signed out and `leave`s to the finish at once)
+  and `staySignedIn` (`go("account")`). It never learns the return
   address: the server keeps it.
+- `SignedOutPage.tsx:SignedOutPage({ ...PageProps, continuesLogout,
+  waitMs? })` - where a person lands once they signed out in this browser.
+  It shows `signedOutTitle` and `signedOutTelling` (announced), asks
+  `client.signedOutFrames()` and loads each address in an `iframe` of class
+  `signed-out-frame` (`title` `signedOutFrameTitle`, `sandbox="allow-scripts
+  allow-same-origin"`, `referrerPolicy="no-referrer"`, `aria-hidden`,
+  `tabIndex={-1}`). It goes on once, when every frame has loaded or
+  `waitMs` has passed (`FRAMES_WAIT_MS`, 5000, unless a test says
+  otherwise), and at once when there is no frame or the request fails:
+  with `continuesLogout`, `leave` to `/t/{tenant}/oauth2/logout/finish`,
+  otherwise `go("sign-in", "signed-out")`. The addresses come from the
+  server, never from the page's own address.
 - `SecurityPage.tsx:SecurityPage({ ...PageProps, reauthenticate })` -
   `client.session()` (none means `go("sign-in")`), then `client.factors()`.
   Changes are offered only while `recentSignInUntil` is in the future;
@@ -198,7 +217,8 @@ address.
   on statuses 404, 409 and 422, and shows the failure on any other.
 - `AskPage` shows the same "check your mailbox" answer whatever the address
   (comment on `AskPage`); an empty address sends nothing.
-- `AccountPage` treats a 401 on sign-out as already signed out.
+- `AccountPage` treats a 401 on sign-out as already signed out, and goes
+  straight to `go("sign-in", "signed-out")`.
 - Every action ignores a second click while `busy`. Effects ignore answers
   that arrive after the component is gone (the `current` flag).
 - Failures are shown only through `describe` or `fieldProblem`, never as the
@@ -212,7 +232,10 @@ address.
   [src](../EGM.md) for the endpoints).
 - Navigation of the whole browser through `go` and `leave`
   (`window.location.assign` in `../main.tsx`); `leave` goes to an identity
-  provider's address.
+  provider's address, to the signed-out page, or to the finish of an
+  application's logout.
+- `SignedOutPage` loads the front-channel logout addresses of applications
+  in hidden, sandboxed frames.
 - Through `Frame`, every page sets `document.title` and moves focus to its
   heading.
 

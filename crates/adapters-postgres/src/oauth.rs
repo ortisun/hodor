@@ -284,7 +284,8 @@ const CLIENT_COLUMNS: &str = "id, application_id, name, client_type, authenticat
      certificate_bound_access_tokens, default_max_age, default_acr_values, require_auth_time, \
      userinfo_signed_response_alg, require_pushed_authorization_requests, \
      request_uris, jwks_uri, response_types, application_type, client_uri, logo_uri, policy_uri, \
-     tos_uri, registered, registered_from";
+     tos_uri, registered, registered_from, \
+     frontchannel_logout_uri, frontchannel_logout_session_required";
 
 /// A client's default max age, as the column holds it.
 fn default_max_age_of(settings: &ClientSettings) -> Result<Option<i32>, DomainError> {
@@ -398,6 +399,10 @@ async fn load_client(
             backchannel_logout_uri: row.try_get("backchannel_logout_uri").map_err(get)?,
             backchannel_logout_session_required: row
                 .try_get("backchannel_logout_session_required")
+                .map_err(get)?,
+            frontchannel_logout_uri: row.try_get("frontchannel_logout_uri").map_err(get)?,
+            frontchannel_logout_session_required: row
+                .try_get("frontchannel_logout_session_required")
                 .map_err(get)?,
             subject_type: SubjectType::parse(
                 &row.try_get::<String, _>("subject_type").map_err(get)?,
@@ -561,11 +566,12 @@ impl ClientStore for PgClientStore {
                   require_auth_time, userinfo_signed_response_alg,
                   require_pushed_authorization_requests, request_uris, jwks_uri, response_types,
                   application_type, client_uri, logo_uri, policy_uri, tos_uri, registered,
-                  registered_from, version)
+                  registered_from, frontchannel_logout_uri, frontchannel_logout_session_required,
+                  version)
              VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16,
                      $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28,
                      $29, $30, $31, $32, $33, $34, $35, $36, $37, $38, $39, $40, $41, $42,
-                     $43, $44, $45, 0)",
+                     $43, $44, $45, $46, $47, 0)",
         )
         .bind(tenant)
         .bind(state.id.as_uuid())
@@ -626,6 +632,8 @@ impl ClientStore for PgClientStore {
                 .and_then(|registered| registered.address_hash)
                 .map(|hash| hash.to_vec()),
         )
+        .bind(settings.frontchannel_logout_uri.as_deref())
+        .bind(settings.frontchannel_logout_session_required)
         .execute(&mut *connection)
         .await;
         match inserted {
@@ -668,6 +676,7 @@ impl ClientStore for PgClientStore {
                  response_types = $36,
                  application_type = $37, client_uri = $38, logo_uri = $39, policy_uri = $40,
                  tos_uri = $41,
+                 frontchannel_logout_uri = $42, frontchannel_logout_session_required = $43,
                  version = version + 1
              WHERE tenant_id = $1 AND id = $2 AND version = $17",
         )
@@ -721,6 +730,8 @@ impl ClientStore for PgClientStore {
         .bind(settings.logo_uri.as_deref())
         .bind(settings.policy_uri.as_deref())
         .bind(settings.tos_uri.as_deref())
+        .bind(settings.frontchannel_logout_uri.as_deref())
+        .bind(settings.frontchannel_logout_session_required)
         .execute(&mut *connection)
         .await
         .map_err(get)?;

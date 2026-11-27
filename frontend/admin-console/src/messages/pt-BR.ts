@@ -435,6 +435,10 @@ export const ptBR: Messages = {
   redirectUrisHint: "Um por linha. A pessoa só volta para um endereço escrito aqui, caractere por caractere.",
   postLogoutRedirectUrisLabel: "Endereços depois de sair",
   postLogoutRedirectUrisHint: "Um por linha. Para onde a aplicação pode mandar a pessoa de volta depois de sair do Hodor, caractere por caractere.",
+  frontchannelLogoutUriLabel: "Endereço de saída pelo navegador",
+  frontchannelLogoutUriHint:
+    "Opcional. Carregado num quadro oculto do navegador da pessoa quando ela sai por ali, no site de um dos endereços de retorno. Uma sessão que um administrador encerra não tem navegador para carregá-lo: a aplicação só é avisada pelo seu endereço de saída entre servidores.",
+  frontchannelLogoutSessionRequiredLabel: "Exige iss e sid nesse endereço",
   allowedScopesLabel: "Escopos que pode pedir",
   allowedScopesHint: "Separados por espaços, como openid email.",
   pkceLabel: "Desafio de código (PKCE)",

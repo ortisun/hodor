@@ -4,7 +4,8 @@
 // of compose.yaml, and fails unless every test ends as
 // docs/operations/conformance.md expects. The Form Post plan of the code
 // flow, and the Implicit and Hybrid plans, for the response types `id_token`
-// and `code id_token`, run when asked for with CONFORMANCE_PLANS.
+// and `code id_token`, and the Front-Channel plan with a public and with a
+// pairwise client, run when asked for with CONFORMANCE_PLANS.
 //
 // NOT FOR ANYTHING REAL: the person, the clients and their secrets are made
 // here for the run and written to the console.
@@ -48,6 +49,10 @@ const POST_LOGOUT = `${SUITE}test/a/${ALIAS}/post_logout_redirect`;
 // as the worker reaches it: through the relay of compose.yaml.
 const RELAY = "suite-relay:8080";
 const BACKCHANNEL_LOGOUT = `http://${RELAY}/test/a/${ALIAS}/backchannel_logout`;
+// The suite's front-channel logout address, which the browser of this script
+// loads in a frame of Hodor's signed-out page: on the suite's own site, as
+// its redirect address is, which Hodor requires.
+const FRONTCHANNEL_LOGOUT = `${SUITE}test/a/${ALIAS}/frontchannel_logout`;
 // The sector identifier address of the second pairwise client, answered by
 // `sector-document` of compose.yaml with the suite's redirect address. Its
 // host is that client's sector.
@@ -55,12 +60,13 @@ const SECTOR_DOCUMENT_HOST = "sector-document:8080";
 const SECTOR_IDENTIFIER_URI = `http://${SECTOR_DOCUMENT_HOST}/redirect_uris.json`;
 const ONLY = (process.env.CONFORMANCE_ONLY ?? "").split(",").filter((name) => name !== "");
 // The plans this script can run, by a short name. Continuous integration
-// runs the first five; the Form Post plan of the code flow and the Implicit
-// and Hybrid plans of the response types Hodor answers through the browser
-// run when named.
+// runs the first five; the Form Post plan of the code flow, the Implicit
+// and Hybrid plans of the response types Hodor answers through the browser,
+// and the Front-Channel plans run when named.
 const PLANS = [
   "basic", "config", "backchannel", "basic-pairwise", "backchannel-pairwise",
   "formpost-basic", "implicit-id-token", "hybrid-code-id-token",
+  "frontchannel", "frontchannel-pairwise",
 ];
 const CONTINUOUS_INTEGRATION_PLANS = PLANS.slice(0, 5);
 const CHOSEN = (process.env.CONFORMANCE_PLANS ?? CONTINUOUS_INTEGRATION_PLANS.join(","))
@@ -146,7 +152,7 @@ async function waitForState(module, states, seconds) {
 // ---------------------------------------------------------------------------
 
 function seedHodor() {
-  step("A tenant, an application and eight clients in Hodor");
+  step("A tenant, an application and ten clients in Hodor");
   if (!cli("tenant", "list").split("\n").some((line) => line.includes(` ${TENANT} `) || line.startsWith(`${TENANT} `))) {
     cli("tenant", "create", "--slug", TENANT, "--name", "Conformance", "--open-registration");
   }
@@ -194,6 +200,11 @@ function seedHodor() {
       "--backchannel-logout-uri", BACKCHANNEL_LOGOUT, "--backchannel-logout-session-required",
       ...signedWith("PS256"),
     ]),
+    // The front-channel plan's alone, for the same reason.
+    frontchannel: client("Client told through the browser", "client_secret_basic", [
+      "--frontchannel-logout-uri", FRONTCHANNEL_LOGOUT, "--frontchannel-logout-session-required",
+      ...signedWith("ES256"),
+    ]),
     // The same four, pairwise, for the plans' second run: each knows the
     // person by an identifier of its sector. The second names a sector
     // identifier address, so its sector is another host than the others'.
@@ -212,6 +223,11 @@ function seedHodor() {
         "--subject-type", "pairwise",
         "--backchannel-logout-uri", BACKCHANNEL_LOGOUT, "--backchannel-logout-session-required",
         ...signedWith("EdDSA"),
+      ]),
+      frontchannel: client("Pairwise client told through the browser", "client_secret_basic", [
+        "--subject-type", "pairwise",
+        "--frontchannel-logout-uri", FRONTCHANNEL_LOGOUT, "--frontchannel-logout-session-required",
+        ...signedWith("RS256"),
       ]),
     },
   };
@@ -305,6 +321,9 @@ async function throughHodor(page) {
           await identifier.press("Enter");
           acted = `identifier ${url}`;
         }
+      } else if (url.includes("/account/signed-out")) {
+        // Hodor's signed-out page loads the clients' frames and goes on by
+        // itself, within five seconds.
       } else if (tick > 10) {
         // A page of Hodor's that asks nothing: an error, or a question the
         // test did not expect to be answered.
@@ -466,6 +485,18 @@ async function main() {
       "hybrid-code-id-token": () => runPlan("oidcc-hybrid-certification-test-plan", config,
         { server_metadata: "discovery", client_registration: "static_client" }, browser,
         "oidcc-hybrid-certification-test-plan (code id_token)", "code id_token"),
+      // Issue-139: the client of this plan has a front-channel logout
+      // address; Hodor's signed-out page loads it in a frame of this
+      // script's browser, with `iss` and the `sid` of the ID token.
+      frontchannel: () => runPlan("oidcc-frontchannel-rp-initiated-logout-certification-test-plan",
+        { ...config, client: clients.frontchannel, client2: undefined, client_secret_post: undefined },
+        { client_registration: "static_client", response_type: "code" }, browser),
+      "frontchannel-pairwise": () => runPlan(
+        "oidcc-frontchannel-rp-initiated-logout-certification-test-plan",
+        { ...config, client: clients.pairwise.frontchannel, client2: undefined,
+          client_secret_post: undefined },
+        { client_registration: "static_client", response_type: "code" }, browser,
+        "oidcc-frontchannel-rp-initiated-logout-certification-test-plan (pairwise)"),
     };
     const results = [];
     for (const name of PLANS.filter((plan) => CHOSEN.includes(plan))) {
