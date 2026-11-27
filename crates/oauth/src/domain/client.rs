@@ -13,6 +13,9 @@ use crate::domain::pairwise::{
     SubjectType, check_sector_identifier_uri, sector_of, sector_required, sector_uri_invalid,
     subject_type_invalid,
 };
+use crate::domain::registration_token::{
+    RegistrationAccessTokenHash, RegistrationAccessTokenValue,
+};
 use crate::domain::request_uri::{MAX_REQUEST_URIS, check_request_uri, request_uri_invalid};
 use crate::domain::response::{ResponseType, response_types_invalid};
 use crate::domain::secret::{ClientSecret, ClientSecretHash, ClientSecretId, ClientSecretValue};
@@ -259,31 +262,49 @@ const MAX_DISPLAY_URI_LENGTH: usize = 2000;
 /// See `docs/architecture/contexts/oauth.md`, "Addresses a person is
 /// shown".
 fn check_display_uri(member: &str, value: &str) -> Result<(), DomainError> {
-    let invalid = |reason: &str| {
+    check_browser_address(value).map_err(|reason| {
         DomainError::invalid(
             "oauth.client_display_uri_invalid",
             "an address a person is shown is one HTTPS address of at most 2000 characters, with \
              a host and without a name and password or a fragment",
         )
         .with_detail(format!("`{member}`: {reason}"))
-    };
+    })
+}
+
+/// Checks a client's login initiation address, its `initiate_login_uri`:
+/// by the rules of the addresses a person is shown. See
+/// `docs/architecture/contexts/oauth.md`, "The login initiation address".
+fn check_initiate_login_uri(value: &str) -> Result<(), DomainError> {
+    check_browser_address(value).map_err(|reason| {
+        DomainError::invalid(
+            "oauth.client_initiate_login_uri_invalid",
+            "a login initiation address is one HTTPS address of at most 2000 characters, with a \
+             host and without a name and password or a fragment",
+        )
+        .with_detail(format!("`initiate_login_uri`: {reason}"))
+    })
+}
+
+/// Whether `value` is an address a person's browser may be sent to or
+/// load: one absolute HTTPS address with a host, without a name and
+/// password or a fragment. Answers why not.
+fn check_browser_address(value: &str) -> Result<(), &'static str> {
     if value.is_empty() || value.len() > MAX_DISPLAY_URI_LENGTH {
-        return Err(invalid("the address is empty or too long"));
+        return Err("the address is empty or too long");
     }
     if !value.bytes().all(|b| b.is_ascii_graphic()) {
-        return Err(invalid(
-            "the address has a space or a character outside ASCII",
-        ));
+        return Err("the address has a space or a character outside ASCII");
     }
     if value.contains('#') || value.contains('\\') {
-        return Err(invalid("the address has a fragment or a backslash"));
+        return Err("the address has a fragment or a backslash");
     }
     let Some(rest) = value.strip_prefix("https://") else {
-        return Err(invalid("the address is not HTTPS"));
+        return Err("the address is not HTTPS");
     };
     let authority = rest.split(['/', '?']).next().unwrap_or_default();
     if authority.contains('@') {
-        return Err(invalid("the address has a name and password"));
+        return Err("the address has a name and password");
     }
     let (host, port) = if authority.starts_with('[') {
         match authority.split_once(']') {
@@ -301,7 +322,7 @@ fn check_display_uri(member: &str, value: &str) -> Result<(), DomainError> {
         }
     };
     if host.is_empty() || port.is_some_and(|p| !is_port(p)) {
-        return Err(invalid("the address has no usable host"));
+        return Err("the address has no usable host");
     }
     Ok(())
 }
@@ -756,6 +777,9 @@ pub struct ClientSettings {
     pub policy_uri: Option<String>,
     /// Its terms of service, its `tos_uri`, shown to a person.
     pub tos_uri: Option<String>,
+    /// Where a sign-in at it can be started by someone else, its
+    /// `initiate_login_uri`: what the account page links to.
+    pub initiate_login_uri: Option<String>,
 }
 
 /// Checks a client's defaults for a sign-in: see
@@ -998,6 +1022,7 @@ impl ClientSettings {
             logo_uri: None,
             policy_uri: None,
             tos_uri: None,
+            initiate_login_uri: None,
         }
     }
 
@@ -1152,6 +1177,9 @@ impl ClientSettings {
                 check_display_uri(member, uri)?;
             }
         }
+        if let Some(uri) = &self.initiate_login_uri {
+            check_initiate_login_uri(uri)?;
+        }
         let post_logout_redirect_uris = without_repeats(self.post_logout_redirect_uris);
         if post_logout_redirect_uris.len() > MAX_REDIRECT_URIS {
             return Err(post_logout_invalid(
@@ -1281,6 +1309,7 @@ impl ClientSettings {
             logo_uri: self.logo_uri,
             policy_uri: self.policy_uri,
             tos_uri: self.tos_uri,
+            initiate_login_uri: self.initiate_login_uri,
         })
     }
 }
@@ -1294,6 +1323,10 @@ pub struct SelfRegistration {
     /// address reads it, if it was known: what the bound of registrations
     /// per address counts.
     pub address_hash: Option<[u8; 32]>,
+    /// The SHA-256 of its registration access token, replaced at every
+    /// change of its registration; `None` for a client registered before
+    /// tokens existed, which cannot manage its registration.
+    pub token_hash: Option<RegistrationAccessTokenHash>,
 }
 
 /// Everything stored about a client.
@@ -1393,6 +1426,126 @@ impl Client {
     #[must_use]
     pub const fn is_registered(&self) -> bool {
         self.state.self_registration.is_some()
+    }
+
+    /// Gives a registered client a new registration access token, which
+    /// replaces the one it had: the old one stops matching at once.
+    /// Returns the token, once. See `docs/architecture/contexts/oauth.md`,
+    /// "The registration access token".
+    ///
+    /// # Errors
+    ///
+    /// Returns an internal error for a client that did not register itself.
+    pub fn issue_registration_token(
+        &mut self,
+        random: &dyn RandomSource,
+        digest: &dyn Digest,
+    ) -> Result<RegistrationAccessTokenValue, DomainError> {
+        let Some(registration) = self.state.self_registration.as_mut() else {
+            return Err(DomainError::internal(
+                "oauth.client_not_registered",
+                "only a client that registered itself has a registration access token",
+            ));
+        };
+        let value = RegistrationAccessTokenValue::generate(random);
+        registration.token_hash = Some(RegistrationAccessTokenHash::of(&value, digest));
+        Ok(value)
+    }
+
+    /// Whether `presented` is the registration access token this client
+    /// holds, compared in time that does not depend on where they differ.
+    /// A client that holds none, and a value without the shape of a token,
+    /// match nothing.
+    #[must_use]
+    pub fn accepts_registration_token(&self, presented: &str, digest: &dyn Digest) -> bool {
+        let Some(held) = self
+            .state
+            .self_registration
+            .and_then(|registration| registration.token_hash)
+        else {
+            return false;
+        };
+        RegistrationAccessTokenHash::of_presented(presented, digest)
+            .is_some_and(|presented| presented.matches(&held))
+    }
+
+    /// Replaces the settings and the keys of a registered client, as a
+    /// change of its registration asks: the keys it no longer names are
+    /// removed first, so that a key set address can take their place, then
+    /// the settings are changed as [`Self::change`] does, then the new keys
+    /// are added one by one, each checked as an administrator adds one. A
+    /// key kept with the same `kid` and value stays as it was. Returns the
+    /// events. See `docs/architecture/contexts/oauth.md`, "Changing".
+    ///
+    /// # Errors
+    ///
+    /// The errors of [`Self::change`] and [`Self::add_key`]; the client is
+    /// then left part changed, and must not be stored.
+    pub fn change_registration(
+        &mut self,
+        settings: ClientSettings,
+        keys: Vec<ClientKey>,
+        now: Timestamp,
+    ) -> Result<Vec<OauthEvent>, DomainError> {
+        let same =
+            |one: &ClientKey, other: &ClientKey| one.key_id == other.key_id && one.jwk == other.jwk;
+        let mut events = Vec::new();
+        let dropped: Vec<String> = self
+            .state
+            .keys
+            .iter()
+            .filter(|kept| !keys.iter().any(|key| same(kept, key)))
+            .map(|kept| kept.key_id.clone())
+            .collect();
+        for key_id in dropped {
+            events.push(self.remove_key(&key_id, now)?);
+        }
+        let mut changed = self.change(settings, now)?;
+        // `change` names the client changed first.
+        if !changed.is_empty() {
+            events.splice(0..0, changed.drain(..1));
+        }
+        events.extend(changed);
+        for key in keys {
+            if !self.state.keys.iter().any(|kept| same(kept, &key)) {
+                events.push(self.add_key(key, now)?);
+            }
+        }
+        if !events.is_empty() {
+            self.state.updated_at = now;
+        }
+        Ok(events)
+    }
+
+    /// Gives the client its first secret again when its method takes one
+    /// and none of its secrets works at `now`, as a change of a
+    /// registration to a secret method needs. Returns the secret, once,
+    /// with its event; nothing when the client has what it needs.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the secret cannot be made.
+    pub fn ensure_secret(
+        &mut self,
+        now: Timestamp,
+        random: &dyn RandomSource,
+        digest: &dyn Digest,
+    ) -> Result<Option<(ClientSecretValue, OauthEvent)>, DomainError> {
+        if !self.state.settings.authentication_method.uses_secret()
+            || self.state.secrets.iter().any(|secret| secret.works_at(now))
+        {
+            return Ok(None);
+        }
+        let (secret, value) =
+            ClientSecret::make(ClientSecret::DEFAULT_LIFETIME, now, random, digest)?;
+        let event = OauthEvent::ClientSecretIssued {
+            client_id: self.state.id,
+            secret_id: secret.id,
+            expires_at: secret.expires_at,
+        };
+        self.state.secrets.push(secret);
+        self.state.updated_at = now;
+        Ok(Some((value, event)))
     }
 
     /// Rebuilds a client from storage.
@@ -2801,6 +2954,142 @@ mod tests {
         client.remove_key("one", NOW).expect("removed");
         client.change(at_address, NOW).expect("an address again");
         assert_eq!(client.jwks_uri(), Some(ADDRESS));
+    }
+
+    fn ed25519(kid: &str) -> ClientKey {
+        ClientKey::parse(
+            &format!(
+                r#"{{"kty":"OKP","crv":"Ed25519","kid":"{kid}","x":"AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE"}}"#
+            ),
+            NOW,
+        )
+        .expect("key")
+    }
+
+    fn registered(settings: ClientSettings) -> Client {
+        let (client, _) = create(ClientType::Confidential, settings).expect("valid");
+        client.registered_from(SelfRegistration {
+            address_hash: None,
+            token_hash: None,
+        })
+    }
+
+    #[test]
+    fn a_registered_client_holds_one_registration_access_token_at_a_time() {
+        let random = CountingRandom::default();
+        let (mut by_hand, _) = create(ClientType::Confidential, web()).expect("valid");
+        assert_eq!(
+            by_hand
+                .issue_registration_token(&random, &FakeDigest)
+                .expect_err("not registered")
+                .code(),
+            "oauth.client_not_registered"
+        );
+        let mut client = registered(web());
+        assert!(!client.accepts_registration_token("hodor_rat_anything", &FakeDigest));
+        let first = client
+            .issue_registration_token(&random, &FakeDigest)
+            .expect("first");
+        assert!(first.expose().starts_with("hodor_rat_"));
+        assert!(client.accepts_registration_token(first.expose(), &FakeDigest));
+        let second = client
+            .issue_registration_token(&random, &FakeDigest)
+            .expect("second");
+        assert_ne!(first.expose(), second.expose());
+        assert!(
+            !client.accepts_registration_token(first.expose(), &FakeDigest),
+            "replaced"
+        );
+        assert!(client.accepts_registration_token(second.expose(), &FakeDigest));
+        // Another value, or one without the shape, matches nothing.
+        let other = registered(web())
+            .issue_registration_token(&random, &FakeDigest)
+            .expect("other");
+        assert!(!client.accepts_registration_token(other.expose(), &FakeDigest));
+        assert!(!client.accepts_registration_token("", &FakeDigest));
+    }
+
+    #[test]
+    fn a_change_of_a_registration_replaces_settings_and_keys_in_an_order_that_works() {
+        let mut jwt = web();
+        jwt.authentication_method = AuthenticationMethod::PrivateKeyJwt;
+        let mut client = registered(jwt.clone());
+        client
+            .change_registration(jwt.clone(), vec![ed25519("one"), ed25519("two")], NOW)
+            .expect("keys");
+        // A key kept as it was is neither removed nor added again.
+        let events = client
+            .change_registration(jwt.clone(), vec![ed25519("two"), ed25519("three")], NOW)
+            .expect("one key for another");
+        let kinds: Vec<_> = events
+            .iter()
+            .map(hodor_kernel::DomainEvent::event_type)
+            .collect();
+        assert_eq!(
+            kinds,
+            ["oauth.client_key_removed", "oauth.client_key_added"]
+        );
+        // Keys give way to a key set address in one change.
+        let mut at_address = jwt.clone();
+        at_address.jwks_uri = Some("https://payroll.example.com/jwks".to_owned());
+        let events = client
+            .change_registration(at_address.clone(), Vec::new(), NOW)
+            .expect("an address");
+        let kinds: Vec<_> = events
+            .iter()
+            .map(hodor_kernel::DomainEvent::event_type)
+            .collect();
+        assert_eq!(
+            kinds,
+            [
+                "oauth.client_changed",
+                "oauth.client_key_removed",
+                "oauth.client_key_removed"
+            ]
+        );
+        assert!(client.snapshot().keys.is_empty());
+        // And an address to keys, the settings changed before the keys come.
+        client
+            .change_registration(jwt, vec![ed25519("four")], NOW)
+            .expect("keys again");
+        assert_eq!(client.jwks_uri(), None);
+        assert_eq!(client.snapshot().keys.len(), 1);
+        // A secret method takes no keys: they were ignored before they came.
+        let events = client
+            .change_registration(web(), Vec::new(), NOW)
+            .expect("a secret method");
+        assert!(client.snapshot().keys.is_empty());
+        assert!(!events.is_empty());
+    }
+
+    #[test]
+    fn a_client_moved_to_a_secret_method_is_given_a_secret_once() {
+        let mut jwt = web();
+        jwt.authentication_method = AuthenticationMethod::PrivateKeyJwt;
+        let mut client = registered(jwt);
+        let random = CountingRandom::default();
+        assert!(
+            client
+                .ensure_secret(NOW, &random, &FakeDigest)
+                .expect("nothing to give")
+                .is_none()
+        );
+        client.change(web(), NOW).expect("a secret method");
+        let (secret, event) = client
+            .ensure_secret(NOW, &random, &FakeDigest)
+            .expect("made")
+            .expect("given");
+        assert_eq!(
+            hodor_kernel::DomainEvent::event_type(&event),
+            "oauth.client_secret_issued"
+        );
+        assert!(client.accepts_secret(secret.expose(), &FakeDigest, NOW));
+        assert!(
+            client
+                .ensure_secret(NOW, &random, &FakeDigest)
+                .expect("one works")
+                .is_none()
+        );
     }
 
     #[test]

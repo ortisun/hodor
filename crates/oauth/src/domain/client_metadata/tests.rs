@@ -1,6 +1,6 @@
 use super::*;
 use crate::domain::application::ApplicationId;
-use crate::domain::client::ClientType;
+use crate::domain::client::{ClientId, ClientType};
 use crate::domain::key::ClientKey;
 use hodor_kernel::Timestamp;
 use hodor_kernel::random::testing::{CountingRandom, FakeDigest};
@@ -176,7 +176,6 @@ fn members_hodor_does_not_keep_are_ignored() {
         "contacts": ["ops@partner.example"],
         "software_id": "4NRB1-0XZABZI9E6-5SM3R",
         "software_version": "2.1",
-        "initiate_login_uri": "https://portal.partner.example/login",
         "frontchannel_logout_uri": "https://portal.partner.example/front",
         "client_name#ja-Jpan-JP": "クライアント名",
         "spiffe_id": "spiffe://cluster.local/ns/a/sa/b",
@@ -221,7 +220,7 @@ fn a_member_of_the_wrong_kind_is_refused_by_name() {
         ("default_max_age", json!(-1)),
         ("default_max_age", json!(1.5)),
         ("scope", json!(["openid"])),
-        ("jwks", json!([p256("one")])),
+        ("initiate_login_uri", json!(true)),
     ] {
         let refused = read(with(member, value)).expect_err(member);
         assert_eq!(refused.code(), "oauth.client_metadata_invalid", "{member}");
@@ -244,6 +243,145 @@ fn a_member_of_the_wrong_kind_is_refused_by_name() {
         code(read_client_metadata(&Value::Null, &policy())),
         "oauth.client_metadata_invalid"
     );
+}
+
+#[test]
+fn the_keys_of_a_client_of_private_key_jwt_are_refused_when_malformed() {
+    let mut body = with("jwks", json!([p256("one")]));
+    body["token_endpoint_auth_method"] = json!("private_key_jwt");
+    let refused = read(body).expect_err("a list, not a key set");
+    assert_eq!(refused.code(), "oauth.client_metadata_invalid");
+    assert!(
+        refused
+            .detail()
+            .is_some_and(|detail| detail.contains("jwks"))
+    );
+}
+
+#[test]
+fn the_keys_of_a_client_that_does_not_sign_with_them_are_ignored() {
+    // As the conformance suite registers every client, whatever its method.
+    for method in ["client_secret_basic", "client_secret_post", "none"] {
+        let mut body = with("jwks", json!({ "keys": [p256("one")] }));
+        body["token_endpoint_auth_method"] = json!(method);
+        let read = read(body).expect(method);
+        assert!(read.keys.is_empty(), "{method}");
+        // Not looked at, so not refused either.
+        let mut odd = with("jwks", json!("not a key set"));
+        odd["token_endpoint_auth_method"] = json!(method);
+        assert!(
+            super::read_client_metadata(&odd, &policy()).is_ok(),
+            "{method}"
+        );
+    }
+    let (client, _) = registered(with("jwks", json!({ "keys": [p256("one")] })));
+    assert!(client.snapshot().keys.is_empty());
+    assert!(
+        registration_answer(&client, None, None)
+            .get("jwks")
+            .is_none()
+    );
+}
+
+#[test]
+fn the_login_initiation_address_is_kept_and_https_only() {
+    let kept = read(with(
+        "initiate_login_uri",
+        json!("https://portal.partner.example/start?from=hodor"),
+    ))
+    .expect("read");
+    assert_eq!(
+        kept.settings.initiate_login_uri.as_deref(),
+        Some("https://portal.partner.example/start?from=hodor")
+    );
+    kept.settings
+        .clone()
+        .checked(kept.client_type)
+        .expect("an HTTPS address");
+    for address in [
+        "http://portal.partner.example/start",
+        "https://",
+        "https://user:pass@portal.partner.example/start",
+        "https://portal.partner.example/start#here",
+        "https://portal.partner.example/a start",
+        "javascript:alert(1)",
+    ] {
+        let asked = read(with("initiate_login_uri", json!(address))).expect("read");
+        let refused = asked
+            .settings
+            .checked(asked.client_type)
+            .expect_err(address);
+        assert_eq!(
+            refused.code(),
+            "oauth.client_initiate_login_uri_invalid",
+            "{address}"
+        );
+    }
+    let (client, _) = registered(with(
+        "initiate_login_uri",
+        json!("https://portal.partner.example/start"),
+    ));
+    assert_eq!(
+        registration_answer(&client, None, None)["initiate_login_uri"],
+        "https://portal.partner.example/start"
+    );
+}
+
+#[test]
+fn a_change_names_the_client_and_may_name_its_secret() {
+    let id = ClientId::generate();
+    let mut body = minimal();
+    assert_eq!(
+        read_change(&body, id).expect_err("no client_id").code(),
+        "oauth.registration_client_id_mismatch"
+    );
+    body["client_id"] = json!(ClientId::generate().to_string());
+    assert_eq!(
+        read_change(&body, id).expect_err("another client").code(),
+        "oauth.registration_client_id_mismatch"
+    );
+    body["client_id"] = json!(id.to_string());
+    assert_eq!(read_change(&body, id).expect("its own"), None);
+    // What only an answer carries is ignored.
+    body["registration_access_token"] = json!("hodor_rat_old");
+    body["registration_client_uri"] = json!("https://elsewhere.example/register/x");
+    body["client_id_issued_at"] = json!(1);
+    body["client_secret_expires_at"] = json!(2);
+    body["client_secret"] = json!("hodor_cs_sent");
+    assert_eq!(
+        read_change(&body, id).expect("read").as_deref(),
+        Some("hodor_cs_sent")
+    );
+    body["client_secret"] = json!(7);
+    assert_eq!(
+        read_change(&body, id).expect_err("not a text").code(),
+        "oauth.client_metadata_invalid"
+    );
+    assert_eq!(
+        read_change(&json!([]), id)
+            .expect_err("not an object")
+            .code(),
+        "oauth.client_metadata_invalid"
+    );
+}
+
+#[test]
+fn the_answer_of_a_managed_registration_carries_its_token_and_address() {
+    let (client, _) = registered(minimal());
+    let answer = registration_answer(
+        &client,
+        None,
+        Some(Management {
+            access_token: "hodor_rat_given",
+            client_uri: "https://id.example.com/t/acme/oauth2/register/x",
+        }),
+    );
+    assert_eq!(answer["registration_access_token"], "hodor_rat_given");
+    assert_eq!(
+        answer["registration_client_uri"],
+        "https://id.example.com/t/acme/oauth2/register/x"
+    );
+    assert!(answer.get("client_secret").is_none());
 }
 
 #[test]
@@ -349,7 +487,7 @@ fn a_client_of_private_key_jwt_registers_its_keys_by_value_or_at_its_address() {
         "token_endpoint_auth_method": "private_key_jwt",
         "jwks_uri": "https://portal.partner.example/jwks"
     }));
-    let answer = registration_answer(&client, None);
+    let answer = registration_answer(&client, None, None);
     assert_eq!(answer["jwks_uri"], "https://portal.partner.example/jwks");
     assert!(answer.get("jwks").is_none());
 }
@@ -508,7 +646,7 @@ fn the_answer_gives_back_every_member_kept_and_the_secret_once() {
         "logo_uri": "https://portal.partner.example/logo.png",
         "contacts": ["ops@partner.example"]
     }));
-    let answer = registration_answer(&client, secret.as_ref());
+    let answer = registration_answer(&client, secret.as_ref(), None);
     let state = client.snapshot();
     assert_eq!(answer["client_id"], state.id.to_string());
     assert_eq!(
@@ -552,7 +690,7 @@ fn the_answer_gives_back_every_member_kept_and_the_secret_once() {
         assert!(answer.get(left_out).is_none(), "{left_out}");
     }
     // The answer without the secret, as Hodor could give it later.
-    let again = registration_answer(&client, None);
+    let again = registration_answer(&client, None, None);
     assert!(again.get("client_secret").is_none());
     assert!(again.get("client_secret_expires_at").is_none());
 }
@@ -565,7 +703,7 @@ fn the_answer_of_a_client_with_keys_gives_them_back() {
         "jwks": { "keys": [p256("one")] }
     }));
     assert!(secret.is_none());
-    let answer = registration_answer(&client, None);
+    let answer = registration_answer(&client, None, None);
     assert_eq!(answer["jwks"]["keys"][0]["kid"], "one");
     assert_eq!(answer["token_endpoint_auth_method"], "private_key_jwt");
 }

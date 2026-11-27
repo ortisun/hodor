@@ -354,6 +354,29 @@ impl ClientRegistrationService {
         Ok(RegistrationInForce::of(self.ports.registrations.lock(uow).await?.as_ref()).settings)
     }
 
+    /// The settings in force, for managing a registration: whatever way
+    /// allowed it, a registration is read, changed or removed only while
+    /// registration is on in the tenant. See
+    /// `docs/architecture/contexts/oauth.md`, "The registration access
+    /// token".
+    ///
+    /// # Errors
+    ///
+    /// Returns `oauth.client_registration_off`, a `NotFound` error, while
+    /// registration is off.
+    pub async fn may_manage(
+        &self,
+        uow: &mut dyn UnitOfWork,
+    ) -> Result<RegistrationSettings, DomainError> {
+        let settings =
+            RegistrationInForce::of(self.ports.registrations.get(uow).await?.as_ref()).settings;
+        if settings.enabled {
+            Ok(settings)
+        } else {
+            Err(registration_off())
+        }
+    }
+
     /// Decides whether a registration may go ahead without spending
     /// anything: the token found and good, or open registration.
     async fn decide(

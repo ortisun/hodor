@@ -120,7 +120,9 @@ address.
   formatted with `Intl.DateTimeFormat` in `text.locale`), the applications
   the person let in from `client.consents()`, each with a "withdraw" `Action`
   that calls `client.withdrawConsent(clientId)` and says so
-  (`consentWithdrawn`), links to the
+  (`consentWithdrawn`), and, for one with a `signInUri`, a link
+  (`signInAt`) that opens it in a new tab without a referrer to start a
+  sign-in at the application (Issue-134), links to the
   profile page (`text.profileLink`) and the security page, and a sign-out `Action` that calls
   `client.signOut()` and `go("sign-in", "signed-out")`.
 - `ProfilePage.tsx:ProfilePage(PageProps)` - the person's display name and

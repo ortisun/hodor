@@ -730,8 +730,12 @@ fn a_request_says_whether_its_application_is_first_party() {
 #[test]
 fn a_client_that_registered_itself_is_never_first_party() {
     let application = application(true);
-    let client = client_of(&application, ClientType::Public)
-        .registered_from(crate::domain::client::SelfRegistration { address_hash: None });
+    let client = client_of(&application, ClientType::Public).registered_from(
+        crate::domain::client::SelfRegistration {
+            address_hash: None,
+            token_hash: None,
+        },
+    );
     let servers = vec![server(&application, AUDIENCE, &["read"])];
     let setting = Setting {
         application,

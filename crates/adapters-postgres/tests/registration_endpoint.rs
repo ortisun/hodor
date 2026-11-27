@@ -124,7 +124,7 @@ impl World {
                 Caller::system(),
             )
             .await
-            .map(|(client, _)| client)
+            .map(|registered| registered.client)
     }
 
     async fn spent(&self) -> u32 {

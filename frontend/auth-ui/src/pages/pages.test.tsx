@@ -862,6 +862,51 @@ describe("the account page", () => {
     expect(sent.at(-1)).toMatchObject({ method: "DELETE", path: "/consents/c-1", csrfToken: "of-the-session" });
   });
 
+  it("links to start a sign-in at an application that offers one, and only over HTTPS", async () => {
+    const { props } = page({
+      "GET /session": [session],
+      "GET /consents": [
+        json(200, {
+          consents: [
+            {
+              client_id: "c-1",
+              application: "Partner portal",
+              scopes: ["openid"],
+              given_at: "2026-11-20T14:03:11Z",
+              expires_at: "2027-11-20T14:03:11Z",
+              sign_in_uri: "https://portal.partner.example/start?iss=https%3A%2F%2Fid.example.com%2Ft%2Facme",
+            },
+            {
+              client_id: "c-2",
+              application: "Billing",
+              scopes: ["openid"],
+              given_at: "2026-11-20T14:03:11Z",
+              expires_at: "2027-11-20T14:03:11Z",
+            },
+            {
+              client_id: "c-3",
+              application: "Elsewhere",
+              scopes: ["openid"],
+              given_at: "2026-11-20T14:03:11Z",
+              expires_at: "2027-11-20T14:03:11Z",
+              sign_in_uri: "javascript:alert(1)",
+            },
+          ],
+        }),
+      ],
+    });
+    render(<AccountPage {...props} />);
+    const link = await screen.findByRole("link", { name: new RegExp(en.signInAt("Partner portal")) });
+    expect(link.getAttribute("href")).toBe(
+      "https://portal.partner.example/start?iss=https%3A%2F%2Fid.example.com%2Ft%2Facme",
+    );
+    expect(link.getAttribute("target")).toBe("_blank");
+    expect(link.getAttribute("rel")).toContain("noreferrer");
+    // None for an application that offers none, nor for an address that is not HTTPS.
+    expect(screen.queryByRole("link", { name: new RegExp(en.signInAt("Billing")) })).toBeNull();
+    expect(screen.queryByRole("link", { name: new RegExp(en.signInAt("Elsewhere")) })).toBeNull();
+  });
+
   it("says when no application was let in", async () => {
     const { props } = page({ "GET /session": [session], "GET /consents": [json(200, { consents: [] })] });
     render(<AccountPage {...props} />);

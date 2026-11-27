@@ -448,6 +448,8 @@ struct ClientBody {
     logo_uri: Option<String>,
     policy_uri: Option<String>,
     tos_uri: Option<String>,
+    /// Its login initiation address, as a registration named it.
+    initiate_login_uri: Option<String>,
     /// Whether it registered itself at the registration endpoint.
     registered: bool,
     token_policy: TokenPolicyBody,
@@ -519,6 +521,7 @@ impl From<&Client> for ClientBody {
             logo_uri: settings.logo_uri.clone(),
             policy_uri: settings.policy_uri.clone(),
             tos_uri: settings.tos_uri.clone(),
+            initiate_login_uri: settings.initiate_login_uri.clone(),
             registered: client.is_registered(),
             token_policy: TokenPolicyBody {
                 access_token_seconds: policy.access_token.whole_seconds(),
@@ -1078,6 +1081,7 @@ async fn change_client(
                 logo_uri: now.logo_uri,
                 policy_uri: now.policy_uri,
                 tos_uri: now.tos_uri,
+                initiate_login_uri: now.initiate_login_uri,
             };
             let client = state
                 .applications

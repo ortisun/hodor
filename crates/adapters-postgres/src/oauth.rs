@@ -8,10 +8,10 @@ use hodor_oauth::api::{
     Application, ApplicationId, ApplicationSettings, ApplicationSnapshot, ApplicationStore,
     ApplicationType, Audience, AuthenticationMethod, Client, ClientId, ClientKey, ClientSecret,
     ClientSecretHash, ClientSecretId, ClientSettings, ClientSnapshot, ClientStore, ClientType,
-    ExchangeRule, GrantType, IdTokenAlgorithm, LinkerdIdentity, RequestObjectAlgorithm,
-    ResourceServer, ResourceServerId, ResourceServerSettings, ResourceServerSnapshot,
-    ResourceServerStore, ResponseType, ScopeDefinition, SelfRegistration, SpiffeId, Status,
-    SubjectType, TokenPolicy, WorkloadIdentity,
+    ExchangeRule, GrantType, IdTokenAlgorithm, LinkerdIdentity, RegistrationAccessTokenHash,
+    RequestObjectAlgorithm, ResourceServer, ResourceServerId, ResourceServerSettings,
+    ResourceServerSnapshot, ResourceServerStore, ResponseType, ScopeDefinition, SelfRegistration,
+    SpiffeId, Status, SubjectType, TokenPolicy, WorkloadIdentity,
 };
 use sqlx::PgConnection;
 use sqlx::Row as _;
@@ -284,7 +284,7 @@ const CLIENT_COLUMNS: &str = "id, application_id, name, client_type, authenticat
      certificate_bound_access_tokens, default_max_age, default_acr_values, require_auth_time, \
      userinfo_signed_response_alg, require_pushed_authorization_requests, \
      request_uris, jwks_uri, response_types, application_type, client_uri, logo_uri, policy_uri, \
-     tos_uri, registered, registered_from";
+     tos_uri, registered, registered_from, initiate_login_uri, registration_token_hash";
 
 /// A client's default max age, as the column holds it.
 fn default_max_age_of(settings: &ClientSettings) -> Result<Option<i32>, DomainError> {
@@ -453,6 +453,7 @@ async fn load_client(
             logo_uri: row.try_get("logo_uri").map_err(get)?,
             policy_uri: row.try_get("policy_uri").map_err(get)?,
             tos_uri: row.try_get("tos_uri").map_err(get)?,
+            initiate_login_uri: row.try_get("initiate_login_uri").map_err(get)?,
         },
         secrets,
         keys,
@@ -476,7 +477,29 @@ fn self_registration_of(row: &PgRow) -> Result<Option<SelfRegistration>, DomainE
             <[u8; 32]>::try_from(hash).map_err(|_| corrupted("registered address is not 32 bytes"))
         })
         .transpose()?;
-    Ok(Some(SelfRegistration { address_hash }))
+    let token_hash = row
+        .try_get::<Option<Vec<u8>>, _>("registration_token_hash")
+        .map_err(get)?
+        .map(|hash| {
+            <[u8; 32]>::try_from(hash)
+                .map(RegistrationAccessTokenHash::from_stored)
+                .map_err(|_| corrupted("registration access token hash is not 32 bytes"))
+        })
+        .transpose()?;
+    Ok(Some(SelfRegistration {
+        address_hash,
+        token_hash,
+    }))
+}
+
+/// The hash of a registered client's registration access token, as the
+/// column holds it.
+fn token_hash_of(client: &Client) -> Option<Vec<u8>> {
+    client
+        .snapshot()
+        .self_registration
+        .and_then(|registered| registered.token_hash)
+        .map(|hash| hash.as_bytes().to_vec())
 }
 
 /// Writes the secrets and keys of a client, which has none stored.
@@ -561,11 +584,11 @@ impl ClientStore for PgClientStore {
                   require_auth_time, userinfo_signed_response_alg,
                   require_pushed_authorization_requests, request_uris, jwks_uri, response_types,
                   application_type, client_uri, logo_uri, policy_uri, tos_uri, registered,
-                  registered_from, version)
+                  registered_from, initiate_login_uri, registration_token_hash, version)
              VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16,
                      $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28,
                      $29, $30, $31, $32, $33, $34, $35, $36, $37, $38, $39, $40, $41, $42,
-                     $43, $44, $45, 0)",
+                     $43, $44, $45, $46, $47, 0)",
         )
         .bind(tenant)
         .bind(state.id.as_uuid())
@@ -626,6 +649,8 @@ impl ClientStore for PgClientStore {
                 .and_then(|registered| registered.address_hash)
                 .map(|hash| hash.to_vec()),
         )
+        .bind(settings.initiate_login_uri.as_deref())
+        .bind(token_hash_of(client))
         .execute(&mut *connection)
         .await;
         match inserted {
@@ -667,7 +692,7 @@ impl ClientStore for PgClientStore {
                  jwks_uri = $35,
                  response_types = $36,
                  application_type = $37, client_uri = $38, logo_uri = $39, policy_uri = $40,
-                 tos_uri = $41,
+                 tos_uri = $41, initiate_login_uri = $42, registration_token_hash = $43,
                  version = version + 1
              WHERE tenant_id = $1 AND id = $2 AND version = $17",
         )
@@ -721,6 +746,8 @@ impl ClientStore for PgClientStore {
         .bind(settings.logo_uri.as_deref())
         .bind(settings.policy_uri.as_deref())
         .bind(settings.tos_uri.as_deref())
+        .bind(settings.initiate_login_uri.as_deref())
+        .bind(token_hash_of(client))
         .execute(&mut *connection)
         .await
         .map_err(get)?;
@@ -853,6 +880,41 @@ impl ClientStore for PgClientStore {
         .await
         .map_err(get)?;
         usize::try_from(count).map_err(|_| corrupted("registration count"))
+    }
+
+    async fn lock(
+        &self,
+        uow: &mut dyn UnitOfWork,
+        id: ClientId,
+    ) -> Result<Option<Client>, DomainError> {
+        let tenant = uow.tenant().tenant_id().as_uuid();
+        let connection = connection(uow)?;
+        let row = sqlx::query(sqlx::AssertSqlSafe(format!(
+            "SELECT {CLIENT_COLUMNS} FROM oauth.client WHERE tenant_id = $1 AND id = $2 FOR UPDATE"
+        )))
+        .bind(tenant)
+        .bind(id.as_uuid())
+        .fetch_optional(&mut *connection)
+        .await
+        .map_err(get)?;
+        match row {
+            Some(row) => Ok(Some(load_client(connection, tenant, &row).await?)),
+            None => Ok(None),
+        }
+    }
+
+    async fn delete(&self, uow: &mut dyn UnitOfWork, id: ClientId) -> Result<bool, DomainError> {
+        let tenant = uow.tenant().tenant_id().as_uuid();
+        let connection = connection(uow)?;
+        // Every table that names the client references it with
+        // `ON DELETE CASCADE`, so its rows go with it.
+        let deleted = sqlx::query("DELETE FROM oauth.client WHERE tenant_id = $1 AND id = $2")
+            .bind(tenant)
+            .bind(id.as_uuid())
+            .execute(&mut *connection)
+            .await
+            .map_err(get)?;
+        Ok(deleted.rows_affected() == 1)
     }
 }
 

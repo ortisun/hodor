@@ -22,6 +22,7 @@ pub(crate) mod pairwise;
 pub(crate) mod pushed;
 pub(crate) mod refresh;
 pub(crate) mod registration;
+pub(crate) mod registration_token;
 pub(crate) mod request_object;
 pub(crate) mod request_uri;
 pub(crate) mod resource_server;

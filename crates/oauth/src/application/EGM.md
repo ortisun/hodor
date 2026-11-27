@@ -14,7 +14,7 @@ tenant and records its events in it.
 | Port | Methods |
 | --- | --- |
 | `ApplicationStore` | `insert`, `update` (version checked), `get`, `list` (oldest first) |
-| `ClientStore` | `insert` (`oauth.application_not_found` for an application the tenant does not have), `update` (version checked; replaces secrets and keys), `get`, `list_for_application` (oldest first), `bound_to` (the clients bound to a `WorkloadIdentity`, oldest first), `count_for_application`, `count_registered_since(address_hash, since)` (registered clients of that address, or of unknown ones with `None`, made at `since` or later); `insert` and `update` refuse a client whose identity a client of another principal holds (`oauth.client_spiffe_id_taken`, `oauth.client_linkerd_identity_taken`, Decision 0058) |
+| `ClientStore` | `insert` (`oauth.application_not_found` for an application the tenant does not have), `update` (version checked; replaces secrets and keys), `get`, `list_for_application` (oldest first), `bound_to` (the clients bound to a `WorkloadIdentity`, oldest first), `count_for_application`, `count_registered_since(address_hash, since)` (registered clients of that address, or of unknown ones with `None`, made at `since` or later), `lock` (the client with its row locked in the unit of work), `delete` (the client with everything stored that names it; answers whether the tenant had it); `insert` and `update` refuse a client whose identity a client of another principal holds (`oauth.client_spiffe_id_taken`, `oauth.client_linkerd_identity_taken`, Decision 0058) |
 | `ResourceServerStore` | `insert` (`oauth.audience_taken`, `oauth.application_has_resource_server`, `oauth.application_not_found`), `update` (version checked; replaces the scopes), `get`, `find_by_audience` (exact), `find_by_application` (the application's one, if any), `list` (oldest first) |
 | `AuthorizationRequestStore` | `insert` (`oauth.client_not_found`), `get`, `remove` (answers whether this call removed it; never a pushed request), `answer` (records the answer of a request that waits for consent and has none; answers whether this call recorded it), `push(uow, pushed, keep)` (removes the oldest pushed requests of its client beyond `keep - 1`, then stores it; `oauth.client_not_found`), `take_pushed(uow, client, hash)` (removes and answers the pushed request of that client with that reference hash, only if this call removed it; an expired one too) |
 | `GrantStore` | `insert` (`oauth.client_not_found`), `get`, `update` (status and revocation; `oauth.grant_not_found`), `list_active_for(user, client)`, `list_active_of(user)` (every client, oldest first) |
@@ -210,7 +210,8 @@ registration is not allowed `oauth.initial_access_token_required`. It
 answers `Admission { settings, allowed_by }`; nothing is committed.
 `may_register(uow, presented)` decides the same without spending or
 recording anything, and `lock_settings(uow)` reads the settings with their
-row locked.
+row locked. `may_manage(uow)` answers the settings for managing a
+registration, `oauth.client_registration_off` while off.
 
 ### The registration endpoint (`service/registered.rs`)
 
@@ -232,6 +233,34 @@ bound (`oauth.too_many_registered_clients`, `Forbidden`) and the bound per
 address again, `admit`, `ClientStore::insert`, and the events of a new
 client with `oauth.client_registered`. A change of the settings'
 application meanwhile is `oauth.client_registration_modified_concurrently`.
+It answers `RegisteredClient { client, secret, access_token }`: the client
+is given its registration access token before it is stored.
+
+### Managing a registration (`service/managed.rs`)
+
+Issue-134, specified in "Managing a registration" of the OAuth context and
+Decision 0084. `ManageRegistration { client_id, access_token }` names the
+registration and carries the token. Every use case admits first, in its
+unit of work: `may_manage`, no token `oauth.registration_access_token_required`,
+and any token that the client of the address does not hold
+`oauth.registration_access_token_invalid`, both `Unauthenticated`.
+`read_registration` answers the client and records nothing.
+`change_registration(&registration, tenant, ChangeRegistration {
+registration, body }, caller)`: admitted in a unit of work that is dropped;
+a software statement refused; `read_change` and the secret, if sent, checked
+with `accepts_secret` (`oauth.registration_client_secret_mismatch`);
+`read_client_metadata`, what a registration never sets (token policy, PKCE,
+principal, exchange rules, identities) kept from the client;
+`Client::change_registration` with each key by `ClientKey::parse`;
+`check_against` the policy; `check_changed_addresses`, shared with
+`change_client`; then, in one unit of work, admitted again with
+`ClientStore::lock`, the version compared
+(`oauth.client_modified_concurrently`), the policy again, `ensure_secret`,
+`issue_registration_token`, `ClientStore::update`, and
+`oauth.registered_client_changed` with the client's events. It answers
+`ChangedRegistration { client, secret, access_token }`.
+`remove_registration` admits under `lock`, `ClientStore::delete`s, and
+records `oauth.registered_client_removed`.
 
 ### Claim mappers (`claim_mapper.rs`)
 

@@ -67,9 +67,13 @@ follows is `docs/architecture/contexts/oauth.md`.
     `MappedClaims`.
   - Client registration: `ClientRegistrationService`,
     `ClientRegistrationPorts`, `RegistrationInForce`, `Admission`,
-    `AllowedBy`; `RegisterClient`, `MOST_REGISTRATIONS_PER_ADDRESS`,
-    `REGISTRATION_WINDOW`; `ClientMetadata`, `read_client_metadata`,
-    `registration_answer`, `DEFAULT_REGISTERED_CLIENT_NAME`;
+    `AllowedBy`; `RegisterClient`, `RegisteredClient`,
+    `MOST_REGISTRATIONS_PER_ADDRESS`, `REGISTRATION_WINDOW`;
+    `ManageRegistration`, `ChangeRegistration`, `ChangedRegistration`;
+    `ClientMetadata`, `read_client_metadata`, `read_change`,
+    `registration_answer`, `Management`, `DEFAULT_REGISTERED_CLIENT_NAME`;
+    `RegistrationAccessTokenValue`, `RegistrationAccessTokenHash`,
+    `REGISTRATION_ACCESS_TOKEN_PREFIX`, `looks_like_registration_access_token`;
     `ApplicationType`, `SelfRegistration`, `SelfDescription`;
     `with_registration_endpoint`; `RegistrationSettings`, `RegistrationPolicy`,
     `RegistrationWay`, `RegistrationRequest`, `check_registration`,

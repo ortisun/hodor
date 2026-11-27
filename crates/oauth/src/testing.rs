@@ -333,6 +333,21 @@ impl ClientStore for InMemoryClients {
             })
             .count())
     }
+
+    async fn lock(
+        &self,
+        uow: &mut dyn UnitOfWork,
+        id: ClientId,
+    ) -> Result<Option<Client>, DomainError> {
+        // Every change here is made at once, under the mutex.
+        self.get(uow, id).await
+    }
+
+    async fn delete(&self, uow: &mut dyn UnitOfWork, id: ClientId) -> Result<bool, DomainError> {
+        Ok(lock(&self.rows)
+            .remove(&(uow.tenant().tenant_id(), id))
+            .is_some())
+    }
 }
 
 /// Resource servers kept in memory.
@@ -622,6 +637,7 @@ pub async fn run_contract(ports: Ports<'_>) {
     a_client_change_replaces_its_secrets_and_keys(ports).await;
     a_client_belongs_to_an_application_of_its_tenant(ports).await;
     a_stale_client_is_not_stored(ports).await;
+    a_client_is_locked_and_deleted_in_its_tenant_only(ports).await;
     a_spiffe_identifier_is_bound_to_one_service_account_of_its_tenant(ports).await;
     a_linkerd_identity_is_bound_to_one_service_account_of_its_tenant(ports).await;
     an_identity_binds_the_clients_of_one_service_account(ports).await;
@@ -958,6 +974,68 @@ async fn a_stale_client_is_not_stored(ports: Ports<'_>) {
         .expect("stored");
     assert_eq!(stored.snapshot().settings.name, "Payroll web");
     assert!(!stored.is_enabled());
+}
+
+async fn a_client_is_locked_and_deleted_in_its_tenant_only(ports: Ports<'_>) {
+    let tenant = tenant();
+    let owner = application("Payroll", MOMENT);
+    store_application(ports, &tenant, &owner).await;
+    let kept = client(owner.id(), MOMENT);
+    let gone = client(owner.id(), MOMENT);
+    store_client(ports, &tenant, &kept).await;
+    store_client(ports, &tenant, &gone).await;
+
+    let elsewhere = self::tenant();
+    let mut uow = ports.units_of_work.begin(&elsewhere).await.expect("begin");
+    assert_eq!(
+        ports
+            .clients
+            .lock(uow.as_mut(), gone.id())
+            .await
+            .expect("lock"),
+        None
+    );
+    assert!(
+        !ports
+            .clients
+            .delete(uow.as_mut(), gone.id())
+            .await
+            .expect("delete"),
+        "another tenant's client"
+    );
+    uow.commit().await.expect("commit");
+
+    let mut uow = ports.units_of_work.begin(&tenant).await.expect("begin");
+    assert_eq!(
+        ports
+            .clients
+            .lock(uow.as_mut(), gone.id())
+            .await
+            .expect("lock"),
+        Some(gone.clone())
+    );
+    assert!(
+        ports
+            .clients
+            .delete(uow.as_mut(), gone.id())
+            .await
+            .expect("delete")
+    );
+    uow.commit().await.expect("commit");
+    assert_eq!(load_client(ports, &tenant, gone.id()).await, None);
+    assert_eq!(
+        load_client(ports, &tenant, kept.id()).await,
+        Some(kept.clone())
+    );
+    let mut uow = ports.units_of_work.begin(&tenant).await.expect("begin");
+    assert!(
+        !ports
+            .clients
+            .delete(uow.as_mut(), gone.id())
+            .await
+            .expect("delete"),
+        "gone already"
+    );
 }
 
 /// A client of a service account bound to `spiffe_id`, of `application_id`.

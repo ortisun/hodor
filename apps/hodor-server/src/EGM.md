@@ -51,7 +51,8 @@ Routers, as assembled in `run`:
 - `/interaction` nests `hodor_protocol_http::interaction_routes` with the
   `InteractionState` built by `interaction`, merged with
   `hodor_protocol_http::consent_routes`, whose `ConsentState` shares the
-  `ConsentService` and `SessionService` of the authorization endpoint.
+  `ConsentService` and `SessionService` of the authorization endpoint, and
+  takes `HODOR_PUBLIC_URL` for the issuer a sign-in link carries.
   That endpoint's `AuthorizationCodeService` checks an `id_token_hint`
   with `with_id_token_hints` when `keys` built a `KeyService`, and compares
   a pairwise client's hint through `with_pairwise_subjects` when
@@ -176,7 +177,8 @@ Adapters implemented here:
   `AdminState.client_registration` its `ClientRegistrationService` from
   `client_registration` (on `PgClientRegistrationStore`,
   `PgInitialAccessTokenStore` and `PgApplicationStore`). `registration`
-  builds the `RegistrationState` of the registration endpoint, merged into
+  builds the `RegistrationState` of the registration endpoint and of the
+  registration client addresses (Issue-134), merged into
   the `/oauth2` routes whether or not keys are set: an `ApplicationService`
   whose destinations and sector documents are guarded outbound clients
   with the development exception, the same `ClientRegistrationService`,
