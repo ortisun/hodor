@@ -323,6 +323,7 @@ jobs:
         working-directory: .
         run: docker build --file deploy/docker/Dockerfile --tag hodor:conformance .
       - name: Start Hodor and the suite
+        id: stack
         run: docker compose -f compose.yaml up --wait
         env:
           HODOR_IMAGE: hodor:conformance
@@ -331,6 +332,33 @@ jobs:
         env:
           HODOR_IMAGE: hodor:conformance
           CONFORMANCE_REPORT: conformance-results.json
+      # Issue-142: the certification script against the same Hodor, from
+      # making what every ready plan of the hosted suite needs to checking
+      # that nothing it made works once retired.
+      # docs/operations/certification-deployment.md.
+      - name: Make and retire the certification deployment
+        if: ${{ !cancelled() && steps.stack.outcome == 'success' }}
+        working-directory: deploy/certification
+        run: |
+          node certification.mjs make > "$RUNNER_TEMP/certification.json"
+          node -e '
+            const printed = JSON.parse(require("node:fs").readFileSync(process.argv[1], "utf8"));
+            const incomplete = printed.plans.filter((entry) =>
+              !entry.configuration.server.discoveryUrl || !entry.configuration.client?.client_id);
+            console.log(`${printed.plans.length} plan runs ready, ${printed.waiting.length} waiting`);
+            if (printed.plans.length === 0 || incomplete.length > 0) process.exit(1);
+          ' "$RUNNER_TEMP/certification.json"
+          node certification.mjs retire
+        env:
+          HODOR_IMAGE: hodor:conformance
+          HODOR_PUBLIC_URL: https://hodor.localhost:8453
+          CERTIFICATION_MAIL_URL: http://127.0.0.1:28025
+          CERTIFICATION_ACCEPT_ANY_CERTIFICATE: "1"
+          CERTIFICATION_OUTPUT: ${{ runner.temp }}/certification
+          CERTIFICATION_CLI: >-
+            ["docker", "compose", "-f", "../conformance/compose.yaml", "run", "--rm", "--no-deps", "-T",
+            "--entrypoint", "/usr/local/bin/hodor-cli",
+            "-e", "HODOR_DATABASE_URL=postgres://hodor_server:dev-server@postgres:5432/hodor", "hodor"]
       - name: Show what Hodor logged
         if: failure()
         run: docker compose -f compose.yaml logs --no-color --tail 300 hodor worker suite-relay
@@ -342,6 +370,37 @@ jobs:
           name: conformance-results
           path: deploy/conformance/conformance-results.json
           retention-days: 14
+
+  # The certification deployment of Issue-142: the script's test against
+  # stand-ins for hodor-cli and Hodor, and the two files of the deployment
+  # read as Compose and Caddy read them. The script runs against Hodor
+  # itself in the job `conformance`.
+  # docs/operations/certification-deployment.md, "How it is tested".
+  certification:
+    name: Certification deployment
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 24
+      - name: Test the script
+        run: node --test deploy/certification/test/
+      - name: Compose reads the override with the installation
+        run: |
+          sed -e 's|^HODOR_PUBLIC_URL=$|HODOR_PUBLIC_URL=https://hodor-certification.example.org|' \
+            -e 's|^HODOR_OWNER_DATABASE_PASSWORD=$|HODOR_OWNER_DATABASE_PASSWORD=owner|' \
+            -e 's|^HODOR_SERVER_DATABASE_PASSWORD=$|HODOR_SERVER_DATABASE_PASSWORD=server|' \
+            -e 's|^HODOR_WORKER_DATABASE_PASSWORD=$|HODOR_WORKER_DATABASE_PASSWORD=worker|' \
+            -e 's|^HODOR_SECRET_KEYS=$|HODOR_SECRET_KEYS=check:gV8TjmTiZoYOlhsN4OdTTiWMwWa1t/o5RPNGCdbBNro=|' \
+            deploy/certification/.env.example > "$RUNNER_TEMP/certification.env"
+          docker compose --env-file "$RUNNER_TEMP/certification.env" \
+            -f deploy/install/docker/compose.yaml -f deploy/certification/compose.yaml config --quiet
+      - name: Caddy reads the web server's settings
+        run: >
+          docker run --rm -e HODOR_PUBLIC_URL=https://hodor-certification.example.org
+          -v "$PWD/deploy/certification/Caddyfile:/etc/caddy/Caddyfile:ro" caddy:2.10-alpine
+          caddy adapt --config /etc/caddy/Caddyfile --adapter caddyfile --validate > /dev/null
 
   # The image of hodor-ext-authz, built as the release builds it: it starts with a configuration that reads,
   # answers its health checks, and stops at once on one that does not. docs/operations/hodor-ext-authz.md.

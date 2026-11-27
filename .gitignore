@@ -18,6 +18,9 @@ deploy/test-environment/.local/
 deploy/conformance/node_modules/
 deploy/conformance/conformance-results.json
 
+# The certification deployment: what its script made, secrets included.
+deploy/certification/output/
+
 # Leftovers of patch and of merge tools
 *.orig
 *.rej

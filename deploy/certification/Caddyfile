@@ -1,0 +1,50 @@
+# The web server in front of the certification deployment: Caddy, as the
+# profile `https` of the installation with Docker runs it, with the settings
+# of TLS the OpenID Foundation's profiles ask for. Read by compose.yaml beside
+# it. docs/operations/certification-deployment.md, "The web server", says why
+# each setting is there.
+
+{
+	# Ask Let's Encrypt for an RSA certificate: the cipher suites FAPI 1.0
+	# Advanced names for TLS 1.2 are those of RSA.
+	key_type rsa2048
+}
+
+{$HODOR_PUBLIC_URL} {
+	tls {
+		protocols tls1.2 tls1.3
+		# On TLS 1.2, the two suites of FAPI 1.0 Advanced Caddy offers, both
+		# recommended by RFC 9325 for FAPI 2.0. TLS 1.3 chooses its own.
+		ciphers TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256 TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384
+	}
+
+	# A client never names a certificate itself: no header that could carry
+	# one reaches Hodor from this name.
+	request_header -Client-Cert
+	request_header -Client-Cert-Chain
+
+	# Caddy replaces any X-Forwarded-For a client sends with the address it
+	# saw, as the installation expects.
+	reverse_proxy server:8080
+}
+
+# From 0.6.0: the second name the FAPI profiles present client certificates
+# to, once Hodor names it in discovery as `mtls_endpoint_aliases` (Issue-146).
+# Set HODOR_CERTIFICATION_MTLS_URL in .env, point the name at this host,
+# uncomment, and set HODOR_CLIENT_IDENTITY_HEADER=client-cert for the server.
+#
+# {$HODOR_CERTIFICATION_MTLS_URL} {
+# 	tls {
+# 		protocols tls1.2 tls1.3
+# 		ciphers TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256 TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384
+# 		client_auth {
+# 			mode request
+# 		}
+# 	}
+# 	reverse_proxy server:8080 {
+# 		# RFC 9440: the certificate the client presented, and nothing a
+# 		# client sent under that name.
+# 		header_up Client-Cert ":{http.request.tls.client.certificate_der_base64}:"
+# 		header_up -Client-Cert-Chain
+# 	}
+# }
