@@ -286,7 +286,11 @@ fn a_pushed_request_is_the_request_its_reference_brings() {
 
     // Repeated with other values: invalid_request at the pushed request's
     // own address, with its state.
-    for (name, value) in [("scope", "openid"), ("response_type", "token")] {
+    for (name, value) in [
+        ("scope", "openid"),
+        ("response_type", "token"),
+        ("response_type", "code id_token"),
+    ] {
         let error = error_of(check_reference(
             &parameters(&[
                 ("client_id", &id),
@@ -633,4 +637,66 @@ fn a_pushed_request_is_answered_in_its_own_mode_and_a_refused_reference_in_the_m
         assert_eq!(error.error, "invalid_request_uri");
         assert_eq!(error.mode, mode, "{outside:?}");
     }
+}
+
+#[test]
+fn a_pushed_request_keeps_its_response_type_and_the_fragment() {
+    let mut setting = setting();
+    let mut settings = setting.client.snapshot().settings.clone();
+    settings.response_types = crate::domain::response::ResponseType::ALL.to_vec();
+    setting
+        .client
+        .change(settings, MOMENT)
+        .expect("a client of every response type");
+    let mut form = pushed_form();
+    form[0] = ("response_type", "id_token code");
+    form.push(("nonce", "n-0S6_WzA2Mj"));
+    let request = check_pushed_request(
+        parameters(&form),
+        &setting.client,
+        &setting.application,
+        &setting.servers,
+        objects(),
+    )
+    .expect("a hybrid request");
+    assert_eq!(
+        request.response_type,
+        crate::domain::response::ResponseType::CodeIdToken
+    );
+    assert_eq!(request.response_mode, ResponseMode::Fragment);
+    let (pushed, reference) = PushedAuthorization::push(
+        request,
+        Duration::seconds(60),
+        MOMENT,
+        &CountingRandom::default(),
+        &FakeDigest,
+    );
+    let id = setting.client.id().to_string();
+    // Repeated outside in another order of its words, it is the same type.
+    let taken = check_reference(
+        &parameters(&[
+            ("client_id", &id),
+            ("request_uri", reference.expose()),
+            ("response_type", "code id_token"),
+        ]),
+        &setting.client,
+        Some(pushed.clone()),
+        MOMENT,
+    )
+    .expect("the request");
+    assert_eq!(taken, pushed.request);
+    assert_eq!(taken.response_mode, ResponseMode::Fragment);
+    // Another type outside is refused in the pushed request's own mode.
+    let error = error_of(check_reference(
+        &parameters(&[
+            ("client_id", &id),
+            ("request_uri", reference.expose()),
+            ("response_type", "code"),
+        ]),
+        &setting.client,
+        Some(pushed),
+        MOMENT,
+    ));
+    assert_eq!(error.error, "invalid_request");
+    assert_eq!(error.mode, ResponseMode::Fragment);
 }

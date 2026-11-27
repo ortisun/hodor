@@ -365,8 +365,7 @@ With `extAuthz.enabled`, the chart installs [`hodor-ext-authz`](hodor-ext-authz.
 extAuthz:
   enabled: true
   tenant: acme
-  token:
-    header: x-hodor-token-claims
+  token: bearer
   applications:
     - destination: spiffe://cluster.local/ns/shop/sa/orders
       clientId: 0193f1c2-6a1d-7c55-b0c8-6b1f2c9d4e01
@@ -386,7 +385,7 @@ extAuthz:
 | `extAuthz.hodorUrl` | The release's Service, `http://<release>.<namespace>.svc.cluster.local:8080` | Where it reaches Hodor |
 | `extAuthz.issuer` | `publicUrl` followed by `/t/<tenant>` | The tenant's issuer, which `iss` must name |
 | `extAuthz.timeoutMilliseconds` | `1000` | How long one call to Hodor may take before the request is denied |
-| `extAuthz.token` | Empty | Where the checked token's claims are: `metadata` with `namespace` and `key`, or `header`. Empty: the subject is always the caller's identity |
+| `extAuthz.token` | Empty | `bearer`: the bearer token is read, its signature checked against the tenant's key set, which it reads at `hodorUrl`, and its claims name the subject. `metadata` with `namespace` and `key`, or `header`, written before, mean the same with one more rule each ([the subject](hodor-ext-authz.md#the-subject)). Empty: the subject is always the caller's identity |
 | `extAuthz.applications` | Empty | One entry per protected application: `destination`, `clientId`, `audience`, the audience of its resource server, and `routes`, each route with `methods`, `path`, `resourceType` and `action`, as [the configuration](hodor-ext-authz.md#configuration) says |
 | `extAuthz.serviceAccount.name`, `extAuthz.serviceAccount.annotations` | `<release>-ext-authz` | Its Kubernetes service account. `extAuthz.serviceAccount.create: false` uses one that exists |
 | `extAuthz.service.port` | `9191` | The gRPC port of its Service, which the mesh's provider names |

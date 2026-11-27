@@ -597,15 +597,24 @@ fn discovery_names_only_what_is_built() {
         document["backchannel_logout_session_supported"],
         json!(true)
     );
+    // The token endpoint's grants, and `implicit` for an ID token through
+    // the browser, which the authorization endpoint answers alone.
+    let mut grants = json!(SUPPORTED_GRANT_TYPES);
+    grants
+        .as_array_mut()
+        .expect("a list")
+        .push(json!("implicit"));
+    assert_eq!(document["grant_types_supported"], grants);
     assert_eq!(
-        document["grant_types_supported"],
-        json!(SUPPORTED_GRANT_TYPES)
+        document["response_types_supported"],
+        json!(["code", "id_token", "code id_token", "none"])
     );
-    assert_eq!(document["response_types_supported"], json!(["code"]));
     assert_eq!(
         document["response_modes_supported"],
-        json!(["query", "form_post"])
+        json!(["query", "fragment", "form_post"])
     );
+    assert_eq!(document["claims_parameter_supported"], json!(true));
+    assert_eq!(document["request_parameter_supported"], json!(true));
     assert_eq!(
         document["scopes_supported"],
         json!(["openid", "profile", "email", "address", "phone", "groups"])
@@ -788,4 +797,112 @@ fn a_signed_userinfo_answer_holds_the_claims_with_iss_and_aud_and_no_expiry() {
         header,
         id_token_header("EdDSA", "0193a0b2-0000-7000-8000-000000000001")
     );
+}
+
+#[test]
+fn an_id_token_through_the_browser_carries_the_hashes_of_what_comes_with_it() {
+    let methods = methods(&["password"]);
+    let sign_in = SignInFacts {
+        signed_in_at: now() - Duration::minutes(1),
+        nonce: Some("n-0S6_WzA2Mj"),
+        acr: None,
+        methods: &methods,
+    };
+    let names = IdTokenNames {
+        subject: "the person",
+        session: "the session",
+    };
+    let claims = id_token_claims_for(
+        ISSUER,
+        sign_in,
+        names,
+        None,
+        ClientId::generate(),
+        Duration::minutes(5),
+        now(),
+        &IdTokenHashes {
+            at_hash: None,
+            c_hash: Some(left_half_hash(
+                "the code",
+                IdTokenAlgorithm::Es256,
+                &FakeDigest,
+            )),
+            s_hash: Some(left_half_hash(
+                "the state",
+                IdTokenAlgorithm::Es256,
+                &FakeDigest,
+            )),
+        },
+    );
+    assert_eq!(claims["nonce"], "n-0S6_WzA2Mj");
+    assert_eq!(
+        claims["c_hash"],
+        left_half_hash("the code", IdTokenAlgorithm::Es256, &FakeDigest)
+    );
+    assert_eq!(
+        claims["s_hash"],
+        left_half_hash("the state", IdTokenAlgorithm::Es256, &FakeDigest)
+    );
+    assert!(
+        claims.get("at_hash").is_none(),
+        "no access token came with it"
+    );
+    assert_eq!(
+        claims["auth_time"],
+        (now() - Duration::minutes(1)).unix_timestamp()
+    );
+    assert_eq!(claims["amr"], json!(["pwd"]));
+    assert_eq!(claims["sid"], "the session");
+
+    // Without them, none is written.
+    let bare = id_token_claims_for(
+        ISSUER,
+        sign_in,
+        names,
+        None,
+        ClientId::generate(),
+        Duration::minutes(5),
+        now(),
+        &IdTokenHashes::default(),
+    );
+    for absent in ["at_hash", "c_hash", "s_hash"] {
+        assert!(bare.get(absent).is_none(), "{absent}");
+    }
+    // Each hash is the left half of the hash of the client's algorithm,
+    // the same computation as `at_hash`: SHA-512 for EdDSA.
+    for algorithm in [
+        IdTokenAlgorithm::Es256,
+        IdTokenAlgorithm::Rs256,
+        IdTokenAlgorithm::Ps256,
+        IdTokenAlgorithm::EdDsa,
+    ] {
+        assert_eq!(
+            left_half_hash("value", algorithm, &FakeDigest),
+            access_token_hash("value", algorithm, &FakeDigest)
+        );
+    }
+    assert_ne!(
+        left_half_hash("value", IdTokenAlgorithm::EdDsa, &FakeDigest),
+        left_half_hash("value", IdTokenAlgorithm::Es256, &FakeDigest)
+    );
+}
+
+#[test]
+fn the_claims_of_the_scopes_are_those_userinfo_gives_for_them() {
+    let scopes: Vec<String> = ["openid", "email", "phone", "groups", "payroll:read"]
+        .map(str::to_owned)
+        .to_vec();
+    assert_eq!(
+        claims_of_scopes(&scopes),
+        [
+            "email",
+            "email_verified",
+            "phone_number",
+            "phone_number_verified"
+        ]
+    );
+    let profile = claims_of_scopes(&["profile".to_owned()]);
+    assert_eq!(profile.len(), 14);
+    assert!(profile.contains(&"name".to_owned()));
+    assert!(claims_of_scopes(&["openid".to_owned()]).is_empty());
 }

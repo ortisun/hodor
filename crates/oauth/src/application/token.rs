@@ -10,6 +10,7 @@ use crate::application::ports::{
     AccessTokenRecordStore, ApplicationStore, CertificateCheck, ClientAssertionStore, ClientStore,
     GrantStore, PersonMemberships, PersonStanding, RefreshTokenStore, ResourceServerStore,
 };
+use crate::domain::authorization::{AuthorizationRequest, Grant, SignedInPerson};
 use crate::domain::authorization::{CodePresentation, GrantStatus};
 use crate::domain::binding::{CONFIRMATION_CLAIM, CertificateThumbprint};
 use crate::domain::claim_mapper::{ClaimTarget, add_mapped_claims};
@@ -21,13 +22,15 @@ use crate::domain::event::OauthEvent;
 use crate::domain::forwarded::presented_thumbprint;
 use crate::domain::introspection::AccessTokenRecord;
 use crate::domain::openid::{
-    IdTokenNames, PersonClaims, asks_for_openid, id_token_claims, id_token_header,
+    IdTokenHashes, IdTokenNames, PersonClaims, SignInFacts, asks_for_openid, claims_of_scopes,
+    id_token_claims, id_token_claims_for, id_token_header, left_half_hash,
 };
 use crate::domain::refresh::{
     DEFAULT_RETRY_WINDOW, FAMILY_SECRET_PURPOSE, FamilySecret, LONGEST_RETRY_WINDOW,
     RefreshDecision, RefreshFamily, RefreshRefusal, RefreshTokenHash,
 };
 use crate::domain::resource_server::{GROUPS_SCOPE, OPENID_SCOPES};
+use crate::domain::response::ResponseType;
 use crate::domain::spiffe::{CheckedSvid, check_svid};
 use crate::domain::token::{
     AssertionAudience, GrantRequest, PresentedClient, TokenError, TokenRequest, TokenSubject,
@@ -665,8 +668,7 @@ impl TokenService {
             )));
         }
         let session = session_for(self.pairwise.as_ref(), tenant, client, code.session_id).await?;
-        let id_token_algorithm = client.snapshot().settings.id_token_algorithm;
-        let mut claims = id_token_claims(
+        let claims = id_token_claims(
             issuer.issuer,
             code,
             IdTokenNames {
@@ -678,17 +680,36 @@ impl TokenService {
             lifetime,
             self.ports.clock.now(),
             access_token,
-            id_token_algorithm,
+            client.snapshot().settings.id_token_algorithm,
             self.ports.digest.as_ref(),
         );
+        self.finish_id_token(tenant, client, claims, code.user_id, asked, mapped)
+            .await
+    }
+
+    /// Adds to `claims` the person's claims of `asked` and then those the
+    /// client's mappers add, and signs them with the client's ID token
+    /// algorithm.
+    async fn finish_id_token(
+        &self,
+        tenant: &TenantContext,
+        client: &Client,
+        mut claims: Value,
+        user: UserId,
+        asked: &[String],
+        mapped: &Map<String, Value>,
+    ) -> Result<Result<Secret<String>, TokenError>, DomainError> {
         if !asked.is_empty() {
-            let person = PersonClaims::from_attributes(
-                self.ports.mapping.person(tenant, code.user_id).await?,
-            );
+            let person =
+                PersonClaims::from_attributes(self.ports.mapping.person(tenant, user).await?);
             add_asked_claims(&mut claims, asked, &person, mapped);
         }
         add_mapped_claims(&mut claims, mapped);
-        let algorithm = id_token_algorithm.key_algorithm();
+        let algorithm = client
+            .snapshot()
+            .settings
+            .id_token_algorithm
+            .key_algorithm();
         let signed = self
             .signed(tenant, algorithm, |key_id| {
                 let header = id_token_header(algorithm.as_str(), &key_id.to_string());
@@ -701,6 +722,108 @@ impl TokenService {
                 "the tenant has no active signing key",
             )),
         })
+    }
+
+    /// Signs the ID token that comes through the browser with the answer
+    /// to `request`, a request for `id_token` or `code id_token`, made by
+    /// `person` under `grant`: with `nonce`, `c_hash` of `code` when one
+    /// comes with it, and `s_hash` of the request's `state`. With
+    /// `id_token`, which issues no access token, it holds the person's
+    /// claims of the request's scopes; with either, those `grant` gives the
+    /// ID token through the `claims` parameter, then those the client's
+    /// mappers add. Specified in `docs/architecture/contexts/oauth.md`,
+    /// "The ID token through the browser".
+    ///
+    /// # Errors
+    ///
+    /// The outer error is a failure of storage or of signing; the inner
+    /// one a refusal, `server_error` when the client is gone or nothing
+    /// can sign.
+    pub async fn browser_id_token(
+        &self,
+        tenant: &TenantContext,
+        issuer: &str,
+        request: &AuthorizationRequest,
+        grant: &Grant,
+        person: &SignedInPerson,
+        code: Option<&str>,
+    ) -> Result<Result<Secret<String>, TokenError>, DomainError> {
+        let mut uow = self.ports.units_of_work.begin(tenant).await?;
+        let client = self
+            .ports
+            .clients
+            .get(uow.as_mut(), grant.client_id)
+            .await?;
+        drop(uow);
+        let Some(client) = client else {
+            return Ok(Err(TokenError::server_error("the client is gone")));
+        };
+        let lifetime = client.snapshot().settings.token_policy.id_token;
+        if lifetime > TokenPolicy::LONGEST_SIGNED_LIFETIME {
+            return Ok(Err(TokenError::server_error(
+                "the ID token would outlive the rotation overlap",
+            )));
+        }
+        let subject = subject_for(self.pairwise.as_ref(), tenant, &client, person.user_id).await?;
+        let session =
+            session_for(self.pairwise.as_ref(), tenant, &client, person.session_id).await?;
+        let digest = self.ports.digest.as_ref();
+        // The hashes are of the client's algorithm, as `at_hash` is.
+        let algorithm = client.snapshot().settings.id_token_algorithm;
+        let claims = id_token_claims_for(
+            issuer,
+            SignInFacts {
+                signed_in_at: person.signed_in_at,
+                nonce: request.nonce.as_deref(),
+                acr: person.acr.as_deref(),
+                methods: &person.methods,
+            },
+            IdTokenNames {
+                subject: &subject,
+                session: &session,
+            },
+            grant.organization,
+            client.id(),
+            lifetime,
+            self.ports.clock.now(),
+            &IdTokenHashes {
+                at_hash: None,
+                c_hash: code.map(|code| left_half_hash(code, algorithm, digest)),
+                s_hash: request
+                    .state
+                    .as_deref()
+                    .map(|state| left_half_hash(state, algorithm, digest)),
+            },
+        );
+        // No access token comes with `id_token`: the claims of its scopes
+        // are in the ID token, there being no UserInfo to read them at.
+        let mut asked = if request.response_type == ResponseType::IdToken {
+            claims_of_scopes(&request.scopes)
+        } else {
+            Vec::new()
+        };
+        for name in &grant.claims.id_token {
+            if !asked.contains(name) {
+                asked.push(name.clone());
+            }
+        }
+        let mapped = self
+            .ports
+            .mapping
+            .read(
+                tenant,
+                MappedToken {
+                    client_id: client.id(),
+                    user_id: person.user_id,
+                    scopes: &request.scopes,
+                    organization: grant.organization,
+                },
+                &[ClaimTarget::IdToken],
+            )
+            .await?
+            .of(ClaimTarget::IdToken);
+        self.finish_id_token(tenant, &client, claims, person.user_id, &asked, &mapped)
+            .await
     }
 
     /// Signs `message` with the tenant's active key of `algorithm`, as

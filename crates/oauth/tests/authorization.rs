@@ -278,7 +278,7 @@ async fn a_request_keeps_its_response_mode_while_it_waits() {
 
     // A mode Hodor does not offer is refused at the redirect address, in
     // the mode of the type, and nothing is kept.
-    let mut pairs: Vec<(String, String)> = vec![("response_mode".into(), "fragment".into())];
+    let mut pairs: Vec<(String, String)> = vec![("response_mode".into(), "query.jwt".into())];
     pairs.extend(self::pairs(&client_id));
     match world
         .service

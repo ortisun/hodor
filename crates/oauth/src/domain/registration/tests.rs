@@ -191,14 +191,22 @@ fn a_policy_names_only_response_types_hodor_answers() {
         response_types: Vec::new(),
         ..RegistrationPolicy::default()
     });
-    for bad in [
-        "id_token",
-        "code id_token",
-        "token",
-        "Code",
-        "device_code",
-        "",
-    ] {
+    // The types of an ID token through the browser, in any order of their
+    // words (Issue-127).
+    let policy = RegistrationPolicy::from_json(&serde_json::json!({
+        "response_types": ["code", "id_token", "id_token code", "none"]
+    }))
+    .expect("answered");
+    assert_eq!(
+        policy.response_types,
+        [
+            ResponseType::Code,
+            ResponseType::IdToken,
+            ResponseType::CodeIdToken,
+            ResponseType::None
+        ]
+    );
+    for bad in ["token", "id_token token", "Code", "device_code", ""] {
         let detail = RegistrationPolicy::from_json(&serde_json::json!({ "response_types": [bad] }))
             .expect_err("not answered")
             .detail()

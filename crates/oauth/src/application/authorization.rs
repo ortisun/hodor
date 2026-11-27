@@ -83,6 +83,18 @@ pub struct ResumedRequest {
     pub consent: Option<ConsentWait>,
 }
 
+/// What the authorization endpoint made for an answer: the grant, for
+/// every type but `none`, and the code, for a type that returns one. The
+/// ID token of a type that returns one is signed from these by
+/// [`TokenService::browser_id_token`](crate::api::TokenService::browser_id_token).
+#[derive(Debug)]
+pub struct AuthorizationAnswer {
+    /// The grant made, if any.
+    pub grant: Option<Grant>,
+    /// The code, if one was issued, once.
+    pub code: Option<CodeValue>,
+}
+
 /// What a redeemed code was issued for.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RedeemedCode {
@@ -683,23 +695,98 @@ impl AuthorizationCodeService {
         consented: &[String],
         caller: Caller,
     ) -> Result<CodeValue, DomainError> {
+        let (_, code) = self
+            .make(tenant, request, person, consented, true, caller)
+            .await?;
+        code.ok_or_else(|| {
+            DomainError::internal(
+                "oauth.code_not_issued",
+                "no code was issued for the request",
+            )
+        })
+    }
+
+    /// Makes what the request's response type answers with, for the person
+    /// signed in, when `consented` are the scopes consented to for the
+    /// client: for every type but `none` a grant, which gives the claims
+    /// asked through `claims` that one of them covers, and for a type that
+    /// returns one a code; `oauth.authorization_code_issued` for a code and
+    /// `oauth.id_token_issued` for a type that returns an ID token, all in
+    /// one unit of work. `none` makes and stores nothing.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if storage fails.
+    pub async fn answer(
+        &self,
+        tenant: &TenantContext,
+        request: &AuthorizationRequest,
+        person: &SignedInPerson,
+        consented: &[String],
+        caller: Caller,
+    ) -> Result<AuthorizationAnswer, DomainError> {
+        let kind = request.response_type;
+        if !kind.makes_grant() {
+            return Ok(AuthorizationAnswer {
+                grant: None,
+                code: None,
+            });
+        }
+        let (grant, code) = self
+            .make(
+                tenant,
+                request,
+                person,
+                consented,
+                kind.returns_code(),
+                caller,
+            )
+            .await?;
+        Ok(AuthorizationAnswer {
+            grant: Some(grant),
+            code,
+        })
+    }
+
+    async fn make(
+        &self,
+        tenant: &TenantContext,
+        request: &AuthorizationRequest,
+        person: &SignedInPerson,
+        consented: &[String],
+        with_code: bool,
+        caller: Caller,
+    ) -> Result<(Grant, Option<CodeValue>), DomainError> {
         let now = self.ports.clock.now();
         let mut grant = Grant::make(request, person, now);
         grant.claims = request.claims.given(&request.scopes, consented);
-        let (code, value) = AuthorizationCode::issue(
-            &grant,
-            request,
-            person,
-            now,
-            self.ports.random.as_ref(),
-            self.ports.digest.as_ref(),
-        );
+        let issued = with_code.then(|| {
+            AuthorizationCode::issue(
+                &grant,
+                request,
+                person,
+                now,
+                self.ports.random.as_ref(),
+                self.ports.digest.as_ref(),
+            )
+        });
+        let mut events = Vec::new();
         let mut uow = self.ports.units_of_work.begin(tenant).await?;
         self.ports.grants.insert(uow.as_mut(), &grant).await?;
-        self.ports.codes.insert(uow.as_mut(), &code).await?;
-        self.record(uow.as_mut(), caller, &[code.issued_event()])?;
+        if let Some((code, _)) = &issued {
+            self.ports.codes.insert(uow.as_mut(), code).await?;
+            events.push(code.issued_event());
+        }
+        if request.response_type.returns_id_token() {
+            events.push(OauthEvent::IdTokenIssued {
+                client_id: grant.client_id,
+                grant_id: grant.id,
+                user_id: grant.user_id,
+            });
+        }
+        self.record(uow.as_mut(), caller, &events)?;
         uow.commit().await?;
-        Ok(value)
+        Ok((grant, issued.map(|(_, value)| value)))
     }
 
     /// Revokes every active grant of a person, for every client, with

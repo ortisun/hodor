@@ -8,6 +8,7 @@
 use crate::domain::authorization::{AuthorizationParameters, Given};
 use crate::domain::client::{Client, RequestObjectAlgorithm};
 use crate::domain::key::ClientKey;
+use crate::domain::response::same_response_type;
 use crate::domain::token::{CLOCK_ALLOWANCE, KeyChoice, client_key_for, decode_json};
 use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
@@ -259,7 +260,10 @@ fn check_outside(
     let contradicted = RequestObjectRefusal::Contradicted;
     match outside.given("response_type") {
         Given::Absent => {}
-        Given::Once(given) if inside.once("response_type") == Some(given) => {}
+        Given::Once(given)
+            if inside
+                .once("response_type")
+                .is_some_and(|within| same_response_type(within, given)) => {}
         Given::Once(_) | Given::Repeated => {
             return Err(contradicted(
                 "response_type outside the request object is not the one inside",

@@ -19,7 +19,8 @@ pub mod testing;
 /// What other crates may use from this context.
 pub mod api {
     pub use crate::application::authorization::{
-        AuthorizationCodePorts, AuthorizationCodeService, RedeemedCode, ResumedRequest,
+        AuthorizationAnswer, AuthorizationCodePorts, AuthorizationCodeService, RedeemedCode,
+        ResumedRequest,
     };
     pub use crate::application::backchannel::fan_out::BackChannelLogoutFanOut;
     pub use crate::application::backchannel::ports::{
@@ -132,11 +133,12 @@ pub mod api {
         refusal as logout_refusal,
     };
     pub use crate::domain::openid::{
-        BearerRefusal, CheckedAccessToken, IdTokenNames, OPENID_SCOPE, PERSON_CLAIMS, PersonClaims,
-        PublishedKey, ReadAccessToken, UI_LOCALES, access_token_hash, asks_for_openid,
-        authentication_methods, check_access_token, discovery_document, id_token_claims,
-        is_multi_factor, person_claim, read_access_token, scope_of_claim, userinfo_claims,
-        userinfo_claims_with,
+        BearerRefusal, CheckedAccessToken, IMPLICIT_GRANT, IdTokenHashes, IdTokenNames,
+        OPENID_SCOPE, PERSON_CLAIMS, PersonClaims, PublishedKey, ReadAccessToken, SignInFacts,
+        UI_LOCALES, access_token_hash, asks_for_openid, authentication_methods, check_access_token,
+        claims_of_scopes, discovery_document, id_token_claims, id_token_claims_for,
+        is_multi_factor, left_half_hash, person_claim, read_access_token, scope_of_claim,
+        userinfo_claims, userinfo_claims_with,
     };
     pub use crate::domain::openid::{prompt_values_supported, with_registration};
     pub use crate::domain::pairwise::{
@@ -173,7 +175,9 @@ pub mod api {
         Audience, OPENID_SCOPES, ResourceServer, ResourceServerId, ResourceServerSettings,
         ResourceServerSnapshot, ScopeDefinition,
     };
-    pub use crate::domain::response::{ResponseMode, ResponseType, error_mode};
+    pub use crate::domain::response::{
+        ReadResponseType, ResponseMode, ResponseType, error_mode, response_types_kept,
+    };
     pub use crate::domain::secret::{
         ClientSecret, ClientSecretHash, ClientSecretId, ClientSecretValue,
     };

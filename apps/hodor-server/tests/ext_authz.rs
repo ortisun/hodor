@@ -1,30 +1,37 @@
 //! `hodor-ext-authz` against the real server binary and a real database:
 //! its decisions are the ones `evaluate` gives for the same question, it
-//! proves who it is with its mesh identity alone, and every failure is a
-//! denial. The latency of a check is measured by the ignored test
-//! `latency`.
+//! proves who it is with its mesh identity alone, it checks the signature
+//! of a bearer token against the tenant's published key set before asking
+//! Hodor anything, and every failure is a denial. The latency of a check
+//! is measured by the ignored test `latency`.
 //!
 //! The tests connect from 127.0.0.1, which plays the proxy in front of
 //! Hodor: the server trusts it for `X-Forwarded-Client-Cert`, and the
 //! adapter's HTTP client adds the element the adapter's sidecar would.
 //!
-//! Specified in `docs/operations/hodor-ext-authz.md` and Decision 0058.
+//! Tokens are signed with the tenant's own keys, through the keys context
+//! and the same root key as the server, as Hodor signs its access tokens.
+//!
+//! Specified in `docs/operations/hodor-ext-authz.md`, Decision 0058 and
+//! Decision 0082.
 
 #![allow(
     clippy::print_stderr,
     reason = "the latency test prints what it measured"
 )]
 
+use aws_lc_rs::rand::SystemRandom;
+use aws_lc_rs::signature::{ECDSA_P256_SHA256_FIXED_SIGNING, EcdsaKeyPair};
+use base64::Engine as _;
+use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use envoy_types::ext_authz::v3::pb::{CheckRequest, CheckResponse};
-use envoy_types::pb::envoy::config::core::v3::Metadata;
 use envoy_types::pb::envoy::service::auth::v3::AttributeContext;
 use envoy_types::pb::envoy::service::auth::v3::attribute_context::{HttpRequest, Peer, Request};
 use envoy_types::pb::envoy::service::auth::v3::authorization_client::AuthorizationClient;
-use envoy_types::pb::google::protobuf::{Struct, Value as ProtoValue, value::Kind};
-use hodor_adapters_crypto::{OsRandom, Sha256Digest};
+use hodor_adapters_crypto::{LocalKeyProvider, OsRandom, SecretKeys, Sha256Digest};
 use hodor_adapters_postgres::testing::TestDatabase;
 use hodor_adapters_postgres::{
-    PgAccessTokenStore, PgEngineBindingStore, PgNativeRoleStore, PgRoleAssignmentStore,
+    PgAccessTokenStore, PgEngineBindingStore, PgKeyStore, PgNativeRoleStore, PgRoleAssignmentStore,
     PgTenantDirectory, PgTenantRepository, PgUserRepository,
 };
 use hodor_authorization::api::{
@@ -35,7 +42,8 @@ use hodor_authorization::api::{
 use hodor_credential::api::AccessTokenService;
 use hodor_ext_authz::{ExtAuthz, Settings};
 use hodor_identity::api::{CreateUser, IdentifierKind, IdentityService, Profile, UserKind};
-use hodor_kernel::{Caller, DomainError, SystemClock, TenantContext};
+use hodor_kernel::{Caller, DomainError, Secret, SystemClock, TenantContext};
+use hodor_keys::api::{KeyAlgorithm, KeyService, RotationPolicy};
 use hodor_tenant::api::{CreateTenant, TenantService};
 use reqwest::header::{HeaderMap, HeaderValue};
 use reqwest::{Client, Method, StatusCode};
@@ -84,6 +92,9 @@ struct World {
     server: Server,
     /// Kept alive for as long as the server runs.
     _database: TestDatabase,
+    acme: TenantContext,
+    /// Another tenant, with a signing key of its own.
+    globex: TenantContext,
     administrator: String,
     /// Holds the reader role on Orders.
     ana: String,
@@ -96,6 +107,39 @@ struct World {
 
 fn units(database: &TestDatabase) -> Arc<hodor_adapters_postgres::Database> {
     Arc::new(database.app().clone())
+}
+
+/// The keys context, with the server's own root key.
+fn keys(database: &TestDatabase) -> KeyService {
+    let root = Arc::new(SecretKeys::parse(&Secret::from(ROOT_KEY.to_owned())).expect("root"));
+    KeyService::new(
+        units(database),
+        Arc::new(PgKeyStore),
+        Arc::new(LocalKeyProvider::new(root)),
+        Arc::new(SystemClock),
+    )
+}
+
+fn encoded(value: &Value) -> String {
+    URL_SAFE_NO_PAD.encode(serde_json::to_vec(value).expect("json"))
+}
+
+/// A token of `claims` signed with the active ES256 key of `tenant`, as
+/// Hodor signs an access token.
+async fn signed(database: &TestDatabase, tenant: &TenantContext, claims: &Value) -> String {
+    let payload = encoded(claims);
+    let (message, signature) = keys(database)
+        .sign_naming_key(tenant, KeyAlgorithm::Es256, |kid| {
+            let header = json!({ "alg": "ES256", "typ": "at+jwt", "kid": kid.to_string() });
+            format!("{}.{payload}", encoded(&header)).into_bytes()
+        })
+        .await
+        .expect("signed");
+    format!(
+        "{}.{}",
+        String::from_utf8(message).expect("text"),
+        URL_SAFE_NO_PAD.encode(&signature.bytes)
+    )
 }
 
 async fn tenant(database: &TestDatabase, slug: &str) -> TenantContext {
@@ -267,13 +311,32 @@ impl World {
         format!("{}/t/acme", self.server.base)
     }
 
+    /// A token of `claims` signed with the tenant's own key.
+    async fn token(&self, claims: &Value) -> String {
+        signed(&self._database, &self.acme, claims).await
+    }
+
+    /// An access token as Hodor would issue `user` for `audience`.
+    async fn token_for(&self, user: &str, audience: &str) -> String {
+        self.token(&json!({ "iss": self.issuer(), "aud": audience, "sub": user, "exp": later() }))
+            .await
+    }
+
+    /// How many decisions Hodor has recorded.
+    async fn decisions(&self) -> i64 {
+        sqlx::query_scalar("SELECT count(*) FROM \"authorization\".decision_log")
+            .fetch_one(self._database.owner())
+            .await
+            .expect("the record of decisions")
+    }
+
     /// The configuration of an adapter for Orders and Invoices, reaching
     /// Hodor at `url`.
     fn settings(&self, url: &str) -> Settings {
         Settings::from_json(
             &json!({
                 "hodor": { "url": url, "tenant": "acme", "issuer": self.issuer() },
-                "token": { "metadata": { "key": "hodor" } },
+                "token": "bearer",
                 "applications": [
                     { "destination": ORDERS, "client_id": self.orders_client, "audience": ORDERS_AUDIENCE, "routes": [
                         { "methods": ["GET"], "path": "/orders/{id}", "resource_type": "order", "action": "read" },
@@ -355,7 +418,16 @@ fn adapter_http() -> Client {
 async fn world() -> World {
     let database = TestDatabase::start().await;
     let acme = tenant(&database, "acme").await;
-    tenant(&database, "globex").await;
+    let globex = tenant(&database, "globex").await;
+    keys(&database)
+        .rotate_now(
+            &globex,
+            KeyAlgorithm::Es256,
+            &RotationPolicy::DEFAULT,
+            Caller::system(),
+        )
+        .await
+        .expect("a signing key of globex");
     let root = person(&database, &acme, "root@example.com").await;
     let clock = Arc::new(SystemClock);
     let root_id = hodor_kernel::UserId::from_uuid(root.parse().expect("uuid"));
@@ -397,6 +469,8 @@ async fn world() -> World {
     .await;
     let mut world = World {
         server,
+        acme: acme.clone(),
+        globex,
         administrator: secret.expose().to_owned(),
         ana,
         bob,
@@ -517,43 +591,18 @@ fn later() -> f64 {
         + 300) as f64
 }
 
-fn proto(value: &Value) -> ProtoValue {
-    let kind = match value {
-        Value::Null => Kind::NullValue(0),
-        Value::Bool(flag) => Kind::BoolValue(*flag),
-        Value::Number(number) => Kind::NumberValue(number.as_f64().expect("number")),
-        Value::String(text) => Kind::StringValue(text.clone()),
-        Value::Array(values) => Kind::ListValue(envoy_types::pb::google::protobuf::ListValue {
-            values: values.iter().map(proto).collect(),
-        }),
-        Value::Object(fields) => Kind::StructValue(Struct {
-            fields: fields
-                .iter()
-                .map(|(name, value)| (name.clone(), proto(value)))
-                .collect(),
-        }),
-    };
-    ProtoValue { kind: Some(kind) }
-}
-
 /// A check as Envoy sends it: the caller's identity, the destination, the
-/// method and path, and the claims the proxy checked, if any.
+/// method and path, and the bearer token, if any.
 fn check(
     source: &str,
     destination: &str,
     method: &str,
     path: &str,
-    claims: Option<&Value>,
+    token: Option<&str>,
 ) -> CheckRequest {
-    let metadata_context = claims.map(|claims| Metadata {
-        filter_metadata: HashMap::from([(
-            "envoy.filters.http.jwt_authn".to_owned(),
-            Struct {
-                fields: HashMap::from([("hodor".to_owned(), proto(claims))]),
-            },
-        )]),
-        ..Metadata::default()
-    });
+    let headers = token
+        .map(|token| HashMap::from([("authorization".to_owned(), format!("Bearer {token}"))]))
+        .unwrap_or_default();
     CheckRequest {
         attributes: Some(AttributeContext {
             source: Some(Peer {
@@ -568,11 +617,11 @@ fn check(
                 http: Some(HttpRequest {
                     method: method.to_owned(),
                     path: path.to_owned(),
+                    headers,
                     ..HttpRequest::default()
                 }),
                 ..Request::default()
             }),
-            metadata_context,
             ..AttributeContext::default()
         }),
     }
@@ -608,32 +657,23 @@ async fn its_decisions_are_the_ones_evaluate_gives() {
     let mut adapter = connect(address).await;
     let orders_token = world.token_of(&world.orders_client).await;
     let invoices_token = world.token_of(&world.invoices_client).await;
-    let claims = |user: &str, audience: &str| json!({ "iss": world.issuer(), "aud": audience, "sub": user, "exp": later() });
+    let ana_orders = world.token_for(&world.ana, ORDERS_AUDIENCE).await;
+    let bob_orders = world.token_for(&world.bob, ORDERS_AUDIENCE).await;
+    let ana_invoices = world.token_for(&world.ana, INVOICES_AUDIENCE).await;
+    let bob_invoices = world.token_for(&world.bob, INVOICES_AUDIENCE).await;
 
     // (the check, the token evaluate is asked with, the same question, what
     // Hodor must decide)
     let cases = [
         (
-            check(
-                WEB,
-                ORDERS,
-                "GET",
-                "/orders/1",
-                Some(&claims(&world.ana, ORDERS_AUDIENCE)),
-            ),
+            check(WEB, ORDERS, "GET", "/orders/1", Some(ana_orders.as_str())),
             &orders_token,
             json!({ "subject": { "type": "user", "id": world.ana },
                     "resource": { "type": "order", "id": "1" }, "action": "read" }),
             true,
         ),
         (
-            check(
-                WEB,
-                ORDERS,
-                "GET",
-                "/orders/1",
-                Some(&claims(&world.bob, ORDERS_AUDIENCE)),
-            ),
+            check(WEB, ORDERS, "GET", "/orders/1", Some(bob_orders.as_str())),
             &orders_token,
             json!({ "subject": { "type": "user", "id": world.bob },
                     "resource": { "type": "order", "id": "1" }, "action": "read" }),
@@ -645,7 +685,7 @@ async fn its_decisions_are_the_ones_evaluate_gives() {
                 ORDERS,
                 "POST",
                 "/orders/1/approve",
-                Some(&claims(&world.ana, ORDERS_AUDIENCE)),
+                Some(ana_orders.as_str()),
             ),
             &orders_token,
             json!({ "subject": { "type": "user", "id": world.ana },
@@ -660,7 +700,7 @@ async fn its_decisions_are_the_ones_evaluate_gives() {
                 INVOICES,
                 "GET",
                 "/invoices/9",
-                Some(&claims(&world.bob, INVOICES_AUDIENCE)),
+                Some(bob_invoices.as_str()),
             ),
             &invoices_token,
             json!({ "subject": { "type": "user", "id": world.bob },
@@ -673,7 +713,7 @@ async fn its_decisions_are_the_ones_evaluate_gives() {
                 INVOICES,
                 "GET",
                 "/invoices/9",
-                Some(&claims(&world.ana, INVOICES_AUDIENCE)),
+                Some(ana_invoices.as_str()),
             ),
             &invoices_token,
             json!({ "subject": { "type": "user", "id": world.ana },
@@ -752,12 +792,11 @@ async fn every_failure_is_a_denial() {
     let world = world().await;
     let (address, _stop) = start_adapter(world.settings(&world.server.base), adapter_http()).await;
     let mut adapter = connect(address).await;
-    let ana =
-        json!({ "iss": world.issuer(), "aud": ORDERS_AUDIENCE, "sub": world.ana, "exp": later() });
+    let ana = world.token_for(&world.ana, ORDERS_AUDIENCE).await;
     assert!(
         ask(
             &mut adapter,
-            check(WEB, ORDERS, "GET", "/orders/1", Some(&ana))
+            check(WEB, ORDERS, "GET", "/orders/1", Some(ana.as_str()))
         )
         .await,
         "allowed when nothing fails"
@@ -772,7 +811,7 @@ async fn every_failure_is_a_denial() {
                 "spiffe://cluster.local/ns/shop/sa/unknown",
                 "GET",
                 "/orders/1",
-                Some(&ana)
+                Some(ana.as_str())
             ),
         )
         .await
@@ -784,26 +823,44 @@ async fn every_failure_is_a_denial() {
         ("GET", "/orders/../1"),
     ] {
         assert!(
-            !ask(&mut adapter, check(WEB, ORDERS, method, path, Some(&ana))).await,
+            !ask(
+                &mut adapter,
+                check(WEB, ORDERS, method, path, Some(ana.as_str()))
+            )
+            .await,
             "{method} {path}"
         );
     }
-    // A token of another tenant, for the same person's identifier, and
-    // one that expired.
-    let globex = json!({ "iss": format!("{}/t/globex", world.server.base), "aud": ORDERS_AUDIENCE, "sub": world.ana, "exp": later() });
+    // A token of another tenant, for the same person's identifier, signed
+    // with that tenant's key, which this tenant's set does not hold; the
+    // same claims signed with this tenant's key, whose issuer is not this
+    // tenant's; and a token that expired.
+    let globex_claims = json!({ "iss": format!("{}/t/globex", world.server.base), "aud": ORDERS_AUDIENCE, "sub": world.ana, "exp": later() });
+    let globex = signed(&world._database, &world.globex, &globex_claims).await;
     assert!(
         !ask(
             &mut adapter,
-            check(WEB, ORDERS, "GET", "/orders/1", Some(&globex))
+            check(WEB, ORDERS, "GET", "/orders/1", Some(globex.as_str()))
         )
         .await
     );
-    let expired =
-        json!({ "iss": world.issuer(), "aud": ORDERS_AUDIENCE, "sub": world.ana, "exp": 1 });
+    let globex = world.token(&globex_claims).await;
     assert!(
         !ask(
             &mut adapter,
-            check(WEB, ORDERS, "GET", "/orders/1", Some(&expired))
+            check(WEB, ORDERS, "GET", "/orders/1", Some(globex.as_str()))
+        )
+        .await
+    );
+    let expired = world
+        .token(
+            &json!({ "iss": world.issuer(), "aud": ORDERS_AUDIENCE, "sub": world.ana, "exp": 1 }),
+        )
+        .await;
+    assert!(
+        !ask(
+            &mut adapter,
+            check(WEB, ORDERS, "GET", "/orders/1", Some(expired.as_str()))
         )
         .await
     );
@@ -818,25 +875,28 @@ async fn every_failure_is_a_denial() {
         Value::Null,
         json!(world.orders_client),
     ] {
-        let mut replayed = json!({ "iss": world.issuer(), "sub": world.ana, "exp": later() });
+        let mut claims = json!({ "iss": world.issuer(), "sub": world.ana, "exp": later() });
         if !aud.is_null() {
-            replayed["aud"] = aud.clone();
+            claims["aud"] = aud.clone();
         }
+        let replayed = world.token(&claims).await;
         assert!(
             !ask(
                 &mut adapter,
-                check(WEB, ORDERS, "GET", "/orders/1", Some(&replayed))
+                check(WEB, ORDERS, "GET", "/orders/1", Some(replayed.as_str()))
             )
             .await,
             "a token for {aud} at Orders"
         );
     }
     // A token for both is good at each.
-    let both = json!({ "iss": world.issuer(), "aud": [INVOICES_AUDIENCE, ORDERS_AUDIENCE], "sub": world.ana, "exp": later() });
+    let both = world
+        .token(&json!({ "iss": world.issuer(), "aud": [INVOICES_AUDIENCE, ORDERS_AUDIENCE], "sub": world.ana, "exp": later() }))
+        .await;
     assert!(
         ask(
             &mut adapter,
-            check(WEB, ORDERS, "GET", "/orders/1", Some(&both))
+            check(WEB, ORDERS, "GET", "/orders/1", Some(both.as_str()))
         )
         .await
     );
@@ -853,7 +913,7 @@ async fn every_failure_is_a_denial() {
     assert!(
         !ask(
             &mut anonymous,
-            check(WEB, ORDERS, "GET", "/orders/1", Some(&ana))
+            check(WEB, ORDERS, "GET", "/orders/1", Some(ana.as_str()))
         )
         .await
     );
@@ -868,7 +928,7 @@ async fn every_failure_is_a_denial() {
     assert!(
         !ask(
             &mut unreachable,
-            check(WEB, ORDERS, "GET", "/orders/1", Some(&ana))
+            check(WEB, ORDERS, "GET", "/orders/1", Some(ana.as_str()))
         )
         .await
     );
@@ -884,7 +944,7 @@ async fn every_failure_is_a_denial() {
     assert!(
         !ask(
             &mut slow,
-            check(WEB, ORDERS, "GET", "/orders/1", Some(&ana))
+            check(WEB, ORDERS, "GET", "/orders/1", Some(ana.as_str()))
         )
         .await
     );
@@ -893,6 +953,140 @@ async fn every_failure_is_a_denial() {
         "the timeout held"
     );
     drop(silent);
+}
+
+/// A workload inside the mesh reaches the check before any proxy checked
+/// its token (Decision 0082): a token whose claims look right but that the
+/// tenant did not sign is denied before Hodor is asked, so Hodor records
+/// no decision about it, and the answer is the one Hodor's own denial gets.
+#[tokio::test]
+async fn a_forged_token_is_denied_and_hodor_records_no_decision() {
+    let world = world().await;
+    let (address, _stop) = start_adapter(world.settings(&world.server.base), adapter_http()).await;
+    let mut adapter = connect(address).await;
+    let claims =
+        json!({ "iss": world.issuer(), "aud": ORDERS_AUDIENCE, "sub": world.ana, "exp": later() });
+    let mut bob_claims = claims.clone();
+    bob_claims["sub"] = json!(world.bob);
+
+    // The tenant's own token is let through, whoever calls, and recorded.
+    let genuine = world.token(&claims).await;
+    assert!(
+        ask(
+            &mut adapter,
+            check(STRANGER, ORDERS, "GET", "/orders/1", Some(genuine.as_str()))
+        )
+        .await
+    );
+    assert_eq!(world.decisions().await, 1);
+
+    let parts: Vec<&str> = genuine.split('.').collect();
+    let header: Value =
+        serde_json::from_slice(&URL_SAFE_NO_PAD.decode(parts[0]).expect("base64url"))
+            .expect("header");
+    let kid = header["kid"].as_str().expect("kid");
+    // A key of the forger's own.
+    let forger = EcdsaKeyPair::generate(&ECDSA_P256_SHA256_FIXED_SIGNING).expect("a key");
+    let forge = |header: &Value| {
+        let message = format!("{}.{}", encoded(header), encoded(&claims));
+        let signature = forger
+            .sign(&SystemRandom::new(), message.as_bytes())
+            .expect("signed");
+        format!("{message}.{}", URL_SAFE_NO_PAD.encode(signature.as_ref()))
+    };
+    // The tenant's published key, as a confused library would take it for
+    // an HMAC secret.
+    let published: Value = Client::new()
+        .get(format!("{}/oauth2/jwks", world.issuer()))
+        .send()
+        .await
+        .expect("the key set")
+        .json()
+        .await
+        .expect("a key set");
+    let public_key = published["keys"]
+        .as_array()
+        .expect("keys")
+        .iter()
+        .find(|key| key["kid"] == kid)
+        .expect("the signing key is published")
+        .to_string();
+    let hs256 = {
+        let message = format!(
+            "{}.{}",
+            encoded(&json!({ "alg": "HS256", "kid": kid })),
+            encoded(&claims)
+        );
+        let tag = aws_lc_rs::hmac::sign(
+            &aws_lc_rs::hmac::Key::new(aws_lc_rs::hmac::HMAC_SHA256, public_key.as_bytes()),
+            message.as_bytes(),
+        );
+        format!("{message}.{}", URL_SAFE_NO_PAD.encode(tag.as_ref()))
+    };
+    let forged = [
+        // Signed by the forger under the tenant's `kid`, and under one of
+        // its own.
+        forge(&json!({ "alg": "ES256", "typ": "at+jwt", "kid": kid })),
+        forge(&json!({ "alg": "ES256", "typ": "at+jwt", "kid": "forged" })),
+        // No signature at all.
+        format!(
+            "{}.{}.",
+            encoded(&json!({ "alg": "none" })),
+            encoded(&claims)
+        ),
+        format!(
+            "{}.{}.AA",
+            encoded(&json!({ "alg": "none", "kid": kid })),
+            encoded(&claims)
+        ),
+        hs256,
+        // The tenant's signature, with Bob's claims in place of Ana's.
+        format!("{}.{}.{}", parts[0], encoded(&bob_claims), parts[2]),
+    ];
+    for token in &forged {
+        assert!(
+            !ask(
+                &mut adapter,
+                check(STRANGER, ORDERS, "GET", "/orders/1", Some(token.as_str()))
+            )
+            .await,
+            "{token}"
+        );
+    }
+    assert_eq!(
+        world.decisions().await,
+        1,
+        "Hodor recorded a decision about a forged token"
+    );
+
+    // Bob holds no role: Hodor denies, and records it. The answer is the
+    // same as for a forged token.
+    let bob = world.token(&bob_claims).await;
+    let by_hodor = adapter
+        .check(check(
+            STRANGER,
+            ORDERS,
+            "GET",
+            "/orders/1",
+            Some(bob.as_str()),
+        ))
+        .await
+        .expect("an answer")
+        .into_inner();
+    let before_hodor = adapter
+        .check(check(
+            STRANGER,
+            ORDERS,
+            "GET",
+            "/orders/1",
+            Some(forged[0].as_str()),
+        ))
+        .await
+        .expect("an answer")
+        .into_inner();
+    assert!(!allowed(&by_hodor));
+    assert_eq!(by_hodor, before_hodor, "the denials tell nothing apart");
+    assert_eq!(world.decisions().await, 2);
 }
 
 /// The latency of a check through the adapter, and of `evaluate` alone,
@@ -912,8 +1106,7 @@ async fn latency() {
     let (address, _stop) = start_adapter(settings, adapter_http()).await;
     let mut adapter = connect(address).await;
     let token = world.token_of(&world.orders_client).await;
-    let ana =
-        json!({ "iss": world.issuer(), "aud": ORDERS_AUDIENCE, "sub": world.ana, "exp": later() });
+    let ana = world.token_for(&world.ana, ORDERS_AUDIENCE).await;
     let question = json!({ "subject": { "type": "user", "id": world.ana },
                            "resource": { "type": "order", "id": "1" }, "action": "read" });
     let http = Client::new();
@@ -926,7 +1119,7 @@ async fn latency() {
         assert!(
             ask(
                 &mut adapter,
-                check(WEB, ORDERS, "GET", "/orders/1", Some(&ana))
+                check(WEB, ORDERS, "GET", "/orders/1", Some(ana.as_str()))
             )
             .await
         );

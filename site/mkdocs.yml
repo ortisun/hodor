@@ -144,6 +144,7 @@ nav:
       - cert-manager's issuer: operations/hodor-cert-manager-issuer.md
       - OpenID conformance: operations/conformance.md
       - OpenID certification: operations/certification.md
+      - The certification deployment: operations/certification-deployment.md
   - Examples:
       - examples/README.md
       - examples/first-tenant-and-administrator.md
@@ -265,12 +266,14 @@ nav:
       - decisions/0065-where-the-standard-claims-come-from.md
       - decisions/0068-claims-of-every-consented-scope.md
       - decisions/0071-signing-intermediates.md
+      - decisions/0072-the-state-hash-and-the-response-types-of-a-client.md
       - decisions/0074-hodor-cert-manager-issuer.md
       - decisions/0075-the-registration-settings-of-a-tenant.md
       - decisions/0076-names-an-authority-leaves-to-its-meshes.md
       - decisions/0077-ext-authz-checks-the-audience.md
       - decisions/0078-every-pod-of-the-release-in-the-mesh.md
       - decisions/0079-keys-at-a-client-s-address-kept-in-memory.md
+      - decisions/0082-ext-authz-checks-the-signature.md
   - Contributing:
       - development/conventions.md
       - development/documentation-site.md

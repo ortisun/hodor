@@ -1,0 +1,266 @@
+{
+  "$comment": "The plans of 0.5.0 on the OpenID Foundation's hosted suite, what each needs in Hodor, and which features are built. Turning a plan on when its feature is merged is one line: its feature's \"built\" becomes true. docs/operations/certification-deployment.md explains every field.",
+  "features": {
+    "id-token-through-the-browser": {
+      "built": false,
+      "issue": "Issue-127",
+      "pullRequest": 178,
+      "what": "an ID token through the browser"
+    },
+    "access-token-through-the-browser": {
+      "built": false,
+      "issue": "Issue-128",
+      "what": "an access token through the browser",
+      "$comment": "When built, clientArguments takes the option of `hodor-cli client add` that marks a client as allowed tokens through the browser.",
+      "clientArguments": []
+    },
+    "front-channel-logout": {
+      "built": false,
+      "issue": "Issue-139",
+      "pullRequest": 184,
+      "what": "front-channel logout"
+    },
+    "session-management": {
+      "built": false,
+      "issue": "Issue-140",
+      "what": "session management",
+      "$comment": "When built, tenantCommands takes the command of `hodor-cli` that turns session management on for a tenant.",
+      "tenantCommands": []
+    },
+    "registration-endpoint": {
+      "built": false,
+      "issue": "Issue-133",
+      "pullRequest": 179,
+      "what": "the registration endpoint"
+    },
+    "registration-management": {
+      "built": false,
+      "issue": "Issue-134",
+      "what": "managing a registration and third-party initiated login"
+    },
+    "dynamic-plan": {
+      "built": false,
+      "issue": "Issue-137",
+      "what": "what the Dynamic plan needs of a tenant, such as registered clients without PKCE",
+      "$comment": "When built, tenantCommands takes what Issue-137 names.",
+      "tenantCommands": []
+    }
+  },
+  "responseTypes": {
+    "code": [],
+    "id_token": ["id-token-through-the-browser"],
+    "code id_token": ["id-token-through-the-browser"],
+    "id_token token": ["access-token-through-the-browser"],
+    "code token": ["access-token-through-the-browser"],
+    "code id_token token": ["access-token-through-the-browser"]
+  },
+  "tenants": {
+    "certification": {
+      "name": "OpenID certification",
+      "needs": [],
+      "application": { "name": "OpenID certification", "firstParty": true }
+    },
+    "certification-session": {
+      "name": "OpenID certification, session management",
+      "needs": ["session-management"],
+      "application": { "name": "OpenID certification", "firstParty": true }
+    },
+    "certification-dynamic": {
+      "name": "OpenID certification, registration",
+      "needs": ["registration-endpoint"],
+      "application": { "name": "Clients the suite registered", "firstParty": false },
+      "commands": [
+        [
+          "client-registration", "on", "--tenant", "{tenant}", "--application", "{application}",
+          "--way", "open", "--host", "{suiteHost}", "--most-clients", "200",
+          "--grant", "authorization_code", "--grant", "refresh_token",
+          "--response-type", "code", "--response-type", "id_token", "--response-type", "code id_token",
+          "--response-type", "id_token token", "--response-type", "code token",
+          "--response-type", "code id_token token",
+          "--method", "client_secret_basic", "--method", "client_secret_post", "--method", "private_key_jwt",
+          "--subject-type", "public", "--subject-type", "pairwise",
+          "--scope", "openid", "--scope", "profile", "--scope", "email", "--scope", "address",
+          "--scope", "phone", "--scope", "offline_access"
+        ]
+      ],
+      "retireCommands": [
+        ["client-registration", "off", "--tenant", "{tenant}"]
+      ]
+    }
+  },
+  "clients": {
+    "first": {
+      "tenant": "certification",
+      "name": "First client",
+      "method": "client_secret_basic",
+      "arguments": ["--id-token-algorithm", "ES256"]
+    },
+    "second": {
+      "tenant": "certification",
+      "name": "Second client",
+      "method": "client_secret_basic",
+      "arguments": ["--id-token-algorithm", "RS256"]
+    },
+    "post": {
+      "tenant": "certification",
+      "name": "Client that sends its secret in the form",
+      "method": "client_secret_post",
+      "arguments": ["--id-token-algorithm", "PS256"]
+    },
+    "rp-initiated": {
+      "tenant": "certification",
+      "name": "Client that signs out",
+      "method": "client_secret_basic",
+      "arguments": ["--id-token-algorithm", "RS256"]
+    },
+    "backchannel": {
+      "tenant": "certification",
+      "name": "Client told through the back channel",
+      "method": "client_secret_basic",
+      "arguments": [
+        "--id-token-algorithm", "PS256",
+        "--backchannel-logout-uri", "{suite}/test/a/{alias}/backchannel_logout",
+        "--backchannel-logout-session-required"
+      ]
+    },
+    "frontchannel": {
+      "tenant": "certification",
+      "name": "Client told through the front channel",
+      "method": "client_secret_basic",
+      "needs": ["front-channel-logout"],
+      "arguments": [
+        "--id-token-algorithm", "EdDSA",
+        "--frontchannel-logout-uri", "{suite}/test/a/{alias}/frontchannel_logout",
+        "--frontchannel-logout-session-required"
+      ]
+    },
+    "session": {
+      "tenant": "certification-session",
+      "name": "Client that watches the session",
+      "method": "client_secret_basic",
+      "arguments": ["--id-token-algorithm", "ES256"]
+    }
+  },
+  "allResponseTypes": ["code", "id_token", "code id_token", "id_token token", "code token", "code id_token token"],
+  "plans": [
+    {
+      "name": "basic",
+      "profile": "Basic OP",
+      "plan": "oidcc-basic-certification-test-plan",
+      "tenant": "certification",
+      "variant": { "server_metadata": "discovery", "client_registration": "static_client" },
+      "clients": { "client": "first", "client2": "second", "client_secret_post": "post" }
+    },
+    {
+      "name": "config",
+      "profile": "Config OP",
+      "plan": "oidcc-config-certification-test-plan",
+      "tenant": "certification",
+      "variant": {},
+      "clients": { "client": "first", "client2": "second", "client_secret_post": "post" }
+    },
+    {
+      "name": "implicit",
+      "profile": "Implicit OP",
+      "plan": "oidcc-implicit-certification-test-plan",
+      "tenant": "certification",
+      "needs": ["id-token-through-the-browser", "access-token-through-the-browser"],
+      "variant": { "server_metadata": "discovery", "client_registration": "static_client" },
+      "clients": { "client": "first", "client2": "second", "client_secret_post": "post" }
+    },
+    {
+      "name": "hybrid",
+      "profile": "Hybrid OP",
+      "plan": "oidcc-hybrid-certification-test-plan",
+      "tenant": "certification",
+      "needs": ["id-token-through-the-browser", "access-token-through-the-browser"],
+      "variant": { "server_metadata": "discovery", "client_registration": "static_client" },
+      "clients": { "client": "first", "client2": "second", "client_secret_post": "post" }
+    },
+    {
+      "name": "formpost-basic",
+      "profile": "Form Post OP",
+      "plan": "oidcc-formpost-basic-certification-test-plan",
+      "tenant": "certification",
+      "variant": { "server_metadata": "discovery", "client_registration": "static_client" },
+      "clients": { "client": "first", "client2": "second", "client_secret_post": "post" }
+    },
+    {
+      "name": "formpost-implicit",
+      "profile": "Form Post OP",
+      "plan": "oidcc-formpost-implicit-certification-test-plan",
+      "tenant": "certification",
+      "needs": ["id-token-through-the-browser", "access-token-through-the-browser"],
+      "variant": { "server_metadata": "discovery", "client_registration": "static_client" },
+      "clients": { "client": "first", "client2": "second", "client_secret_post": "post" }
+    },
+    {
+      "name": "formpost-hybrid",
+      "profile": "Form Post OP",
+      "plan": "oidcc-formpost-hybrid-certification-test-plan",
+      "tenant": "certification",
+      "needs": ["id-token-through-the-browser", "access-token-through-the-browser"],
+      "variant": { "server_metadata": "discovery", "client_registration": "static_client" },
+      "clients": { "client": "first", "client2": "second", "client_secret_post": "post" }
+    },
+    {
+      "name": "rp-initiated",
+      "profile": "RP-Initiated OP",
+      "plan": "oidcc-rp-initiated-logout-certification-test-plan",
+      "tenant": "certification",
+      "eachResponseType": true,
+      "variant": { "client_registration": "static_client" },
+      "clients": { "client": "rp-initiated" }
+    },
+    {
+      "name": "backchannel",
+      "profile": "Back-Channel OP",
+      "plan": "oidcc-backchannel-rp-initiated-logout-certification-test-plan",
+      "tenant": "certification",
+      "eachResponseType": true,
+      "variant": { "client_registration": "static_client" },
+      "clients": { "client": "backchannel" }
+    },
+    {
+      "name": "frontchannel",
+      "profile": "Front-Channel OP",
+      "plan": "oidcc-frontchannel-rp-initiated-logout-certification-test-plan",
+      "tenant": "certification",
+      "needs": ["front-channel-logout"],
+      "eachResponseType": true,
+      "variant": { "client_registration": "static_client" },
+      "clients": { "client": "frontchannel" }
+    },
+    {
+      "name": "session",
+      "profile": "Session OP",
+      "plan": "oidcc-session-management-certification-test-plan",
+      "tenant": "certification-session",
+      "needs": ["session-management"],
+      "eachResponseType": true,
+      "variant": { "client_registration": "static_client" },
+      "clients": { "client": "session" }
+    },
+    {
+      "name": "dynamic",
+      "profile": "Dynamic OP",
+      "plan": "oidcc-dynamic-certification-test-plan",
+      "tenant": "certification-dynamic",
+      "needs": [
+        "registration-endpoint", "registration-management", "dynamic-plan",
+        "id-token-through-the-browser", "access-token-through-the-browser"
+      ],
+      "variant": { "response_type": "code" },
+      "clients": {}
+    },
+    {
+      "name": "3rdparty-init",
+      "profile": "3rd Party-Init OP",
+      "plan": "oidcc-3rdparty-init-login-certification-test-plan",
+      "tenant": "certification-dynamic",
+      "needs": ["registration-endpoint", "registration-management"],
+      "variant": {},
+      "clients": {}
+    }
+  ]
+}

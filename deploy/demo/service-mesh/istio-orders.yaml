@@ -1,7 +1,7 @@
 # Orders protected by Istio, as the service mesh guide writes it: its sidecar asks hodor-ext-authz about
-# every request and checks the tenant's tokens. A sidecar asks before it checks, so the ingress gateway checks
-# the token first and writes its claims, which Orders' sidecar passes to the check. The demonstration fills in
-# the tenant's issuer, which changes with each run; istiod reads its key set from Hodor.
+# every request and checks the tenant's tokens. A sidecar asks before it checks, and hodor-ext-authz checks the
+# token's signature itself; the ingress gateway checks the token first as well, and forwards it. The
+# demonstration fills in the tenant's issuer, which changes with each run; istiod reads its key set from Hodor.
 #
 #   python3 deploy/demo/service_mesh.py applies it; see docs/operations/quick-start.md.
 
@@ -18,7 +18,6 @@ spec:
     - issuer: ${issuer}
       jwksUri: ${issuer}/oauth2/jwks
       forwardOriginalToken: true
-      outputPayloadToHeader: x-hodor-token-claims
 ---
 apiVersion: security.istio.io/v1
 kind: RequestAuthentication
@@ -35,7 +34,6 @@ spec:
       audiences:
         - https://orders.example.com
       forwardOriginalToken: true
-      outputPayloadToHeader: x-hodor-token-claims
 ---
 apiVersion: security.istio.io/v1
 kind: AuthorizationPolicy

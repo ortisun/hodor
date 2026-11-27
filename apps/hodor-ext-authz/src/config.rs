@@ -1,5 +1,5 @@
-//! The configuration file: where Hodor is, where the checked token's claims
-//! are, and one entry per protected application with its route rules.
+//! The configuration file: where Hodor is, whether bearer tokens are read,
+//! and one entry per protected application with its route rules.
 //!
 //! Specified in `docs/operations/hodor-ext-authz.md`, "Configuration".
 
@@ -57,6 +57,7 @@ struct HodorFile {
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields, rename_all = "snake_case")]
 enum TokenFile {
+    Bearer,
     Metadata(MetadataFile),
     Header(String),
 }
@@ -89,19 +90,26 @@ struct RouteFile {
     action: String,
 }
 
-/// Where the claims of the token the proxy checked are found.
+/// How bearer tokens are read. In every form, the token is the bearer
+/// token in `Authorization`, whose signature the adapter checks itself
+/// against the tenant's key set (Decision 0082); the two forms written
+/// before add one rule each.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TokenSource {
-    /// In the request's metadata: `filter_metadata[namespace][key]`, as
-    /// Envoy's JWT filter writes it with `payload_in_metadata`.
+    /// `"bearer"`: the bearer token alone.
+    Bearer,
+    /// Written before: the claims the proxy wrote in the request's
+    /// metadata, `filter_metadata[namespace][key]`, are no longer read,
+    /// but deny a request that carries them without a bearer token.
     Metadata {
         /// The filter's namespace.
         namespace: String,
         /// The key, the value of `payload_in_metadata`.
         key: String,
     },
-    /// In a header the proxy writes, base64url-encoded, believed only when
-    /// it is the claims of the bearer token in `Authorization`.
+    /// Written before: a header of the claims, base64url-encoded, no
+    /// longer read for them, which denies a request unless it is exactly
+    /// the bearer token's claims part.
     Header(String),
 }
 
@@ -145,7 +153,7 @@ pub struct Settings {
     pub issuer: String,
     /// How long one call to Hodor may take.
     pub timeout: Duration,
-    /// Where the checked token's claims are, if any is read.
+    /// How bearer tokens are read, if they are.
     pub token: Option<TokenSource>,
     /// The protected applications.
     pub applications: Vec<Application>,
@@ -250,6 +258,13 @@ impl Settings {
         format!("{}/t/{}/oauth2/token", self.hodor_url, self.tenant)
     }
 
+    /// The tenant's published key set, at Hodor's own address: the set
+    /// discovery names as `jwks_uri`, `<issuer>/oauth2/jwks`.
+    #[must_use]
+    pub fn key_set_endpoint(&self) -> String {
+        format!("{}/t/{}/oauth2/jwks", self.hodor_url, self.tenant)
+    }
+
     /// The Authorization API's `evaluate` of the tenant.
     #[must_use]
     pub fn evaluate_endpoint(&self) -> String {
@@ -283,6 +298,7 @@ fn hodor_url(text: &str) -> Result<String, ConfigError> {
 
 fn token_source(file: TokenFile) -> Result<TokenSource, ConfigError> {
     match file {
+        TokenFile::Bearer => Ok(TokenSource::Bearer),
         TokenFile::Metadata(metadata) => {
             let namespace = metadata
                 .namespace
@@ -359,6 +375,10 @@ mod tests {
             settings.evaluate_endpoint(),
             "http://hodor:8080/t/acme/api/v1/authorization/evaluate"
         );
+        assert_eq!(
+            settings.key_set_endpoint(),
+            "http://hodor:8080/t/acme/oauth2/jwks"
+        );
     }
 
     #[test]
@@ -405,6 +425,18 @@ mod tests {
             header.token,
             Some(TokenSource::Header("x-hodor-token-claims".to_owned()))
         );
+        let bearer = Settings::from_json(
+            r#"{ "hodor": { "url": "https://hodor.example", "tenant": "acme",
+                            "issuer": "https://login.example.com/t/acme" },
+                 "token": "bearer" }"#,
+        )
+        .expect("read");
+        assert_eq!(bearer.token, Some(TokenSource::Bearer));
+        // The set is read at Hodor's own address, whatever the issuer.
+        assert_eq!(
+            bearer.key_set_endpoint(),
+            "https://hodor.example/t/acme/oauth2/jwks"
+        );
     }
 
     #[test]
@@ -450,6 +482,10 @@ mod tests {
             (
                 r#"{ "hodor": { "url": "http://hodor:8080", "tenant": "acme" }, "token": { "header": "authorization" } }"#,
                 "token.header",
+            ),
+            (
+                r#"{ "hodor": { "url": "http://hodor:8080", "tenant": "acme" }, "token": "claims" }"#,
+                "unknown variant",
             ),
             (
                 r#"{ "hodor": { "url": "http://hodor:8080", "tenant": "acme" }, "token": { "header": "a b" } }"#,
