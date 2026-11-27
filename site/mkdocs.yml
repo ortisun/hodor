@@ -137,6 +137,7 @@ nav:
       - Test environments: development/test-environments.md
       - Install with Docker: operations/install-with-docker.md
       - Install on Kubernetes: operations/install-on-kubernetes.md
+      - Service meshes: operations/service-mesh.md
       - Envoy's external authorization: operations/hodor-ext-authz.md
       - Deployment: operations/deployment.md
       - Keys in OpenBao: operations/keys-in-openbao.md

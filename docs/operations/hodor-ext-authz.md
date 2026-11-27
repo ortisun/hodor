@@ -178,7 +178,7 @@ The chart installs it with `extAuthz.enabled`, beside Hodor or in a release of i
 
 ## In Istio
 
-These examples follow Istio's documentation and have not been tried yet: the service mesh guide tries them (Issue-113), and the demonstration of Milestone 11 runs them on kind (Issue-114).
+These examples follow Istio's documentation and have not been tried yet: the demonstration of Milestone 11 is to run them on kind (Issue-114). [The service mesh guide](service-mesh.md) shows them with the rest of what Istio needs, does the same for ambient mode, Consul and Envoy Gateway, and says what was tried for each.
 
 The provider, in Istio's mesh configuration:
 
@@ -238,4 +238,4 @@ spec:
 | A JWT-SVID as its credential | It proves who it is with the certificate its sidecar presents, or the identity Linkerd asserts |
 | The request's attributes, such as the address or the headers, as `context` | Policies decide on the subject, the resource and the action |
 | Reloading the configuration without a restart | A change takes a restart |
-| Being tried in a mesh | Issues 113 and 114 |
+| Being tried in a mesh | The demonstration of Milestone 11 (Issue-114). [The service mesh guide](service-mesh.md#what-was-tried-and-what-was-not) says what was tried so far |

@@ -47,7 +47,7 @@ Each way authenticates a client of a service account ([Milestone 8](../product/e
 
 ### The proxies check Hodor's tokens themselves
 
-Each tenant is one issuer with its own key set. A proxy checks a tenant's access tokens as any resource server does. Istio uses `RequestAuthentication`, Consul `jwt-provider`, and Envoy Gateway `SecurityPolicy`. Nothing changes in Hodor for this. The [service mesh guide](../product/epics.md#milestone-11-hodor-in-a-service-mesh) shows each one.
+Each tenant is one issuer with its own key set. A proxy checks a tenant's access tokens as any resource server does. Istio uses `RequestAuthentication`, Consul `jwt-provider`, and Envoy Gateway `SecurityPolicy`. Nothing changes in Hodor for this. The [service mesh guide](../operations/service-mesh.md) shows each one.
 
 The proxy accepts a revoked token until it expires, five minutes by default. [Decision 0004](0004-token-formats.md) accepts that window for every resource server that checks tokens by itself.
 

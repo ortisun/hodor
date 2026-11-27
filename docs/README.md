@@ -45,6 +45,7 @@ Start with the [critical review](architecture/critical-review.md): it lists wher
 | — | Installing with Docker: Hodor on one machine, with passwords of your own, PostgreSQL and HTTPS | [operations/install-with-docker.md](operations/install-with-docker.md) |
 | — | Installing on Kubernetes: the Helm chart, what it creates and what it expects to find | [operations/install-on-kubernetes.md](operations/install-on-kubernetes.md) |
 | — | Keys in OpenBao: the tenants' signing keys made and used in OpenBao, how to prepare it, and what that means | [operations/keys-in-openbao.md](operations/keys-in-openbao.md) |
+| — | Service meshes: Istio, Linkerd, Consul and Envoy Gateway checking Hodor's tokens, asking its decisions, giving workloads their identity at Hodor and running Hodor inside, with what was tried and what was not | [operations/service-mesh.md](operations/service-mesh.md) |
 | — | Envoy's external authorization: `hodor-ext-authz`, which lets a service mesh's proxies ask Hodor's decisions | [operations/hodor-ext-authz.md](operations/hodor-ext-authz.md) |
 | — | cert-manager's issuer: `hodor-cert-manager-issuer`, which keeps the meshes' intermediates signed by the tenant's certificate authority | [operations/hodor-cert-manager-issuer.md](operations/hodor-cert-manager-issuer.md) |
 | — | Quick-start: from a clean checkout to a tenant people sign in to, and the demonstration of Milestone 1 | [operations/quick-start.md](operations/quick-start.md) |
