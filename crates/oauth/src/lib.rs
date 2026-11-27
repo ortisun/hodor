@@ -5,8 +5,8 @@
 //! tokens on their behalf, the resource servers those tokens are for, and
 //! the authorization endpoint's requests, grants and codes, and the token
 //! endpoint with the access tokens it issues, the OpenID Provider, logout
-//! initiated by the relying party, and back-channel logout. It does not
-//! sign anyone in.
+//! initiated by the relying party, and back-channel and front-channel
+//! logout. It does not sign anyone in.
 //!
 //! The specification is `docs/architecture/contexts/oauth.md`; this crate
 //! follows it.
@@ -36,6 +36,9 @@ pub mod api {
     pub use crate::application::client_keys::{ClientKeySets, MAX_KEPT_KEY_SETS};
     pub use crate::application::consent::{
         AskedScope, ConsentPorts, ConsentQuestion, ConsentService, ListedConsent, SelfDescription,
+    };
+    pub use crate::application::frontchannel::{
+        FrontChannelLogoutPorts, FrontChannelLogoutService, FrontChannelLogoutStore,
     };
     pub use crate::application::introspection::{AccessTokenRegister, WorkloadTokens};
     pub use crate::application::logout::{LogoutPorts, LogoutRefusal, LogoutService};
@@ -115,6 +118,11 @@ pub mod api {
         MAX_FORWARDED_CHAIN, MAX_LINKERD_IDENTITY_LENGTH, WorkloadIdentity,
         advertise_certificate_bound_tokens, advertise_forwarded_methods, names_match,
         presented_thumbprint,
+    };
+    pub use crate::domain::frontchannel::{
+        FRAMES_LIFETIME, FRAMES_WAIT, FrontChannelLogout, FrontChannelLogoutId, HandleHash,
+        MAX_FRONTCHANNEL_LOGOUT_URI_LENGTH, SignedOutHandle, check_frontchannel_logout_uri,
+        frame_address, frame_sources,
     };
     pub use crate::domain::initial_access_token::{
         DEFAULT_INITIAL_ACCESS_TOKEN_LIFETIME, INITIAL_ACCESS_TOKEN_PREFIX, InitialAccessToken,

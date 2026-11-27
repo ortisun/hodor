@@ -13,6 +13,7 @@ import { createRoot } from "react-dom/client";
 import {
   continuationOf,
   continuesAuthorization,
+  continuesLogout,
   loginHintOf,
   type NoticeName,
   noticeOf,
@@ -74,6 +75,7 @@ if (root !== null && place !== null) {
         loginHint={loginHintOf(window.location.search)}
         afterSignIn={continuationOf(window.location.search) === "security" ? "security" : "account"}
         reauthenticate={() => window.location.assign(signInAgainPath(place.tenant))}
+        continuesLogout={continuesLogout(window.location.search)}
       />
     </Theme>,
   );

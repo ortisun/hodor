@@ -186,7 +186,11 @@ console interface.
   `RadioList` of the seven confidential methods, each with its sentence from
   `text.methodHints`; not for a public client), grants (`client_credentials`
   not offered to a public client), redirect addresses one per line
-  (`linesOf`), scopes separated by spaces, and whether access tokens are
+  (`linesOf`), addresses after signing out one per line, the front-channel
+  logout address (`text.frontchannelLogoutUriHint`; left empty it is
+  `null`) with, once one is written, a `Switch` for
+  `frontchannelLogoutSessionRequired`, scopes separated by spaces, and
+  whether access tokens are
   bound to the certificate (a `Switch`, not for `linkerd_identity`). A method
   of a workload's identity (`spiffe_jwt`, `spiffe_x509`, `tls_client_auth`,
   `linkerd_identity`) asks for the service account's identifier, refused with
@@ -194,15 +198,18 @@ console interface.
   the shape of one, and for the identity it takes: the SPIFFE identifier, the
   Linkerd identity, or for `tls_client_auth` one of the two chosen with a
   `SegmentedControl`; it offers only `client_credentials` and no redirect
-  address, and sends empty ones. `submit(type, settings)` returns a promise;
+  address, and sends empty ones and no front-channel logout address.
+  `submit(type, settings)` returns a promise;
   a failure it throws is shown and the form stays open.
 - `ResourceServerForm.tsx:ResourceServerForm` - audience (fixed when changing),
   name and scopes one per line as `name description` (`definedScopesOf`,
   `writtenScopes`).
 - `ClientScreen.tsx:ClientScreen` - one client, loaded with
   `client.getClient(id)`: its identifier whole, settings (with the SPIFFE
-  identifier or the Linkerd identity when it has one, and whether its access
-  tokens are bound to a certificate), token lifetimes
+  identifier or the Linkerd identity when it has one, its front-channel
+  logout address when it has one, with `text.frontchannelLogoutUriHint`
+  beside it, and whether its access tokens are bound to a certificate),
+  token lifetimes
   (`lifetime`), secrets by identifier and expiry, keys for `private_key_jwt`.
   Change (`ClientForm`, `client.changeClient`), give a new secret (`Confirm`
   with `rotateSecret`, the name typed, `client.rotateSecret`), end a secret

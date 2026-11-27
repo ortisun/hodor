@@ -280,6 +280,10 @@ export interface ApplicationClient {
   grantTypes: string[];
   redirectUris: string[];
   postLogoutRedirectUris: string[];
+  /** The address the signed-out page loads in a frame to tell it; `null` for none. */
+  frontchannelLogoutUri: string | null;
+  /** Whether it needs `iss` and `sid` in the address of its frame. */
+  frontchannelLogoutSessionRequired: boolean;
   allowedScopes: string[];
   requirePkce: boolean;
   tokenPolicy: TokenPolicy;
@@ -305,6 +309,9 @@ export interface ClientSettings {
   grantTypes: string[];
   redirectUris: string[];
   postLogoutRedirectUris: string[];
+  /** The front-channel logout address; `null` for none, which removes one a client had. */
+  frontchannelLogoutUri: string | null;
+  frontchannelLogoutSessionRequired: boolean;
   allowedScopes: string[];
   /**
    * The service account a client of a workload's identity acts as; `null`
@@ -730,6 +737,8 @@ function applicationClient(body: Fields): ApplicationClient {
     grantTypes: strings(body["grant_types"]),
     redirectUris: strings(body["redirect_uris"]),
     postLogoutRedirectUris: strings(body["post_logout_redirect_uris"]),
+    frontchannelLogoutUri: text(body["frontchannel_logout_uri"]),
+    frontchannelLogoutSessionRequired: body["frontchannel_logout_session_required"] === true,
     allowedScopes: strings(body["allowed_scopes"]),
     requirePkce: body["require_pkce"] === true,
     tokenPolicy: {
@@ -833,6 +842,9 @@ function clientBody(settings: ClientSettings): Fields {
     grant_types: settings.grantTypes,
     redirect_uris: settings.redirectUris,
     post_logout_redirect_uris: settings.postLogoutRedirectUris,
+    frontchannel_logout_uri: settings.frontchannelLogoutUri === null ? null : settings.frontchannelLogoutUri.trim(),
+    frontchannel_logout_session_required:
+      settings.frontchannelLogoutUri !== null && settings.frontchannelLogoutSessionRequired,
     allowed_scopes: settings.allowedScopes,
     ...(settings.principal === null ? {} : { principal: settings.principal.trim() }),
     ...(settings.spiffeId === null ? {} : { spiffe_id: settings.spiffeId.trim() }),

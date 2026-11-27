@@ -184,6 +184,8 @@ pub enum ExpiredKind {
     ApiKeys,
     /// Logout deliveries that were delivered or set aside.
     LogoutDeliveries,
+    /// The frames kept for a signed-out page, once expired.
+    FrontChannelLogouts,
 }
 
 /// The query that finds tenants with rows to remove (`$1` the moment
@@ -216,7 +218,7 @@ macro_rules! expired_rows {
 
 impl ExpiredKind {
     /// Every kind, in the order the worker starts their jobs.
-    pub const ALL: [Self; 16] = [
+    pub const ALL: [Self; 17] = [
         Self::Sessions,
         Self::SignIns,
         Self::VerificationTokens,
@@ -233,6 +235,7 @@ impl ExpiredKind {
         Self::WebhookDeliveries,
         Self::ApiKeys,
         Self::LogoutDeliveries,
+        Self::FrontChannelLogouts,
     ];
 
     /// The kind's name, in settings, metrics and logs.
@@ -255,6 +258,7 @@ impl ExpiredKind {
             Self::WebhookDeliveries => "webhook_deliveries",
             Self::ApiKeys => "api_keys",
             Self::LogoutDeliveries => "logout_deliveries",
+            Self::FrontChannelLogouts => "frontchannel_logouts",
         }
     }
 
@@ -263,7 +267,10 @@ impl ExpiredKind {
     #[must_use]
     pub const fn default_retention_days(self) -> u32 {
         match self {
-            Self::WebauthnRegistrations | Self::AuthorizationRequests | Self::ClientAssertions => 0,
+            Self::WebauthnRegistrations
+            | Self::AuthorizationRequests
+            | Self::ClientAssertions
+            | Self::FrontChannelLogouts => 0,
             Self::SignIns | Self::EmailSignIns | Self::AuthorizationCodes => 1,
             Self::Sessions | Self::VerificationTokens => 7,
             Self::Messages
@@ -335,6 +342,9 @@ impl ExpiredKind {
                 "oauth.logout_delivery",
                 "status <> 'pending' AND finished_at <= $1"
             ),
+            Self::FrontChannelLogouts => {
+                expired_rows!("oauth.frontchannel_logout", "expires_at <= $1")
+            }
         }
     }
 }

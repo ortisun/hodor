@@ -18,6 +18,7 @@ mod authorization;
 mod backchannel;
 mod claim_mapper;
 mod consent;
+mod frontchannel;
 mod pairwise;
 mod refresh;
 mod register;
@@ -36,6 +37,9 @@ pub use claim_mapper::{
     ClaimMapperStorePorts, ClaimSourcesOf, InMemoryClaimMappers, run_claim_mapper_contract,
 };
 pub use consent::{ConsentStorePorts, InMemoryConsents, consent_service, run_consent_contract};
+pub use frontchannel::{
+    FrontChannelLogoutStorePorts, InMemoryFrontChannelLogouts, run_frontchannel_logout_contract,
+};
 pub use pairwise::{
     FakeHmac, InMemoryPairwiseSecrets, PairwiseSecretStorePorts, SectorDocuments,
     pairwise_subjects, run_pairwise_secret_contract,
@@ -549,6 +553,8 @@ fn client(application_id: ApplicationId, at: Timestamp) -> Client {
     settings.post_logout_redirect_uris = vec!["https://payroll.example.com/signed-out".to_owned()];
     settings.backchannel_logout_uri = Some("https://payroll.example.com/backchannel".to_owned());
     settings.backchannel_logout_session_required = true;
+    settings.frontchannel_logout_uri = Some("https://payroll.example.com/frontchannel".to_owned());
+    settings.frontchannel_logout_session_required = true;
     settings.allowed_scopes = vec!["openid".to_owned(), "payroll:read".to_owned()];
     // Stored and read back as every other setting.
     settings.certificate_bound_access_tokens = true;

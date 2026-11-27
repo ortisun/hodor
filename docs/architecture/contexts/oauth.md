@@ -379,7 +379,7 @@ Every table is a tenant table under row-level security, in the schema `oauth`. R
 | `request_uris` | `text[]` | The [request object addresses](#request-object-addresses), compared byte for byte (`COLLATE "C"`); empty for a client made before it existed. Check constraints allow at most 10, and any only with the `authorization_code` grant |
 | `backchannel_logout_uri` | `text` | The [back-channel logout address](#the-back-channel-logout-address), or null. At most 2000 characters, `https://` or `http://`, compared byte for byte (`COLLATE "C"`); a check constraint allows it only with the `authorization_code` grant |
 | `backchannel_logout_session_required` | `boolean` | `false` for a client made before it existed; a check constraint allows `true` only with an address |
-| `frontchannel_logout_uri` | `text` | The [front-channel logout address](#the-front-channel-logout-address), or null (migration 0123). At most 2000 characters, `https://` or `http://`, compared byte for byte (`COLLATE "C"`); a check constraint (`client_frontchannel_logout_needs_code`) allows it only with the `authorization_code` grant. That it shares its site with a redirect address is checked by the domain, as the rules of redirect addresses are |
+| `frontchannel_logout_uri` | `text` | The [front-channel logout address](#the-front-channel-logout-address), or null (migration 0124). At most 2000 characters, `https://` or `http://`, compared byte for byte (`COLLATE "C"`); a check constraint (`client_frontchannel_logout_needs_code`) allows it only with the `authorization_code` grant. That it shares its site with a redirect address is checked by the domain, as the rules of redirect addresses are |
 | `frontchannel_logout_session_required` | `boolean` | `false` for a client made before it existed; a check constraint allows `true` only with an address |
 | `subject_type` | `text` | `public` or `pairwise`, by a check constraint; `public` for a client made before it existed. A check constraint allows `pairwise` only with the `authorization_code` grant |
 | `default_max_age` | `integer` | The default max age in seconds, or null. A check constraint keeps it from 0 to 31 536 000 |
@@ -1832,7 +1832,7 @@ sequenceDiagram
 
 ### When, and which clients
 
-**When.** A session ends in the browser that holds it: the person signs out, on the account page or on the [sign-out page](#asking-the-person), through `DELETE /interaction/session` of [the interaction interface](../../api/interaction-api.md#routes-for-a-signed-in-person); or the end-session endpoint ends the session [at once](#what-happens) for a hint that proves it. A session ended any other way, by the person ending their other sessions, by an administrator, by a password reset or by a SCIM directory deprovisioning the person, has no page in its own browser to load frames in: its clients are told through [back-channel logout](#back-channel-logout) if they have an address for it, or not at all. The console says so beside the address.
+**When.** A session ends in the browser that holds it: the person signs out, on the account page or on the [sign-out page](#asking-the-person), through `DELETE /interaction/session` of [the interaction interface](../../api/interaction-api.md#routes-for-a-signed-in-person), or ends that same session from the list of their sessions; or the end-session endpoint ends the session [at once](#what-happens) for a hint that proves it. A session ended any other way, by the person ending their other sessions, by an administrator, by a password reset or by a SCIM directory deprovisioning the person, has no page in its own browser to load frames in: its clients are told through [back-channel logout](#back-channel-logout) if they have an address for it, or not at all. The console says so beside the address.
 
 **Which clients.** Those [back-channel logout](#which-sessions-which-clients) finds: every client with a grant made in the session with `openid` among its scopes, whatever the grant's status since. Of those, the ones that, when the session ends, have a front-channel logout address and are enabled, and so is their application. A client gets **one** frame, however many codes it got in the session. A client with both addresses is told both ways, and handles the second notice of one logout as it handles a repeated logout token.
 
@@ -1875,7 +1875,7 @@ A session that ends with no client to frame keeps no row, and its answer tells t
 
 The page is sent with the [policy of the hosted pages](../hosted-pages.md#content-security-policy), with one directive more for that answer only: `frame-src`, naming the sites of the frames it loads, each once. A site is the address's scheme, host and port, such as `https://payroll.example.com` or `https://payroll.example.com:8443`. Without a frame, the page has no `frame-src`, and `default-src 'none'` forbids every frame.
 
-The policy names sites, not whole addresses: an address may be 2000 characters long and a session may have many clients, while a response header that grows that long is refused by some proxies; and a browser no longer compares the path once a frame is redirected. A site is the client's own, since it shares the site of one of the client's redirect addresses. The policy's `frame-ancestors 'none'` stays: Hodor's page is never framed itself.
+The answer carries `Cache-Control: no-store`: it is made for one browser's sign-out. The policy names sites, not whole addresses: an address may be 2000 characters long and a session may have many clients, while a response header that grows that long is refused by some proxies; and a browser no longer compares the path once a frame is redirected. A site is the client's own, since it shares the site of one of the client's redirect addresses. The policy's `frame-ancestors 'none'` stays: Hodor's page is never framed itself.
 
 ### Bounds
 
@@ -1903,7 +1903,7 @@ The HTTP layer ends the session through the session context, then asks the OAuth
 
 ### Storage
 
-`oauth.frontchannel_logout` is a tenant table under row-level security (migration 0123).
+`oauth.frontchannel_logout` is a tenant table under row-level security (migration 0124).
 
 | Column | Type | Notes |
 |---|---|---|

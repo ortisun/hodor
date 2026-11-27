@@ -7,6 +7,7 @@ use crate::domain::consent::{
 };
 use crate::domain::event::OauthEvent;
 use crate::domain::forwarded::{LinkerdIdentity, WorkloadIdentity, linkerd_identity_invalid};
+use crate::domain::frontchannel::check_frontchannel_logout_uri;
 use crate::domain::key::{ClientKey, MAX_KEYS};
 use crate::domain::key_set::{check_jwks_uri, jwks_uri_not_allowed};
 use crate::domain::pairwise::{
@@ -704,6 +705,12 @@ pub struct ClientSettings {
     /// Whether it needs `sid` in its logout tokens. Every logout token
     /// carries it; this records what the client relies on.
     pub backchannel_logout_session_required: bool,
+    /// The address the signed-out page loads in a frame when a session it
+    /// signed a person in with ends in the person's browser, if any.
+    pub frontchannel_logout_uri: Option<String>,
+    /// Whether it needs `iss` and `sid` in the address of its frame. Every
+    /// frame carries them; this records what the client relies on.
+    pub frontchannel_logout_session_required: bool,
     /// How it knows a person: by the user identifier, or by an identifier
     /// of its sector alone.
     pub subject_type: SubjectType,
@@ -850,7 +857,7 @@ pub(crate) fn is_port(value: &str) -> bool {
 
 /// Checks one redirect address against the rules of the OAuth context;
 /// see `docs/architecture/contexts/oauth.md`, "Redirect addresses".
-fn check_redirect_uri(value: &str, client_type: ClientType) -> Result<(), DomainError> {
+pub(crate) fn check_redirect_uri(value: &str, client_type: ClientType) -> Result<(), DomainError> {
     if value.is_empty() || value.len() > MAX_REDIRECT_URI_LENGTH {
         return Err(redirect_invalid("the address is empty or too long"));
     }
@@ -981,6 +988,8 @@ impl ClientSettings {
             request_uris: Vec::new(),
             backchannel_logout_uri: None,
             backchannel_logout_session_required: false,
+            frontchannel_logout_uri: None,
+            frontchannel_logout_session_required: false,
             subject_type: SubjectType::Public,
             sector_identifier_uri: None,
             jwks_uri: None,
@@ -1194,6 +1203,18 @@ impl ClientSettings {
                 "back-channel logout session required needs a back-channel logout address",
             ));
         }
+        if let Some(uri) = &self.frontchannel_logout_uri {
+            if !has_code {
+                return Err(crate::domain::frontchannel::uri_invalid(
+                    "a client without `authorization_code` has no front-channel logout address",
+                ));
+            }
+            check_frontchannel_logout_uri(uri, &redirect_uris)?;
+        } else if self.frontchannel_logout_session_required {
+            return Err(crate::domain::frontchannel::uri_invalid(
+                "front-channel logout session required needs a front-channel logout address",
+            ));
+        }
         match self.subject_type {
             SubjectType::Pairwise => {
                 if !has_code {
@@ -1264,6 +1285,8 @@ impl ClientSettings {
             request_uris,
             backchannel_logout_uri: self.backchannel_logout_uri,
             backchannel_logout_session_required: self.backchannel_logout_session_required,
+            frontchannel_logout_uri: self.frontchannel_logout_uri,
+            frontchannel_logout_session_required: self.frontchannel_logout_session_required,
             subject_type: self.subject_type,
             sector_identifier_uri: self.sector_identifier_uri,
             jwks_uri: self.jwks_uri,
@@ -1469,6 +1492,12 @@ impl Client {
     #[must_use]
     pub fn jwks_uri(&self) -> Option<&str> {
         self.state.settings.jwks_uri.as_deref()
+    }
+
+    /// The address the signed-out page loads in a frame to tell it, if any.
+    #[must_use]
+    pub fn frontchannel_logout_uri(&self) -> Option<&str> {
+        self.state.settings.frontchannel_logout_uri.as_deref()
     }
 
     /// The `max_age` of a request of this client that names none.

@@ -7,6 +7,7 @@
 //! files are the same for all tenants and are served outside `/t/{slug}`.
 
 use crate::problem::Problem;
+use crate::signed_out::{FrontChannel, SIGNED_OUT_PAGE, SignedOutPage, signed_out_page};
 use axum::Router;
 use axum::extract::{Request, State};
 use axum::http::header::{self, HeaderValue};
@@ -21,7 +22,8 @@ use tower_http::services::ServeDir;
 
 /// The paths, under `/t/{slug}`, that are answered with the application.
 /// Each is a page the application has; anything else under `/account` is
-/// not found.
+/// not found. The signed-out page, [`SIGNED_OUT_PAGE`], is answered with
+/// the application too, with a policy of its own.
 pub const PAGE_PATHS: &[&str] = &[
     "/account",
     "/account/sign-in",
@@ -118,6 +120,12 @@ pub struct Pages {
     varying: &'static [&'static str],
     assets_path: &'static str,
     policy: &'static str,
+    /// Whether the application has the signed-out page: the hosted pages
+    /// have it, the console does not.
+    signed_out: bool,
+    /// What the signed-out page reads its frames through, when this
+    /// installation tells clients through the browser.
+    front_channel: Option<FrontChannel>,
 }
 
 impl Pages {
@@ -129,13 +137,25 @@ impl Pages {
     /// Returns an error naming the directory if `index.html` cannot be
     /// read from it.
     pub fn load(directory: &Path) -> io::Result<Self> {
-        Self::read(
+        let mut pages = Self::read(
             directory,
             PAGE_PATHS,
             &[PROVIDER_CALLBACK_PAGE],
             PAGE_ASSETS_PATH,
             PAGES_CONTENT_SECURITY_POLICY,
-        )
+        )?;
+        pages.signed_out = true;
+        Ok(pages)
+    }
+
+    /// Sends the signed-out page with a policy that allows the frames the
+    /// server kept for the browser's sign-out, read through
+    /// `front_channel`. Without it the page is sent with the pages' own
+    /// policy, which allows no frame.
+    #[must_use]
+    pub fn with_front_channel(mut self, front_channel: FrontChannel) -> Self {
+        self.front_channel = Some(front_channel);
+        self
     }
 
     /// Reads the admin console from `directory`, as [`Pages::load`] reads
@@ -178,6 +198,8 @@ impl Pages {
             varying,
             assets_path,
             policy,
+            signed_out: false,
+            front_channel: None,
         })
     }
 
@@ -187,7 +209,19 @@ impl Pages {
         for path in self.paths.iter().chain(self.varying) {
             router = router.route(path, get(page));
         }
-        router.with_state((self.index.clone(), self.policy))
+        let router = router.with_state((self.index.clone(), self.policy));
+        if self.signed_out {
+            router.merge(
+                Router::new()
+                    .route(SIGNED_OUT_PAGE, get(signed_out_page))
+                    .with_state(SignedOutPage {
+                        index: self.index.clone(),
+                        front_channel: self.front_channel.clone(),
+                    }),
+            )
+        } else {
+            router
+        }
     }
 
     /// The routes of the application's files, to be mounted at the root.

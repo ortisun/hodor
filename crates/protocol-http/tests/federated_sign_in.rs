@@ -351,6 +351,7 @@ async fn world_with(directory: Option<(String, Arc<dyn DirectoryClient>)>) -> Wo
         external: Some(external),
         digest,
         clock: clock.clone(),
+        front_channel: None,
     };
     let router = public_router(
         Arc::new(Tenants {

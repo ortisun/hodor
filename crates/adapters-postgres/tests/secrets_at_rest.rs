@@ -354,6 +354,11 @@ const NOT_SEALED_SECRETS: &[(&str, &str, &str)] = &[
         "the SHA-256 of the address a client registered itself from",
     ),
     (
+        "oauth.frontchannel_logout",
+        "handle_hash",
+        "the SHA-256 of the random handle of a signed-out page's frames, never the handle",
+    ),
+    (
         "authentication.attempt_counter",
         "subject_key",
         "a hash of an identifier or an address",

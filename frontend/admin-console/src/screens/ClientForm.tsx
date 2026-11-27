@@ -83,6 +83,8 @@ export function ClientForm({ current, submit, onClose, text }: Props) {
   const [grants, setGrants] = useState<string[]>(current?.grantTypes ?? ["authorization_code"]);
   const [redirects, setRedirects] = useState((current?.redirectUris ?? []).join("\n"));
   const [afterLogout, setAfterLogout] = useState((current?.postLogoutRedirectUris ?? []).join("\n"));
+  const [frontchannel, setFrontchannel] = useState(current?.frontchannelLogoutUri ?? "");
+  const [frontchannelSession, setFrontchannelSession] = useState(current?.frontchannelLogoutSessionRequired ?? false);
   const [scopes, setScopes] = useState((current?.allowedScopes ?? ["openid"]).join(" "));
   const [principal, setPrincipal] = useState(current?.principal ?? "");
   const [chosenIdentity, setChosenIdentity] = useState<IdentityKind>(
@@ -139,6 +141,8 @@ export function ClientForm({ current, submit, onClose, text }: Props) {
         grantTypes: chosenGrants,
         redirectUris: ofWorkload ? [] : linesOf(redirects),
         postLogoutRedirectUris: ofWorkload ? [] : linesOf(afterLogout),
+        frontchannelLogoutUri: ofWorkload || frontchannel.trim() === "" ? null : frontchannel,
+        frontchannelLogoutSessionRequired: frontchannelSession,
         allowedScopes: scopesOf(scopes),
         principal: ofWorkload ? principal : null,
         spiffeId: identity === "spiffe" ? spiffeId : null,
@@ -273,6 +277,23 @@ export function ClientForm({ current, submit, onClose, text }: Props) {
                 rows={2}
                 width="100%"
               />
+              <TextInput
+                label={text.frontchannelLogoutUriLabel}
+                description={text.frontchannelLogoutUriHint}
+                value={frontchannel}
+                onChange={setFrontchannel}
+                autoComplete="off"
+                autoCapitalize="none"
+                hasSpellCheck={false}
+                width="100%"
+              />
+              {frontchannel.trim() === "" ? null : (
+                <Switch
+                  label={text.frontchannelLogoutSessionRequiredLabel}
+                  value={frontchannelSession}
+                  onChange={setFrontchannelSession}
+                />
+              )}
             </>
           )}
           <TextInput

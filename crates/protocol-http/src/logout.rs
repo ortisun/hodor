@@ -9,6 +9,7 @@
 use crate::authorize::{error_page, redirect_to};
 use crate::interaction::{SESSION_COOKIE, cookie, set_cookie};
 use crate::problem::Problem;
+use crate::signed_out::{FrontChannel, SIGNED_OUT_PAGE, frames_cookie, sign_out_frames};
 use crate::tenant::TenantSlug;
 use axum::body::Bytes;
 use axum::extract::{RawQuery, State};
@@ -39,6 +40,9 @@ pub struct LogoutState {
     pub sessions: SessionService,
     /// The address people reach this installation at, without a path.
     pub public_url: String,
+    /// Front-channel logout: the frames made when a session ends here at
+    /// once. `None` tells no client through the browser.
+    pub front_channel: Option<FrontChannel>,
 }
 
 impl std::fmt::Debug for LogoutState {
@@ -110,6 +114,27 @@ fn logout_cookie(slug: &str, value: &str, max_age: i64) -> String {
     format!(
         "{LOGOUT_COOKIE}={value}; Path=/t/{slug}; Max-Age={max_age}; HttpOnly; Secure; SameSite=Strict"
     )
+}
+
+/// The cookie that keeps `kept` until the finish. A request without a
+/// return address replaces one kept before.
+fn kept_cookie(slug: &str, kept: Option<&ReturnAddress>) -> String {
+    match kept {
+        Some(kept) => logout_cookie(slug, &kept_value(kept), ASKING_SECONDS),
+        None => logout_cookie(slug, "", 0),
+    }
+}
+
+/// A page of the tenant's, with the languages the request asked for.
+fn with_locales(page: &str, locales: Option<&str>) -> String {
+    let Some(locales) = locales else {
+        return page.to_owned();
+    };
+    let query = form_urlencoded::Serializer::new(String::new())
+        .append_pair("ui_locales", locales)
+        .finish();
+    let separator = if page.contains('?') { '&' } else { '?' };
+    format!("{page}{separator}{query}")
 }
 
 fn forget_session(response: &mut Response, slug: &str) {
@@ -201,7 +226,27 @@ async fn logout(
             {
                 return Problem::from(error).into_response();
             }
-            let mut response = back(slug, request.return_to.as_ref());
+            let handle =
+                sign_out_frames(state.front_channel.as_ref(), tenant, slug, session.id()).await;
+            let mut response = if handle.is_some() {
+                // The clients are told through the signed-out page first,
+                // which then comes back to the finish; the return address
+                // waits in the logout cookie, as when the person is asked.
+                let mut response = redirect_to_path(&with_locales(
+                    &format!("/t/{slug}{SIGNED_OUT_PAGE}?continue=logout"),
+                    request.ui_locales.as_deref(),
+                ));
+                set_cookie(
+                    &mut response,
+                    &kept_cookie(slug, request.return_to.as_ref()),
+                );
+                response
+            } else {
+                back(slug, request.return_to.as_ref())
+            };
+            if state.front_channel.is_some() {
+                set_cookie(&mut response, &frames_cookie(slug, handle.as_ref()));
+            }
             forget_session(&mut response, slug);
             response
         }
@@ -209,23 +254,14 @@ async fn logout(
             back(slug, request.return_to.as_ref())
         }
         (LogoutDecision::Ask, _) => {
-            let mut query = form_urlencoded::Serializer::new(String::new());
-            if let Some(locales) = &request.ui_locales {
-                query.append_pair("ui_locales", locales);
-            }
-            let query = query.finish();
-            let page = if query.is_empty() {
-                format!("/t/{slug}/account/sign-out")
-            } else {
-                format!("/t/{slug}/account/sign-out?{query}")
-            };
-            let mut response = redirect_to_path(&page);
-            // A request without a return address replaces one kept before.
-            let cookie = match &request.return_to {
-                Some(kept) => logout_cookie(slug, &kept_value(kept), ASKING_SECONDS),
-                None => logout_cookie(slug, "", 0),
-            };
-            set_cookie(&mut response, &cookie);
+            let mut response = redirect_to_path(&with_locales(
+                &format!("/t/{slug}/account/sign-out"),
+                request.ui_locales.as_deref(),
+            ));
+            set_cookie(
+                &mut response,
+                &kept_cookie(slug, request.return_to.as_ref()),
+            );
             response
         }
     }

@@ -199,6 +199,16 @@ export function ClientScreen({ id, client, me, text, go, path, say }: ScreenProp
                 </VStack>
               </MetadataListItem>
             ) : null}
+            {found.frontchannelLogoutUri !== null ? (
+              <MetadataListItem label={text.frontchannelLogoutUriLabel}>
+                <VStack gap={1}>
+                  <span className="console-mono console-wrap">{found.frontchannelLogoutUri}</span>
+                  <Text type="supporting" color="secondary">
+                    {text.frontchannelLogoutUriHint}
+                  </Text>
+                </VStack>
+              </MetadataListItem>
+            ) : null}
             <MetadataListItem label={text.allowedScopesLabel}>
               <span className="console-mono">{found.allowedScopes.join(" ")}</span>
             </MetadataListItem>

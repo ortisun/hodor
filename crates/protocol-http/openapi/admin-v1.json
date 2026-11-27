@@ -13916,6 +13916,8 @@
           "request_uris",
           "backchannel_logout_uri",
           "backchannel_logout_session_required",
+          "frontchannel_logout_uri",
+          "frontchannel_logout_session_required",
           "subject_type",
           "sector_identifier_uri",
           "jwks_uri",
@@ -14081,6 +14083,18 @@
           "backchannel_logout_session_required": {
             "type": "boolean",
             "description": "Whether the client needs `sid` in its logout tokens; `true` only with `backchannel_logout_uri`. Hodor puts `sid` in every logout token."
+          },
+          "frontchannel_logout_uri": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "maxLength": 2000,
+            "description": "The address Hodor's signed-out page loads in a hidden frame, with `iss` and `sid`, when a session the client signed a person in with ends in the person's browser (`frontchannel_logout_uri` of OpenID Connect Front-Channel Logout): only for a client with `authorization_code`, checked as a redirect address is, HTTPS or plain HTTP to `127.0.0.1` or `[::1]`, at most 2000 characters, and on the scheme, host and port of one of the client's redirect addresses."
+          },
+          "frontchannel_logout_session_required": {
+            "type": "boolean",
+            "description": "Whether the client needs `iss` and `sid` in the address of its frame; `true` only with `frontchannel_logout_uri`. Hodor puts both in every frame's address."
           },
           "subject_type": {
             "type": "string",
@@ -14442,6 +14456,16 @@
             "description": "Whether the client needs `sid` in its logout tokens; `true` only with `backchannel_logout_uri`. Hodor puts `sid` in every logout token.",
             "default": false
           },
+          "frontchannel_logout_uri": {
+            "type": "string",
+            "maxLength": 2000,
+            "description": "The address Hodor's signed-out page loads in a hidden frame, with `iss` and `sid`, when a session the client signed a person in with ends in the person's browser (`frontchannel_logout_uri` of OpenID Connect Front-Channel Logout): only for a client with `authorization_code`, checked as a redirect address is, HTTPS or plain HTTP to `127.0.0.1` or `[::1]`, at most 2000 characters, and on the scheme, host and port of one of the client's redirect addresses."
+          },
+          "frontchannel_logout_session_required": {
+            "type": "boolean",
+            "description": "Whether the client needs `iss` and `sid` in the address of its frame; `true` only with `frontchannel_logout_uri`. Hodor puts both in every frame's address.",
+            "default": false
+          },
           "subject_type": {
             "type": "string",
             "enum": [
@@ -14651,6 +14675,18 @@
           "backchannel_logout_session_required": {
             "type": "boolean",
             "description": "Whether the client needs `sid` in its logout tokens; `true` only with `backchannel_logout_uri`. Hodor puts `sid` in every logout token."
+          },
+          "frontchannel_logout_uri": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "maxLength": 2000,
+            "description": "The address Hodor's signed-out page loads in a hidden frame, with `iss` and `sid`, when a session the client signed a person in with ends in the person's browser (`frontchannel_logout_uri` of OpenID Connect Front-Channel Logout): only for a client with `authorization_code`, checked as a redirect address is, HTTPS or plain HTTP to `127.0.0.1` or `[::1]`, at most 2000 characters, and on the scheme, host and port of one of the client's redirect addresses. `null` removes it."
+          },
+          "frontchannel_logout_session_required": {
+            "type": "boolean",
+            "description": "Whether the client needs `iss` and `sid` in the address of its frame; `true` only with `frontchannel_logout_uri`. Hodor puts both in every frame's address."
           },
           "subject_type": {
             "type": "string",

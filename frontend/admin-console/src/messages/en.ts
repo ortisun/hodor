@@ -445,6 +445,10 @@ export const en = {
   redirectUrisHint: "One per line. A person is sent back only to an address written here, character for character.",
   postLogoutRedirectUrisLabel: "Addresses after signing out",
   postLogoutRedirectUrisHint: "One per line. Where the application may send a person back to after signing out at Hodor, character for character.",
+  frontchannelLogoutUriLabel: "Front-channel logout address",
+  frontchannelLogoutUriHint:
+    "Optional. Loaded in a hidden frame of the person's browser when they sign out there, on the site of one of the redirect addresses. A session an administrator ends has no browser to load it in: the application is then told only through its back-channel logout address.",
+  frontchannelLogoutSessionRequiredLabel: "Requires iss and sid in that address",
   allowedScopesLabel: "Scopes it may ask for",
   allowedScopesHint: "Separated by spaces, such as openid email.",
   pkceLabel: "Code challenge (PKCE)",

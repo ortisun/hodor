@@ -15,6 +15,7 @@ testing = ["hodor-kernel/testing", "hodor-keys/testing"]
 [dependencies]
 async-trait.workspace = true
 base64.workspace = true
+form_urlencoded.workspace = true
 hodor-identity.workspace = true
 hodor-kernel.workspace = true
 hodor-keys.workspace = true

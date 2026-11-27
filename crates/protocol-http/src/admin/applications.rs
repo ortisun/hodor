@@ -418,6 +418,9 @@ struct ClientBody {
     /// Where its logout tokens are sent, or `null`.
     backchannel_logout_uri: Option<String>,
     backchannel_logout_session_required: bool,
+    /// The address the signed-out page loads in a frame, or `null`.
+    frontchannel_logout_uri: Option<String>,
+    frontchannel_logout_session_required: bool,
     /// `public` or `pairwise`.
     subject_type: &'static str,
     /// The sector identifier address of a pairwise client, or `null`.
@@ -490,6 +493,8 @@ impl From<&Client> for ClientBody {
             request_uris: settings.request_uris.clone(),
             backchannel_logout_uri: settings.backchannel_logout_uri.clone(),
             backchannel_logout_session_required: settings.backchannel_logout_session_required,
+            frontchannel_logout_uri: settings.frontchannel_logout_uri.clone(),
+            frontchannel_logout_session_required: settings.frontchannel_logout_session_required,
             subject_type: settings.subject_type.as_str(),
             sector_identifier_uri: settings.sector_identifier_uri.clone(),
             jwks_uri: settings.jwks_uri.clone(),
@@ -583,6 +588,8 @@ struct NewClientBody {
     request_uris: Option<Vec<String>>,
     backchannel_logout_uri: Option<String>,
     backchannel_logout_session_required: Option<bool>,
+    frontchannel_logout_uri: Option<String>,
+    frontchannel_logout_session_required: Option<bool>,
     subject_type: Option<String>,
     sector_identifier_uri: Option<String>,
     jwks_uri: Option<String>,
@@ -640,6 +647,10 @@ struct ClientChangesBody {
     #[serde(default, deserialize_with = "present")]
     backchannel_logout_uri: Option<Option<String>>,
     backchannel_logout_session_required: Option<bool>,
+    /// Left out: unchanged; `null`: removed; an address: replaced.
+    #[serde(default, deserialize_with = "present")]
+    frontchannel_logout_uri: Option<Option<String>>,
+    frontchannel_logout_session_required: Option<bool>,
     subject_type: Option<String>,
     /// Left out: unchanged; `null`: removed; an address: replaced.
     #[serde(default, deserialize_with = "present")]
@@ -870,6 +881,9 @@ async fn create_client(
             settings.backchannel_logout_uri = new.backchannel_logout_uri;
             settings.backchannel_logout_session_required =
                 new.backchannel_logout_session_required.unwrap_or(false);
+            settings.frontchannel_logout_uri = new.frontchannel_logout_uri;
+            settings.frontchannel_logout_session_required =
+                new.frontchannel_logout_session_required.unwrap_or(false);
             if let Some(subject_type) = new.subject_type {
                 settings.subject_type = SubjectType::parse(&subject_type).map_err(failed)?;
             }
@@ -1024,6 +1038,12 @@ async fn change_client(
                 backchannel_logout_session_required: changes
                     .backchannel_logout_session_required
                     .unwrap_or(now.backchannel_logout_session_required),
+                frontchannel_logout_uri: changes
+                    .frontchannel_logout_uri
+                    .unwrap_or(now.frontchannel_logout_uri),
+                frontchannel_logout_session_required: changes
+                    .frontchannel_logout_session_required
+                    .unwrap_or(now.frontchannel_logout_session_required),
                 subject_type: match changes.subject_type {
                     Some(given) => SubjectType::parse(&given).map_err(failed)?,
                     None => now.subject_type,

@@ -18,14 +18,15 @@ use hodor_adapters_postgres::{
     PgAuthorizationRequestStore, PgBundleStore, PgClaimMapperStore, PgClientAssertionStore,
     PgClientRegistrationStore, PgClientStore, PgConsentStore, PgDecisionLogStore, PgDeliveryStore,
     PgDeprovisioningPolicy, PgEmailSignInStore, PgEndpointStore, PgEngineBindingStore,
-    PgGrantStore, PgGroupPolicy, PgGroupRepository, PgInitialAccessTokenStore,
-    PgInstanceStatusStore, PgInstanceStore, PgIntermediateStore, PgInvitationRepository,
-    PgKeyStore, PgLinkStore, PgMessageQueue, PgNativeRoleStore, PgOrganizationRepository,
-    PgPairwiseSecretStore, PgPasswordStore, PgPendingAuthorizationStore, PgPolicyVersionStore,
-    PgProviderStore, PgProvisionedGroupRepository, PgProvisionedUserRepository, PgPublicationStore,
-    PgRecoveryCodeStore, PgRefreshTokenStore, PgResourceServerStore, PgRoleAssignmentStore,
-    PgSealingStateStore, PgSessionStore, PgSimulationStore, PgTenantDirectory, PgTenantRepository,
-    PgTotpStore, PgTransactionStore, PgTrustDomainStore, PgUploadedDecisionStore, PgUserRepository,
+    PgFrontChannelLogoutStore, PgGrantStore, PgGroupPolicy, PgGroupRepository,
+    PgInitialAccessTokenStore, PgInstanceStatusStore, PgInstanceStore, PgIntermediateStore,
+    PgInvitationRepository, PgKeyStore, PgLinkStore, PgMessageQueue, PgNativeRoleStore,
+    PgOrganizationRepository, PgPairwiseSecretStore, PgPasswordStore, PgPendingAuthorizationStore,
+    PgPolicyVersionStore, PgProviderStore, PgProvisionedGroupRepository,
+    PgProvisionedUserRepository, PgPublicationStore, PgRecoveryCodeStore, PgRefreshTokenStore,
+    PgResourceServerStore, PgRoleAssignmentStore, PgSealingStateStore, PgSessionClients,
+    PgSessionStore, PgSimulationStore, PgTenantDirectory, PgTenantRepository, PgTotpStore,
+    PgTransactionStore, PgTrustDomainStore, PgUploadedDecisionStore, PgUserRepository,
     PgVerificationTokenStore, PgWebAuthnStore, PgWorkloadRepository,
 };
 use hodor_audit::api::AuditService;
@@ -62,14 +63,15 @@ use hodor_notification::api::Notifier;
 use hodor_oauth::api::{
     AccessTokenRegister, ApplicationPorts, ApplicationService, AuthorizationCodePorts,
     AuthorizationCodeService, ClaimMapperPorts, ClaimMapperService, ClaimMapping, ClientKeySets,
-    ClientRegistrationPorts, ClientRegistrationService, ConsentPorts, ConsentService, LogoutPorts,
-    LogoutService, PairwisePorts, PairwiseSubjects, ResourceAccessPorts, ResourceAccessService,
-    TokenPorts, TokenService, UserInfoPorts, UserInfoService, WorkloadIdentity, WorkloadTokens,
+    ClientRegistrationPorts, ClientRegistrationService, ConsentPorts, ConsentService,
+    FrontChannelLogoutPorts, FrontChannelLogoutService, LogoutPorts, LogoutService, PairwisePorts,
+    PairwiseSubjects, ResourceAccessPorts, ResourceAccessService, TokenPorts, TokenService,
+    UserInfoPorts, UserInfoService, WorkloadIdentity, WorkloadTokens,
 };
 use hodor_observability::{LogFormat, Telemetry};
 use hodor_protocol_http::{
     AdminState, ApiKeyAccess, AuthorizationApiState, AuthorizationState, ConsentState,
-    ConsoleState, DiscoveryState, ForwardedHeader, Health, IdentityHeader, InteractionState,
+    ConsoleState, DiscoveryState, ForwardedHeader, FrontChannel, Health, IdentityHeader, InteractionState,
     InvitationState, Limits, LogoutState, Pages, ReadinessCheck, RegistrationState, ResolvedTenant,
     ScimState, TenantResolver, TenantStatus as HttpTenantStatus, TokenState, TrustedProxies,
     UserInfoState, admin_routes, authority_bundle_routes, authorization_api_routes,
@@ -365,7 +367,7 @@ async fn run(config: Config) -> Result<(), Box<dyn Error>> {
     // Checked now, so that a setting that cannot be used stops the server
     // at startup.
     let authority = authority(&config, &database)?;
-    let (interaction, invitations) = interaction(&config, &database)?;
+    let (mut interaction, invitations) = interaction(&config, &database)?;
     let mut authorization = authorization(&config, &database, interaction.authentication.clone())?;
     // One set of clients' keys at their addresses for the server, shared by
     // the authorization and the token endpoints.
@@ -394,6 +396,7 @@ async fn run(config: Config) -> Result<(), Box<dyn Error>> {
     }
     // SCIM ends a deprovisioned person's sessions and grants with these.
     let revoker = access_revoker(&database);
+    let mut front_channel = None;
     // The token endpoint signs, besides its own, the ID tokens that come
     // through the browser; without the tenants' keys there is neither.
     let tokens = match (&keys, &config.secret_keys) {
@@ -415,12 +418,24 @@ async fn run(config: Config) -> Result<(), Box<dyn Error>> {
     if let (Some(keys), Some(setting), Some(tokens)) = (&keys, &config.secret_keys, tokens) {
         oauth2 = oauth2.merge(token_routes(tokens));
         oauth2 = oauth2.merge(userinfo_routes(userinfo(&config, &database, keys.clone())));
+        // Clients are told through the browser only where ID tokens are
+        // issued: no client knows a session otherwise.
+        let told = FrontChannel {
+            service: front_channel_logout(
+                &database,
+                pairwise_subjects(&database, secret_box(setting, &database)?),
+            ),
+            public_url: config.public_url.clone(),
+        };
+        interaction.front_channel = Some(told.clone());
+        front_channel = Some(told.clone());
         oauth2 = oauth2.merge(logout_routes(logout(
             &config,
             &database,
             keys.clone(),
             authorization.sessions.clone(),
             pairwise_subjects(&database, secret_box(setting, &database)?),
+            told,
         )));
     }
     let mut tenant_routes = axum::Router::new()
@@ -509,7 +524,10 @@ async fn run(config: Config) -> Result<(), Box<dyn Error>> {
     }
     match &config.pages_directory {
         Some(directory) => {
-            let pages = Pages::load(directory)?;
+            let mut pages = Pages::load(directory)?;
+            if let Some(front_channel) = &front_channel {
+                pages = pages.with_front_channel(front_channel.clone());
+            }
             tenant_routes = tenant_routes.merge(pages.page_routes());
             site_routes = site_routes.merge(pages.asset_routes());
             tracing::info!(directory = %directory.display(), "serving the hosted pages");
@@ -786,6 +804,7 @@ fn interaction(
             external,
             digest,
             clock,
+            front_channel: None,
         },
         invitations,
     ))
@@ -1176,8 +1195,10 @@ fn logout(
     keys: KeyService,
     sessions: SessionService,
     pairwise: PairwiseSubjects,
+    front_channel: FrontChannel,
 ) -> LogoutState {
     LogoutState {
+        front_channel: Some(front_channel),
         logout: LogoutService::new(LogoutPorts {
             units_of_work: Arc::new(database.clone()),
             applications: Arc::new(PgApplicationStore),
@@ -1189,6 +1210,25 @@ fn logout(
         sessions,
         public_url: config.public_url.clone(),
     }
+}
+
+/// Builds the use cases of front-channel logout: the frames that tell, through
+/// the person's browser, the clients of a session that ended there.
+fn front_channel_logout(
+    database: &Database,
+    pairwise: PairwiseSubjects,
+) -> FrontChannelLogoutService {
+    FrontChannelLogoutService::new(FrontChannelLogoutPorts {
+        units_of_work: Arc::new(database.clone()),
+        sessions: Arc::new(PgSessionClients),
+        clients: Arc::new(PgClientStore),
+        applications: Arc::new(PgApplicationStore),
+        store: Arc::new(PgFrontChannelLogoutStore),
+        digest: Arc::new(Sha256Digest),
+        random: Arc::new(OsRandom),
+        clock: Arc::new(SystemClock),
+    })
+    .with_pairwise_subjects(pairwise)
 }
 
 /// The hosts that may be reached at a private address and over plain

@@ -843,6 +843,12 @@ pub fn discovery_document(issuer: &str, acr_values: &[&str], pushed_required: bo
         // carries `sid`.
         "backchannel_logout_supported": true,
         "backchannel_logout_session_supported": true,
+        // Every client with a front-channel logout address is loaded in a
+        // frame of the signed-out page when a session it signed a person
+        // in with ends in the browser, and every frame carries `iss` and
+        // `sid`.
+        "frontchannel_logout_supported": true,
+        "frontchannel_logout_session_supported": true,
     })
 }
 

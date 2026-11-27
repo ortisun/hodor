@@ -7,6 +7,7 @@
 
 use crate::problem::Problem;
 use crate::request::ClientAddress;
+use crate::signed_out::{FrontChannel, keep_frames, signed_out_frames};
 use crate::tenant::TenantSlug;
 use axum::body::Bytes;
 use axum::extract::{RawPathParams, Request, State};
@@ -58,6 +59,10 @@ pub struct InteractionState {
     pub digest: Arc<dyn Digest>,
     /// For telling the browser how long the session cookie may live.
     pub clock: Arc<dyn Clock>,
+    /// Front-channel logout: the frames made when a session ends in this
+    /// browser. `None` when this installation issues no ID token: no
+    /// client knows a session then.
+    pub front_channel: Option<FrontChannel>,
 }
 
 impl std::fmt::Debug for InteractionState {
@@ -103,6 +108,7 @@ pub fn interaction_routes(state: InteractionState) -> Router {
             post(sign_in_with_directory),
         )
         .route("/session", get(current_session).delete(sign_out))
+        .route("/signed-out", get(frames_of_sign_out))
         .route("/sessions", get(list_sessions).delete(end_other_sessions))
         .route("/sessions/{session_id}", delete(end_session))
         .route("/webauthn/registrations", post(begin_webauthn_registration))
@@ -1515,10 +1521,28 @@ async fn sign_out(
         Ok(()) => {
             let mut response = StatusCode::NO_CONTENT.into_response();
             forget_session(&mut response, &slug);
+            keep_frames(
+                state.front_channel.as_ref(),
+                &tenant,
+                &slug,
+                person.session.id(),
+                &mut response,
+            )
+            .await;
             response
         }
         Err(error) => Problem::from(error).into_response(),
     }
+}
+
+/// The frames the signed-out page loads. Needs no session: the person has
+/// signed out by then.
+async fn frames_of_sign_out(
+    State(state): State<InteractionState>,
+    Extension(tenant): Extension<TenantContext>,
+    headers: HeaderMap,
+) -> Response {
+    signed_out_frames(state.front_channel.as_ref(), &tenant, &headers).await
 }
 
 async fn list_sessions(
@@ -1597,7 +1621,17 @@ async fn end_session(
         Ok(()) => {
             let mut response = StatusCode::NO_CONTENT.into_response();
             if id == person.session.id() {
+                // The same as signing out: this browser's session ended
+                // here, so its clients are told through it.
                 forget_session(&mut response, &slug);
+                keep_frames(
+                    state.front_channel.as_ref(),
+                    &tenant,
+                    &slug,
+                    id,
+                    &mut response,
+                )
+                .await;
             }
             response
         }

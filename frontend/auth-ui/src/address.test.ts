@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   continuationOf,
+  continuesLogout,
   loginHintOf,
   noticeOf,
   pathOf,
@@ -26,6 +27,15 @@ describe("placeOf", () => {
     expect(placeOf("/t/acme/account/")).toEqual({ tenant: "acme", page: "account" });
     expect(placeOf("/t/acme/account/sign-out")).toEqual({ tenant: "acme", page: "sign-out" });
     expect(placeOf("/t/acme/account/sign-in-link")).toEqual({ tenant: "acme", page: "sign-in-link" });
+    expect(placeOf("/t/acme/account/signed-out")).toEqual({ tenant: "acme", page: "signed-out" });
+  });
+
+  it("goes on to the finish of a logout only when the address says so in its own words", () => {
+    expect(continuesLogout("?continue=logout")).toBe(true);
+    expect(continuesLogout("?continue=logout&ui_locales=pt-BR")).toBe(true);
+    for (const search of ["", "?continue=authorization", "?continue=https%3A%2F%2Fevil.example.net", "?next=logout"]) {
+      expect(continuesLogout(search), search).toBe(false);
+    }
   });
 
   it("knows the tenant but no page for a name it does not have", () => {

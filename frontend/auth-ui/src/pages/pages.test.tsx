@@ -16,6 +16,7 @@ import { ProfilePage } from "./ProfilePage";
 import { SecurityPage } from "./SecurityPage";
 import { SignInLinkPage } from "./SignInLinkPage";
 import { SignInPage } from "./SignInPage";
+import { SignedOutPage } from "./SignedOutPage";
 import { SignOutPage } from "./SignOutPage";
 
 afterEach(cleanup);
@@ -823,8 +824,8 @@ describe("the account page", () => {
     await waitFor(() => expect(go).toHaveBeenCalledWith("sign-in"));
   });
 
-  it("signs out and says so on the sign-in page", async () => {
-    const { props, sent, go, user } = page({
+  it("signs out and goes to tell the applications, which then says so on the sign-in page", async () => {
+    const { props, sent, leave, user } = page({
       "GET /session": [session],
       "GET /consents": [json(200, { consents: [] })],
       "DELETE /session": [empty(204)],
@@ -832,7 +833,7 @@ describe("the account page", () => {
     render(<AccountPage {...props} />);
     await user.click(await screen.findByRole("button", { name: en.signOut }));
 
-    await waitFor(() => expect(go).toHaveBeenCalledWith("sign-in", "signed-out"));
+    await waitFor(() => expect(leave).toHaveBeenCalledWith("/t/acme/account/signed-out"));
     expect(sent.at(-1)).toMatchObject({ method: "DELETE", path: "/session", csrfToken: "of-the-session" });
   });
 
@@ -1120,6 +1121,7 @@ describe("the sign-out page", () => {
       csrf_token: "of-the-session",
     });
   const finish = "/t/acme/oauth2/logout/finish";
+  const signedOut = "/t/acme/account/signed-out?continue=logout";
 
   it("goes on at once when nobody is signed in", async () => {
     const { props, leave } = page({ "GET /session": [nobody] });
@@ -1128,14 +1130,14 @@ describe("the sign-out page", () => {
     expect(screen.queryByRole("button", { name: en.signOut })).toBeNull();
   });
 
-  it("asks, signs out and goes on to the finish", async () => {
+  it("asks, signs out and goes on to tell the applications before the finish", async () => {
     const { props, sent, leave, user } = page({ "GET /session": [session], "DELETE /session": [empty(204)] });
     render(<SignOutPage {...props} />);
     expect(await screen.findByText(en.signOutQuestion("acme"))).toBeTruthy();
     expect(leave).not.toHaveBeenCalled();
 
     await user.click(screen.getByRole("button", { name: en.signOut }));
-    await waitFor(() => expect(leave).toHaveBeenCalledWith(finish));
+    await waitFor(() => expect(leave).toHaveBeenCalledWith(signedOut));
     expect(sent.at(-1)).toMatchObject({ method: "DELETE", path: "/session", csrfToken: "of-the-session" });
   });
 
@@ -1161,6 +1163,73 @@ describe("the sign-out page", () => {
     await user.click(await screen.findByRole("button", { name: en.signOut }));
     expect((await alertShown()).textContent).toBe(en.unreachable);
     expect(leave).not.toHaveBeenCalled();
+  });
+});
+
+describe("the signed-out page", () => {
+  const frames = (...addresses: string[]) => () => json(200, { frames: addresses });
+  const payroll = "https://payroll.example.com/fc?iss=https%3A%2F%2Fid.example.com%2Ft%2Facme&sid=s-1";
+  const reports = "https://reports.example.com/fc?iss=https%3A%2F%2Fid.example.com%2Ft%2Facme&sid=s-2";
+  const loadedFrames = () => Array.from(document.querySelectorAll("iframe"));
+
+  it("goes on to the sign-in page at once when there is no application to tell", async () => {
+    const { props, go, leave } = page({ "GET /signed-out": [frames()] });
+    render(<SignedOutPage {...props} continuesLogout={false} />);
+    await waitFor(() => expect(go).toHaveBeenCalledWith("sign-in", "signed-out"));
+    expect(leave).not.toHaveBeenCalled();
+    expect(loadedFrames()).toHaveLength(0);
+  });
+
+  it("goes on to the finish of a logout at once, and when the frames cannot be read", async () => {
+    const { props, leave } = page({ "GET /signed-out": [unreachable] });
+    render(<SignedOutPage {...props} continuesLogout />);
+    await waitFor(() => expect(leave).toHaveBeenCalledWith("/t/acme/oauth2/logout/finish"));
+  });
+
+  it("loads each address the server kept in a hidden, sandboxed frame and goes on once all have loaded", async () => {
+    const { props, sent, leave, go } = page({ "GET /signed-out": [frames(payroll, reports)] });
+    render(<SignedOutPage {...props} continuesLogout />);
+    expect(await screen.findByText(en.signedOutTelling)).toBeTruthy();
+    await waitFor(() => expect(loadedFrames()).toHaveLength(2));
+    const [first, second] = loadedFrames();
+    expect(first?.getAttribute("src")).toBe(payroll);
+    expect(second?.getAttribute("src")).toBe(reports);
+    for (const frame of loadedFrames()) {
+      expect(frame.getAttribute("sandbox")).toBe("allow-scripts allow-same-origin");
+      expect(frame.getAttribute("title")).toBe(en.signedOutFrameTitle);
+      expect(frame.getAttribute("aria-hidden")).toBe("true");
+      expect(frame.className).toBe("signed-out-frame");
+    }
+    expect(sent).toEqual([expect.objectContaining({ method: "GET", path: "/signed-out" })]);
+
+    first?.dispatchEvent(new Event("load"));
+    expect(leave).not.toHaveBeenCalled();
+    second?.dispatchEvent(new Event("load"));
+    await waitFor(() => expect(leave).toHaveBeenCalledWith("/t/acme/oauth2/logout/finish"));
+    expect(leave).toHaveBeenCalledTimes(1);
+    expect(go).not.toHaveBeenCalled();
+  });
+
+  it("goes on after the wait when a frame never loads, and only once", async () => {
+    const { props, go } = page({ "GET /signed-out": [frames(payroll, reports)] });
+    render(<SignedOutPage {...props} continuesLogout={false} waitMs={50} />);
+    await waitFor(() => expect(loadedFrames()).toHaveLength(2));
+    loadedFrames()[0]?.dispatchEvent(new Event("load"));
+    await waitFor(() => expect(go).toHaveBeenCalledWith("sign-in", "signed-out"));
+    loadedFrames()[1]?.dispatchEvent(new Event("load"));
+    expect(go).toHaveBeenCalledTimes(1);
+  });
+
+  it("waits five seconds at most", async () => {
+    const { FRAMES_WAIT_MS } = await import("./SignedOutPage");
+    expect(FRAMES_WAIT_MS).toBe(5000);
+  });
+
+  it("says it in Brazilian Portuguese", async () => {
+    const { props } = page({ "GET /signed-out": [frames(payroll)] });
+    render(<SignedOutPage {...props} text={ptBR} continuesLogout />);
+    expect(await screen.findByText(ptBR.signedOutTelling)).toBeTruthy();
+    await waitFor(() => expect(loadedFrames()[0]?.getAttribute("title")).toBe(ptBR.signedOutFrameTitle));
   });
 });
 

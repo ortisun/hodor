@@ -245,7 +245,7 @@ The files of the application are the same for all tenants and contain nothing se
 | `require-trusted-types-for` | `'script'` | Text can never be turned into markup or script by assigning it to the page |
 | `trusted-types` | `'none'` | No exception to the line above can be created |
 
-**The signed-out page** is sent with this policy and one directive more, for that answer only: `frame-src`, naming the site (scheme, host and port) of each frame the server kept for it. Without frames there is no `frame-src`, and no frame can be loaded ([the policy of the signed-out page](contexts/oauth.md#the-policy-of-the-signed-out-page)).
+**The signed-out page** is sent with this policy and one directive more, for that answer only: `frame-src`, naming the site (scheme, host and port) of each frame the server kept for it. Without frames there is no `frame-src`, and no frame can be loaded ([the policy of the signed-out page](contexts/oauth.md#the-policy-of-the-signed-out-page)). Being made for one browser's sign-out, it is sent with `Cache-Control: no-store` instead of `no-cache`.
 
 The other headers every response carries stay as they are: `X-Content-Type-Options`, `X-Frame-Options`, `Referrer-Policy: no-referrer` and `Strict-Transport-Security`.
 

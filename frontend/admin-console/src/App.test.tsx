@@ -510,6 +510,12 @@ describe("the applications", () => {
       within(dialog).getByLabelText(en.postLogoutRedirectUrisLabel),
       "https://billing.example.com/signed-out",
     );
+    expect(within(dialog).getByText(en.frontchannelLogoutUriHint)).toBeTruthy();
+    await user.type(
+      within(dialog).getByLabelText(en.frontchannelLogoutUriLabel),
+      "https://billing.example.com/frontchannel-logout",
+    );
+    await user.click(within(dialog).getByRole("switch", { name: en.frontchannelLogoutSessionRequiredLabel }));
     await user.click(within(dialog).getByRole("button", { name: en.addClient }));
 
     const shown = await screen.findByTestId("shown-once");
@@ -521,6 +527,8 @@ describe("the applications", () => {
       grant_types: ["authorization_code"],
       redirect_uris: ["https://billing.example.com/callback"],
       post_logout_redirect_uris: ["https://billing.example.com/signed-out"],
+      frontchannel_logout_uri: "https://billing.example.com/frontchannel-logout",
+      frontchannel_logout_session_required: true,
       allowed_scopes: ["openid"],
       tls_client_certificate_bound_access_tokens: false,
     });
@@ -711,6 +719,8 @@ describe("the page of a client", () => {
       grant_types: ["client_credentials"],
       redirect_uris: [],
       post_logout_redirect_uris: [],
+      frontchannel_logout_uri: null,
+      frontchannel_logout_session_required: false,
       allowed_scopes: ["openid"],
       principal: EXPORT,
       spiffe_id: SPIFFE_ID,
@@ -765,6 +775,8 @@ describe("the page of a client", () => {
       grant_types: ["client_credentials"],
       redirect_uris: [],
       post_logout_redirect_uris: [],
+      frontchannel_logout_uri: null,
+      frontchannel_logout_session_required: false,
       allowed_scopes: ["openid"],
       principal: EXPORT,
       linkerd_identity: LINKERD,

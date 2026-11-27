@@ -25,7 +25,9 @@ words (comment on `index.ts:describe`).
   claim of `CLAIM_FIELDS`, the field's own name when unknown),
   `claimHint(field)` (how to write `birthdate`, `zoneinfo`, the three
   addresses and `phone_number`, `null` for the others) and
-  `claimInvalid(label)`.
+  `claimInvalid(label)`. The signed-out page has `signedOutTitle`,
+  `signedOutTelling` and `signedOutFrameTitle`, the title of each of its
+  frames.
 - `en.ts:Messages` - `typeof en`, the shape every language must have.
 - `pt-BR.ts:ptBR` - the Brazilian Portuguese catalog (`locale: "pt-BR"`),
   typed as `Messages`, with the same keys as `en`.

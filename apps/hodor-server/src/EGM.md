@@ -56,6 +56,14 @@ Routers, as assembled in `run`:
   with `with_id_token_hints` when `keys` built a `KeyService`, and compares
   a pairwise client's hint through `with_pairwise_subjects` when
   `HODOR_SECRET_KEYS` is set; without keys a hint is refused (Issue-125).
+- Front-channel logout, only when `keys` built a `KeyService` and
+  `HODOR_SECRET_KEYS` is set, as for the token and end-session endpoints:
+  a `FrontChannel` over the `FrontChannelLogoutService` of
+  `front_channel_logout` and `HODOR_PUBLIC_URL` is given to the
+  `InteractionState` (`front_channel`), to the `LogoutState` of `logout`
+  and to the hosted pages (`Pages::with_front_channel`). Without it no
+  client is told through the browser, and the signed-out page is sent with
+  the pages' own policy, which allows no frame.
 - `/api/v1/admin` nests `hodor_protocol_http::admin_routes` with the
   `AdminState` built by `administration`; its `trust_domains` is the
   `TrustDomainService` of `trust_domains`, over `PgTrustDomainStore`, whose
@@ -129,7 +137,8 @@ Routers, as assembled in `run`:
   merged into the site routes, with `PgInstanceStore`, `PgBundleStore`,
   `PgInstanceStatusStore` and `PgUploadedDecisionStore`. The server never
   holds the key that signs bundles: it serves them as published.
-- Hosted pages and the console come from `Pages::load` and
+- Hosted pages and the console come from `Pages::load` (given
+  `with_front_channel` when there is a `FrontChannel`) and
   `Pages::load_console`, merged through `page_routes` and `asset_routes`.
 - The public router is `hodor_protocol_http::public_router`; the operations
   router is `hodor_protocol_http::ops_router(Health)`. Both are served with
@@ -205,8 +214,12 @@ endpoint, with `PgRefreshTokenStore`, `ServerStanding`, the secret box,
 the retry window of `HODOR_REFRESH_RETRY_SECONDS`, `pairwise_subjects`, and
 the `TrustDomainService` of `trust_domains`, to check JWT-SVIDs),
 `pairwise_subjects` (`PairwiseSubjects` over `PgPairwiseSecretStore`, a
-secret box and `AwsLcHmacSha256`, given to the token endpoint and to
-`logout`, the end-session endpoint), `consents` (the
+secret box and `AwsLcHmacSha256`, given to the token endpoint, to
+`logout`, the end-session endpoint, and to `front_channel_logout`),
+`front_channel_logout` (the `FrontChannelLogoutService` over
+`PgSessionClients`, `PgClientStore`, `PgApplicationStore` and
+`PgFrontChannelLogoutStore`, with `Sha256Digest`, `OsRandom` and
+`SystemClock`), `consents` (the
 `ConsentService` over `PgConsentStore`, which the authorization endpoint,
 the consent routes and the administration interface use),
 `administration`,
