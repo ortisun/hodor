@@ -1,0 +1,37 @@
+# Orders protected by Istio, as the service mesh guide writes it: its sidecar checks the tenant's tokens and
+# asks hodor-ext-authz about every request. The demonstration fills in the tenant's issuer, which changes
+# with each run, and its key set, which istiod reads from Hodor.
+#
+#   python3 deploy/demo/service_mesh.py applies it; see docs/operations/quick-start.md.
+
+apiVersion: security.istio.io/v1
+kind: RequestAuthentication
+metadata:
+  name: orders
+  namespace: shop
+spec:
+  selector:
+    matchLabels:
+      app: orders
+  jwtRules:
+    - issuer: ${issuer}
+      jwksUri: ${issuer}/oauth2/jwks
+      audiences:
+        - https://orders.example.com
+      forwardOriginalToken: true
+      outputPayloadToHeader: x-hodor-token-claims
+---
+apiVersion: security.istio.io/v1
+kind: AuthorizationPolicy
+metadata:
+  name: orders-through-hodor
+  namespace: shop
+spec:
+  selector:
+    matchLabels:
+      app: orders
+  action: CUSTOM
+  provider:
+    name: hodor
+  rules:
+    - {}

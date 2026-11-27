@@ -1,0 +1,16 @@
+# The Linkerd Server of Orders: its pods and its port, which Hodor does not know. Once it exists, Linkerd
+# refuses every caller of the port that no policy lets in; the policies are the ones
+# `hodor-cli mesh linkerd-policy` writes from Hodor's roles.
+#
+#   python3 deploy/demo/service_mesh.py applies it; see docs/operations/quick-start.md.
+
+apiVersion: policy.linkerd.io/v1beta3
+kind: Server
+metadata:
+  name: orders-http
+  namespace: shop
+spec:
+  podSelector:
+    matchLabels:
+      app: orders
+  port: http

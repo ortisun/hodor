@@ -299,6 +299,59 @@ jobs:
           kubectl --kubeconfig "$RUNNER_TEMP/linkerd" logs --namespace linkerd deployment/linkerd-identity --all-containers --tail 100
           kubectl --kubeconfig "$RUNNER_TEMP/linkerd" logs --namespace ledger deployment/ledger --all-containers --tail 100
 
+  # The demonstration of Milestone 11, as the quick-start tells an operator to
+  # run it, once for each mesh: a kind cluster with Istio and its ingress
+  # gateway, or one with Envoy Gateway in front of Linkerd, and Hodor and
+  # hodor-ext-authz installed in the mesh with the chart's mesh.provider,
+  # from the images built here. The script makes the cluster; kind, kubectl
+  # and Helm are installed at the versions named.
+  service-mesh:
+    name: Hodor in a service mesh (${{ matrix.mesh }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        mesh: [istio, linkerd]
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: helm/kind-action@1544676c07bb3570fcb70166beaa07c4528fd4aa # v1.15.1
+        with:
+          version: v0.33.0
+          kubectl_version: v1.37.1
+          install_only: true
+      - uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
+        with:
+          version: v4.3.1
+      - name: Build the images
+        run: |
+          docker build --file deploy/docker/Dockerfile --tag hodor:milestone-11 .
+          docker build --file deploy/docker/ext-authz.Dockerfile --tag hodor-ext-authz:milestone-11 .
+      - name: Run the demonstration of Milestone 11
+        run: python3 deploy/demo/service_mesh.py
+        env:
+          HODOR_MESH: ${{ matrix.mesh }}
+      - name: Show what the cluster logged
+        if: failure()
+        env:
+          MESH: ${{ matrix.mesh }}
+        run: |
+          kind get kubeconfig --name "hodor-milestone-11-$MESH" > "$RUNNER_TEMP/kubeconfig"
+          export KUBECONFIG="$RUNNER_TEMP/kubeconfig"
+          kubectl get pods --all-namespaces --output wide
+          kubectl get networkpolicies --all-namespaces
+          kubectl logs --namespace hodor deployment/hodor-server --all-containers --tail 200
+          kubectl logs --namespace hodor deployment/hodor-ext-authz --all-containers --tail 200
+          kubectl logs --namespace shop deployment/orders --all-containers --tail 100
+          if [ "$MESH" = istio ]; then
+            kubectl logs --namespace istio-system deployment/istio-ingressgateway --tail 100
+            kubectl logs --namespace istio-system deployment/istiod --tail 100
+          else
+            kubectl get gateways,httproutes,securitypolicies,referencegrants --all-namespaces --output yaml
+            kubectl logs --namespace envoy-gateway-system deployment/edge-gateway --all-containers --tail 200
+            kubectl logs --namespace envoy-gateway-system deployment/envoy-gateway --tail 100
+          fi
+
   # The Basic OpenID Provider, Config OpenID Provider and Back-Channel OpenID
   # Provider plans of the OpenID conformance suite, against the image; the
   # back-channel logout plan is the acceptance of Issue-100. Then the Basic
@@ -505,6 +558,16 @@ jobs:
             grep -q 'name: HODOR_GATEWAY_IDENTITIES' rendered.yaml
             grep -q -e '127.0.0.6,::6' -e '$(POD_ADDRESSES)' rendered.yaml
           done
+          # mesh.provider puts hodor-ext-authz in the mesh too, and with Linkerd opens port 4143 on it to its
+          # own callers only (Decision 0078).
+          EXT_AUTHZ="--set extAuthz.enabled=true --set extAuthz.tenant=acme --set networkPolicy.enabled=true"
+          helm template hodor "$CHART" --namespace hodor $REQUIRED $EXT_AUTHZ --set mesh.provider=istio > rendered.yaml
+          grep -B1 -A12 'app.kubernetes.io/component: ext-authz' rendered.yaml | grep -q 'sidecar.istio.io/inject: "true"'
+          helm template hodor "$CHART" --namespace hodor $REQUIRED $EXT_AUTHZ $LINKERD > rendered.yaml
+          # The server, the worker and hodor-ext-authz; the migration job is left out by mesh.injectMigration.
+          test "$(grep -c 'linkerd.io/inject: enabled' rendered.yaml)" = 3
+          grep -q 'name: hodor-server-mesh' rendered.yaml
+          grep -q 'name: hodor-ext-authz-mesh' rendered.yaml
           # Inside a mesh with no gateway named, no forwarded address is read.
           helm template hodor "$CHART" --namespace hodor $REQUIRED --set mesh.provider=istio > rendered.yaml
           grep -A1 'name: HODOR_FORWARDED_HEADER' rendered.yaml | grep -q '"none"'

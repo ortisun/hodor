@@ -1,0 +1,29 @@
+# Hodor inside Istio, as the service mesh guide writes it: mesh.provider puts the server, the worker, the
+# migration job and hodor-ext-authz in the mesh, with no label on the namespace; the ingress gateway is
+# named by its identity, so that each client behind it is limited apart; and the network policy lets in
+# only the gateway's namespace, where istiod also reads the tenants' key sets from, and the namespace of
+# the workloads. The stand-in mail server speaks first on port 1025, so Hodor reaches it past its sidecar.
+#
+#   python3 deploy/demo/service_mesh.py installs it with hodor-common.yaml; see docs/operations/quick-start.md.
+
+mesh:
+  provider: istio
+  skipOutboundPorts: [1025]
+gatewayIdentities:
+  - spiffe://cluster.local/ns/istio-system/sa/istio-ingressgateway
+networkPolicy:
+  enabled: true
+  ingressFrom:
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: istio-system
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: shop
+extAuthz:
+  networkPolicy:
+    # Orders' sidecar asks hodor-ext-authz.
+    ingressFrom:
+      - namespaceSelector:
+          matchLabels:
+            kubernetes.io/metadata.name: shop
