@@ -669,10 +669,20 @@ The page goes there, and the authorization endpoint answers the application: wit
       "scopes": ["openid", "email", "invoices:read"],
       "given_at": "2026-11-20T14:03:11Z",
       "expires_at": "2027-11-20T14:03:11Z"
+    },
+    {
+      "client_id": "0193f1d0-7c2e-…",
+      "application": "Partner portal",
+      "scopes": ["openid", "profile"],
+      "given_at": "2026-11-18T09:40:02Z",
+      "expires_at": "2027-11-18T09:40:02Z",
+      "sign_in_uri": "https://portal.partner.example/start?iss=https%3A%2F%2Fid.example.com%2Ft%2Facme"
     }
   ]
 }
 ```
+
+`sign_in_uri` is there only for a client that named a [login initiation address](../architecture/contexts/oauth.md#the-login-initiation-address): the address with `iss`, the tenant's issuer, added to its query, where the page links to start a sign-in at the client ([Decision 0084](../decisions/0084-managing-a-registration.md)). It is always an HTTPS address, and carries nothing of the person.
 
 `DELETE /interaction/consents/{client_id}` withdraws the person's consent for that client and revokes the grants made under it: `204`. A consent the person does not have, of another person, or already withdrawn, is `404` with `oauth.consent_not_found`, all alike, so that a person learns nothing about another's.
 
