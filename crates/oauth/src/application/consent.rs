@@ -12,7 +12,7 @@ use crate::domain::authorization::{
     AuthorizationRequest, BrowserSecret, PendingAuthorization, PendingAuthorizationId,
     SignedInPerson,
 };
-use crate::domain::client::ClientId;
+use crate::domain::client::{Client, ClientId};
 use crate::domain::consent::{
     Consent, ConsentAction, ConsentActor, ConsentAnswer, ConsentHistoryEntry, consented_scopes,
     must_ask,
@@ -77,11 +77,28 @@ pub enum AskedScope {
     },
 }
 
+/// What a client that registered itself says of itself, which the consent
+/// page shows as the client's own words: no administrator checked it.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct SelfDescription {
+    /// Its home page, `client_uri`.
+    pub client_uri: Option<String>,
+    /// Its logo, `logo_uri`.
+    pub logo_uri: Option<String>,
+    /// Its privacy policy, `policy_uri`.
+    pub policy_uri: Option<String>,
+    /// Its terms of service, `tos_uri`.
+    pub tos_uri: Option<String>,
+}
+
 /// What a request that waits for consent asks for.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ConsentQuestion {
-    /// The name of the client's application.
+    /// The name of the client's application; for a client that registered
+    /// itself, the client's own name.
     pub application: String,
+    /// For a client that registered itself, what it says of itself.
+    pub registered: Option<SelfDescription>,
     /// The scopes asked for, without `offline_access`.
     pub scopes: Vec<AskedScope>,
     /// Whether it asks for access while the person is not there.
@@ -93,8 +110,20 @@ pub struct ConsentQuestion {
 pub struct ListedConsent {
     /// The consent.
     pub consent: Consent,
-    /// The name of the client's application.
+    /// The name of the client's application; for a client that registered
+    /// itself, the client's own name.
     pub application: String,
+}
+
+/// The name a person knows a client by: its application's, or, for a
+/// client that registered itself, its own, since every registered client
+/// of a tenant shares one application.
+fn shown_name(client: &Client, application: &str) -> String {
+    if client.is_registered() {
+        client.snapshot().settings.name.clone()
+    } else {
+        application.to_owned()
+    }
 }
 
 fn consent_not_found() -> DomainError {
@@ -320,8 +349,18 @@ impl ConsentService {
                 resource_server,
             });
         }
+        let registered = client.is_registered().then(|| {
+            let settings = &client.snapshot().settings;
+            SelfDescription {
+                client_uri: settings.client_uri.clone(),
+                logo_uri: settings.logo_uri.clone(),
+                policy_uri: settings.policy_uri.clone(),
+                tos_uri: settings.tos_uri.clone(),
+            }
+        });
         Ok(Some(ConsentQuestion {
-            application: application.name().to_owned(),
+            application: shown_name(&client, application.name()),
+            registered,
             scopes,
             offline_access: request.scopes.iter().any(|scope| scope == OFFLINE_ACCESS),
         }))
@@ -465,7 +504,7 @@ impl ConsentService {
                 .applications
                 .get(uow.as_mut(), client.application_id())
                 .await?
-                .map(|application| application.name().to_owned())
+                .map(|application| shown_name(&client, application.name()))
                 .unwrap_or_default();
             listed.push(ListedConsent {
                 consent,

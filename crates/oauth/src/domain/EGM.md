@@ -434,7 +434,9 @@ randomness and hashing are passed in. Every module is `pub(crate)` in
   `LONGEST_CONSENT_LIFETIME` (1 and 730 days). `TokenPolicy::consent` is
   the client's lifetime, checked against those bounds. Its cases are in
   `consent/tests.rs`.
-- `event.rs`: `OauthEvent`, thirty-four variants, each named `oauth.*`.
+- `event.rs`: `OauthEvent`, thirty-five variants, each named `oauth.*`;
+  `ClientRegistered` carries the client, its application, the way and the
+  initial access token, never the secret or the address.
 - `claim_mapper.rs`: claim mappers (Decision 0041). `ClaimMapperSettings`
   (`checked`: the claim written as a scope and not `is_reserved`, compared
   without regard to case against the 46 `RESERVED_CLAIMS`, the thirteen
@@ -459,6 +461,32 @@ randomness and hashing are passed in. Every module is `pub(crate)` in
   the one hook the token endpoint and UserInfo call after Hodor's own
   claims, which never replaces one. Its cases, including one that every
   claim Hodor writes is reserved, are in `claim_mapper/tests.rs`.
+- `client_metadata.rs`: a registration's members (Decision 0080).
+  `read_client_metadata(body, policy)` reads every member a client keeps
+  into `ClientMetadata { client_type, settings, keys }`,
+  unchecked, a member left out at its specification's default (`RS256`,
+  `client_secret_basic`, `authorization_code`, `code`, `web`; the policy's
+  scopes; `DEFAULT_REGISTERED_CLIENT_NAME`), `null` as left out; refuses a
+  member of the wrong kind (`oauth.client_metadata_invalid`), `jwks` with
+  `jwks_uri`, the members of encryption
+  (`oauth.registration_member_not_supported`),
+  `response_types` Hodor does not offer (`oauth.client_response_types_invalid`), a
+  `token_endpoint_auth_signing_alg` other than `ES256`, `RS256` and `PS256`
+  or without `private_key_jwt`, and `private_key_jwt` with neither `jwks`
+  nor `jwks_uri`; keeps `response_types`, `request_uris`, `jwks_uri` and
+  `require_pushed_authorization_requests`; reads the grant `implicit` as
+  `authorization_code`;
+  ignores every other member. `registration_answer(client, secret)` writes
+  the answer, leaving out what has no value. Its cases are in
+  `client_metadata/tests.rs`.
+- `client.rs` also holds `ApplicationType` (`web`, `native`), the
+  addresses a person is shown (`client_uri`, `logo_uri`, `policy_uri`,
+  `tos_uri`, `display_uris`, checked as HTTPS addresses,
+  `oauth.client_display_uri_invalid`), the rule that a web client's
+  redirect addresses are HTTPS (`oauth.client_application_type_invalid`),
+  and `SelfRegistration` on the snapshot (`registered_from`,
+  `is_registered`); `authorization.rs` reads a registered client as never
+  first party.
 - `registration.rs`: the client registration settings of a tenant
   (Decision 0075). `RegistrationWay` (`initial_access_token`,
   `software_statement`, `open`); `RegistrationPolicy` (`checked`: grants

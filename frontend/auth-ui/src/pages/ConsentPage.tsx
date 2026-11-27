@@ -1,6 +1,7 @@
+import { Link } from "@astryxdesign/core/Link";
 import { VStack } from "@astryxdesign/core/VStack";
 import { useEffect, useState } from "react";
-import type { AskedScope, ConsentQuestion, Failure } from "../client";
+import type { AskedScope, ConsentQuestion, Failure, SelfDescription } from "../client";
 import type { Messages } from "../messages";
 import { describe } from "../messages";
 import { Frame } from "../parts/Frame";
@@ -30,6 +31,45 @@ function wordsFor(scope: AskedScope, text: Messages): string {
     default:
       return scope.scope;
   }
+}
+
+/**
+ * What an application that registered itself says of itself: its logo,
+ * a sentence that nobody checked it, and its links. The logo is loaded and
+ * the links followed without a referrer; each link opens in a new tab.
+ */
+function SelfDescribed({ described, text }: { described: SelfDescription; text: Messages }) {
+  const links = [
+    { href: described.clientUri, label: text.consentHomePage },
+    { href: described.policyUri, label: text.consentPrivacyPolicy },
+    { href: described.tosUri, label: text.consentTerms },
+  ].filter((link): link is { href: string; label: string } => link.href !== null);
+  return (
+    <>
+      {described.logoUri === null ? null : (
+        <img
+          className="auth-consent-logo"
+          src={described.logoUri}
+          alt=""
+          referrerPolicy="no-referrer"
+          width={64}
+          height={64}
+        />
+      )}
+      <Words quiet>{text.consentSelfNamed}</Words>
+      {links.length === 0 ? null : (
+        <Ways>
+          {links.map((link) => (
+            <li key={link.href}>
+              <Link href={link.href} hasUnderline isExternalLink newTabLabel={text.opensInNewTab}>
+                {link.label}
+              </Link>
+            </li>
+          ))}
+        </Ways>
+      )}
+    </>
+  );
 }
 
 type View =
@@ -126,6 +166,7 @@ export function ConsentPage({ tenant, client, text, go, leave, path }: PageProps
   return (
     <Frame tenant={tenant} title={text.consentTitle(question.application)} text={text}>
       {notice}
+      {question.registered === null ? null : <SelfDescribed described={question.registered} text={text} />}
       <Words>{text.consentLead}</Words>
       <ul className="auth-consent-scopes">
         {question.scopes.map((scope) => (

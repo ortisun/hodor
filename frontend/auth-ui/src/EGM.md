@@ -102,7 +102,7 @@ its header); the pages see plain values.
     | `webAuthnOptions()` | `POST /sign-in/steps/webauthn/options` (answers `public_key`) |
     | `submitWebAuthn(answer)` | `POST /sign-in/steps/webauthn` |
     | `submitRecoveryCode(code)` | `POST /sign-in/steps/recovery_code` |
-    | `consentQuestion()` | `GET /consent` (404 gives `null`; answers a `ConsentQuestion` of `AskedScope`s) |
+    | `consentQuestion()` | `GET /consent` (404 gives `null`; answers a `ConsentQuestion` of `AskedScope`s, with `registered`, the `SelfDescription` of a client that registered itself, each address kept only when it is HTTPS) |
     | `answerConsent("allow" or "deny")` | `POST /consent` (answers `continue`, refused unless it is an address of the tenant's authorization endpoint) |
     | `consents()` | `GET /consents` (answers `GivenConsent`s) |
     | `withdrawConsent(clientId)` | `DELETE /consents/{clientId}` (404 is not an error) |

@@ -22,6 +22,9 @@ use hodor_kernel::{
 use std::sync::Arc;
 use time::Duration;
 
+mod registered;
+pub use registered::{MOST_REGISTRATIONS_PER_ADDRESS, REGISTRATION_WINDOW, RegisterClient};
+
 /// What is needed to create a client.
 #[derive(Debug, Clone)]
 pub struct CreateClient {

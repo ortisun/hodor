@@ -337,6 +337,19 @@ pub enum OauthEvent {
         /// How many registrations it has allowed, this one included.
         registrations: u32,
     },
+    /// A client registered itself at the registration endpoint. Never
+    /// carries its secret or the address it registered from.
+    ClientRegistered {
+        /// The client.
+        client_id: ClientId,
+        /// Its application, the tenant's application of registered clients.
+        application_id: ApplicationId,
+        /// The way that allowed it: `initial_access_token` or `open`.
+        way: &'static str,
+        /// The initial access token that allowed it, if one did.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        token_id: Option<InitialAccessTokenId>,
+    },
     /// A logout token was not delivered: every attempt failed, or its
     /// client could no longer be sent to. Never carries the address or the
     /// token.
@@ -390,6 +403,7 @@ impl DomainEvent for OauthEvent {
             Self::InitialAccessTokenIssued { .. } => "oauth.initial_access_token_issued",
             Self::InitialAccessTokenRevoked { .. } => "oauth.initial_access_token_revoked",
             Self::InitialAccessTokenUsed { .. } => "oauth.initial_access_token_used",
+            Self::ClientRegistered { .. } => "oauth.client_registered",
         }
     }
 }

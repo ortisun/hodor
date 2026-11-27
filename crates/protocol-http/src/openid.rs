@@ -17,9 +17,9 @@ use axum::routing::get;
 use axum::{Extension, Json, Router};
 use hodor_kernel::TenantContext;
 use hodor_oauth::api::{
-    BearerRefusal, ForwardedIdentity, OPENID_SCOPE, UserInfoAnswer, UserInfoService,
-    advertise_certificate_bound_tokens, advertise_forwarded_methods, discovery_document,
-    with_registration,
+    BearerRefusal, ClientRegistrationService, ForwardedIdentity, OPENID_SCOPE, UserInfoAnswer,
+    UserInfoService, advertise_certificate_bound_tokens, advertise_forwarded_methods,
+    discovery_document, with_registration, with_registration_endpoint,
 };
 use hodor_tenant::api::{RegistrationPolicy, TenantService};
 
@@ -60,6 +60,10 @@ pub struct DiscoveryState {
     /// operator named one: the document then names the methods it makes
     /// usable.
     pub identity_header: Option<IdentityHeader>,
+    /// The tenant's client registration settings, which say whether the
+    /// document names the registration endpoint. Without them it never
+    /// does.
+    pub client_registration: Option<ClientRegistrationService>,
 }
 
 impl std::fmt::Debug for DiscoveryState {
@@ -97,9 +101,21 @@ async fn discovery(
         .iter()
         .map(|level| level.acr.as_str())
         .collect();
-    let mut document = with_registration(
-        discovery_document(&issuer(&state.public_url, &slug), &names, pushed_required),
-        registration_open,
+    let clients_register = match &state.client_registration {
+        Some(registration) => match registration.settings(&tenant).await {
+            Ok(in_force) => in_force.settings.enabled,
+            Err(error) => return crate::problem::Problem::from(error).into_response(),
+        },
+        None => false,
+    };
+    let issuer = issuer(&state.public_url, &slug);
+    let mut document = with_registration_endpoint(
+        with_registration(
+            discovery_document(&issuer, &names, pushed_required),
+            registration_open,
+        ),
+        &issuer,
+        clients_register,
     );
     if let Some(header) = state.identity_header {
         advertise_forwarded_methods(&mut document, header.methods());

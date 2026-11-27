@@ -6759,34 +6759,62 @@ async fn registration_on(
         .await
 }
 
-/// Asks for a registration in a tenant with `token`, as the registration
-/// endpoint will, and commits what it spent.
-async fn admit(
+/// A registration at a tenant's registration endpoint, with an initial
+/// access token or none.
+async fn register(
     world: &World,
-    registration: &hodor_oauth::api::ClientRegistrationService,
     tenant: &Tenant,
-    token: &str,
-) -> Result<hodor_oauth::api::Admission, hodor_kernel::DomainError> {
-    let units = world.database.app().clone();
-    let mut uow = hodor_kernel::UnitOfWorkFactory::begin(&units, &tenant.context)
-        .await
-        .expect("begin");
-    let answer = registration
-        .admit(uow.as_mut(), Some(token), Caller::system())
-        .await;
-    if answer.is_ok() {
-        uow.commit().await.expect("commit");
+    token: Option<&str>,
+    body: serde_json::Value,
+) -> (StatusCode, serde_json::Value) {
+    let mut request = Client::new()
+        .post(format!(
+            "{}/t/{}/oauth2/register",
+            world.server.base, tenant.slug
+        ))
+        .json(&body);
+    if let Some(token) = token {
+        request = request.bearer_auth(token);
     }
-    answer
+    let response = request.send().await.expect("response");
+    let status = response.status();
+    (
+        status,
+        response.json().await.unwrap_or(serde_json::Value::Null),
+    )
+}
+
+/// Makes an initial access token in a tenant, by its administrator, that
+/// allows `registrations`. Answers the token and its identifier.
+async fn initial_access_token(
+    world: &World,
+    tenant: &Tenant,
+    registrations: u32,
+) -> (String, String) {
+    let (status, made) = world
+        .admin(
+            tenant,
+            &tenant.administrator_token,
+            Method::POST,
+            "/client-registration/initial-access-tokens",
+            Some(serde_json::json!({
+                "name": "Partner portal team",
+                "max_registrations": registrations
+            })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::CREATED, "{made}");
+    (
+        made["initial_access_token"]
+            .as_str()
+            .expect("token")
+            .to_owned(),
+        made["id"].as_str().expect("id").to_owned(),
+    )
 }
 
 #[tokio::test]
 async fn one_tenants_registration_settings_and_initial_access_tokens_mean_nothing_in_another() {
-    use hodor_adapters_postgres::{
-        PgApplicationStore, PgClientRegistrationStore, PgInitialAccessTokenStore,
-    };
-    use hodor_oauth::api::{ClientRegistrationPorts, ClientRegistrationService};
-
     let world = world().await;
     let (acme, globex) = (&world.acme, &world.globex);
     // Off in both: discovery names no endpoint, and the address is none.
@@ -6862,27 +6890,21 @@ async fn one_tenants_registration_settings_and_initial_access_tokens_mean_nothin
     let (endpoint, _) = registration_reachable(&world, globex).await;
     assert_eq!(endpoint, serde_json::Value::Null);
 
-    // Presented to Globex, once registration is on there too, Acme's token
-    // is unknown, and not spent: it still allows its registration where it
-    // belongs.
+    // Presented to Globex's registration endpoint, once registration is on
+    // there too, Acme's token is unknown, and not spent: it still allows
+    // its registration where it belongs.
     let (status, _) = registration_on(&world, globex, &globex_partners).await;
     assert_eq!(status, StatusCode::OK);
-    let registration = ClientRegistrationService::new(ClientRegistrationPorts {
-        units_of_work: Arc::new(world.database.app().clone()),
-        registrations: Arc::new(PgClientRegistrationStore),
-        tokens: Arc::new(PgInitialAccessTokenStore),
-        applications: Arc::new(PgApplicationStore),
-        digest: Arc::new(Sha256Digest),
-        random: Arc::new(OsRandom),
-        clock: Arc::new(SystemClock),
-    });
-    let error = admit(&world, &registration, globex, &token)
-        .await
-        .expect_err("unknown in Globex");
-    assert_eq!(error.code(), "oauth.initial_access_token_invalid");
-    admit(&world, &registration, acme, &token)
-        .await
-        .expect("allowed where it belongs");
+    let partner = serde_json::json!({ "redirect_uris": ["https://partner.example.com/cb"] });
+    let (status, refused) = register(&world, globex, Some(&token), partner.clone()).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED, "{refused}");
+    assert_eq!(refused["error"], "invalid_token");
+    let (status, registered) = register(&world, acme, Some(&token), partner).await;
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "allowed where it belongs: {registered}"
+    );
     let (_, one) = world
         .admin(
             acme,
@@ -8101,4 +8123,145 @@ async fn an_id_token_answered_in_one_tenants_fragment_is_nothing_at_another() {
         .send(Method::GET, "/t/globex/interaction/session", None)
         .await;
     assert_eq!(status, StatusCode::OK, "Globex's session goes on");
+}
+
+#[tokio::test]
+async fn a_client_registered_in_one_tenant_is_unknown_in_another() {
+    let world = world_with(&[("HODOR_SECRET_KEYS", ROOT_KEY)]).await;
+    let (acme, globex) = (&world.acme, &world.globex);
+    let acme_partners = partners_application(&world, acme).await;
+    let globex_partners = partners_application(&world, globex).await;
+    for (tenant, application) in [(acme, &acme_partners), (globex, &globex_partners)] {
+        let (status, body) = registration_on(&world, tenant, application).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+    }
+    let (acme_token, _) = initial_access_token(&world, acme, 20).await;
+    let (globex_token, _) = initial_access_token(&world, globex, 20).await;
+    // Each tenant names its own registration endpoint.
+    for tenant in [acme, globex] {
+        let (endpoint, _) = registration_reachable(&world, tenant).await;
+        assert_eq!(
+            endpoint,
+            format!("http://localhost:8080/t/{}/oauth2/register", tenant.slug)
+        );
+    }
+
+    let (status, registered) = register(
+        &world,
+        acme,
+        Some(&acme_token),
+        serde_json::json!({
+            "redirect_uris": [REDIRECT],
+            "client_name": "Partner portal",
+            "scope": "openid"
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{registered}");
+    let client_id = registered["client_id"].as_str().expect("id").to_owned();
+    let secret = registered["client_secret"]
+        .as_str()
+        .expect("secret")
+        .to_owned();
+
+    // Acme's registered client proves who it is at Acme, and is no client
+    // at Globex: its secret is refused there, its authorization requests
+    // get Hodor's own page, and Globex's administrator finds nothing.
+    let pair = (client_id.as_str(), secret.as_str());
+    let probe = [
+        ("grant_type", "authorization_code"),
+        ("code", "not-a-code"),
+        ("redirect_uri", REDIRECT),
+        ("code_verifier", VERIFIER),
+    ];
+    let (status, body) = oauth_form(&world, acme, "token", pair, &probe).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    assert_eq!(body["error"], "invalid_grant", "authenticated at Acme");
+    let (status, body) = oauth_form(&world, globex, "token", pair, &probe).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED, "{body}");
+    assert_eq!(body["error"], "invalid_client");
+    let mut stranger = Browser::not_following(&world.server);
+    let (_, body) = stranger.sign_in(globex.slug, EMAIL, PASSWORD).await;
+    assert_eq!(body["status"], "completed", "{body}");
+    let (status, location, page) = stranger
+        .navigate(Method::GET, &authorize_path(globex.slug, &client_id), None)
+        .await;
+    assert_eq!((status, location), (StatusCode::BAD_REQUEST, None));
+    assert!(
+        page.contains("oauth.authorization_client_unknown"),
+        "{page}"
+    );
+    let (status, body) = world
+        .admin(
+            globex,
+            &globex.administrator_token,
+            Method::GET,
+            &format!("/clients/{client_id}"),
+            None,
+        )
+        .await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "{body}");
+    let (status, listed) = world
+        .admin(
+            globex,
+            &globex.administrator_token,
+            Method::GET,
+            &format!("/applications/{globex_partners}/clients"),
+            None,
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{listed}");
+    assert_eq!(listed["items"], serde_json::json!([]));
+    let (_, mine) = world
+        .admin(
+            acme,
+            &acme.administrator_token,
+            Method::GET,
+            &format!("/clients/{client_id}"),
+            None,
+        )
+        .await;
+    assert_eq!(mine["registered"], true);
+
+    // Globex's token is refused at Acme, and Acme's at Globex.
+    for (tenant, token) in [(acme, &globex_token), (globex, &acme_token)] {
+        let (status, body) = register(
+            &world,
+            tenant,
+            Some(token),
+            serde_json::json!({ "redirect_uris": [REDIRECT] }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED, "{body}");
+        assert_eq!(body["error"], "invalid_token");
+    }
+
+    // The bound of an address is the tenant's: Acme's registrations from
+    // this address leave Globex's count where it was.
+    for _ in 1..10 {
+        let (status, body) = register(
+            &world,
+            acme,
+            Some(&acme_token),
+            serde_json::json!({ "redirect_uris": [REDIRECT] }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CREATED, "{body}");
+    }
+    let (status, body) = register(
+        &world,
+        acme,
+        Some(&acme_token),
+        serde_json::json!({ "redirect_uris": [REDIRECT] }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::TOO_MANY_REQUESTS, "{body}");
+    let (status, body) = register(
+        &world,
+        globex,
+        Some(&globex_token),
+        serde_json::json!({ "redirect_uris": [REDIRECT] }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
 }

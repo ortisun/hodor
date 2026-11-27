@@ -735,7 +735,9 @@ fn check_parameters(
         login_hint,
         ui_locales,
         acr_values,
-        first_party: application.snapshot().settings.first_party,
+        // A client that registered itself is never first party, whatever
+        // its application says.
+        first_party: application.snapshot().settings.first_party && !client.is_registered(),
         organization,
         response_mode,
         id_token_hint: None,

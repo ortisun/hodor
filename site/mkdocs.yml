@@ -273,6 +273,7 @@ nav:
       - decisions/0077-ext-authz-checks-the-audience.md
       - decisions/0078-every-pod-of-the-release-in-the-mesh.md
       - decisions/0079-keys-at-a-client-s-address-kept-in-memory.md
+      - decisions/0080-the-registration-endpoint.md
       - decisions/0082-ext-authz-checks-the-signature.md
   - Contributing:
       - development/conventions.md

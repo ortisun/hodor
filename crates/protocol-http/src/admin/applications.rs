@@ -19,11 +19,11 @@ use axum::{Extension, Json};
 use hodor_identity::api::{UserKind, UserStatus};
 use hodor_kernel::{DomainError, ErrorKind, TenantContext, UserId};
 use hodor_oauth::api::{
-    Application, ApplicationId, ApplicationSettings, AuthenticationMethod, Client, ClientId,
-    ClientSecret, ClientSecretId, ClientSettings, ClientType, CreateClient, CreateResourceServer,
-    ExchangeRule, GrantType, IdTokenAlgorithm, LinkerdIdentity, RequestObjectAlgorithm,
-    ResourceServer, ResourceServerId, ResourceServerSettings, ResponseType, RotateSecret,
-    ScopeDefinition, SpiffeId, Status, SubjectType, TokenPolicy, response_types_kept,
+    Application, ApplicationId, ApplicationSettings, ApplicationType, AuthenticationMethod, Client,
+    ClientId, ClientSecret, ClientSecretId, ClientSettings, ClientType, CreateClient,
+    CreateResourceServer, ExchangeRule, GrantType, IdTokenAlgorithm, LinkerdIdentity,
+    RequestObjectAlgorithm, ResourceServer, ResourceServerId, ResourceServerSettings, ResponseType,
+    RotateSecret, ScopeDefinition, SpiffeId, Status, SubjectType, TokenPolicy, response_types_kept,
 };
 use serde::{Deserialize, Serialize};
 use time::Duration;
@@ -441,6 +441,15 @@ struct ClientBody {
     linkerd_identity: Option<String>,
     /// Whether its access tokens are bound to its certificate (RFC 8705).
     tls_client_certificate_bound_access_tokens: bool,
+    /// `web` or `native`, as a registration named it, or `null`.
+    application_type: Option<&'static str>,
+    /// The addresses a person is shown, as a registration named them.
+    client_uri: Option<String>,
+    logo_uri: Option<String>,
+    policy_uri: Option<String>,
+    tos_uri: Option<String>,
+    /// Whether it registered itself at the registration endpoint.
+    registered: bool,
     token_policy: TokenPolicyBody,
     /// What identifies each secret and when it expires: never the secret
     /// or its hash.
@@ -505,6 +514,12 @@ impl From<&Client> for ClientBody {
                 .as_ref()
                 .map(|identity| identity.as_str().to_owned()),
             tls_client_certificate_bound_access_tokens: settings.certificate_bound_access_tokens,
+            application_type: settings.application_type.map(ApplicationType::as_str),
+            client_uri: settings.client_uri.clone(),
+            logo_uri: settings.logo_uri.clone(),
+            policy_uri: settings.policy_uri.clone(),
+            tos_uri: settings.tos_uri.clone(),
+            registered: client.is_registered(),
             token_policy: TokenPolicyBody {
                 access_token_seconds: policy.access_token.whole_seconds(),
                 id_token_seconds: policy.id_token.whole_seconds(),
@@ -1057,6 +1072,12 @@ async fn change_client(
                 certificate_bound_access_tokens: changes
                     .tls_client_certificate_bound_access_tokens
                     .unwrap_or(now.certificate_bound_access_tokens),
+                // Set by a registration only: a change made here keeps them.
+                application_type: now.application_type,
+                client_uri: now.client_uri,
+                logo_uri: now.logo_uri,
+                policy_uri: now.policy_uri,
+                tos_uri: now.tos_uri,
             };
             let client = state
                 .applications

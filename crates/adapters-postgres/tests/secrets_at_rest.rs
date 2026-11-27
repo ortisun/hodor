@@ -349,6 +349,11 @@ const NOT_SEALED_SECRETS: &[(&str, &str, &str)] = &[
         "the SHA-256 of a random initial access token, never the token",
     ),
     (
+        "oauth.client",
+        "registered_from",
+        "the SHA-256 of the address a client registered itself from",
+    ),
+    (
         "authentication.attempt_counter",
         "subject_key",
         "a hash of an identifier or an address",

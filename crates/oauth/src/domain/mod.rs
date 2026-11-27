@@ -7,6 +7,7 @@ pub(crate) mod binding;
 pub(crate) mod claim_mapper;
 pub(crate) mod claims_parameter;
 pub(crate) mod client;
+pub(crate) mod client_metadata;
 pub(crate) mod consent;
 pub(crate) mod event;
 pub(crate) mod exchange;

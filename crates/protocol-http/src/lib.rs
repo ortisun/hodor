@@ -28,6 +28,7 @@ mod openid;
 mod pages;
 mod policy_agent;
 mod problem;
+mod registration;
 mod request;
 mod scim;
 mod server;
@@ -57,11 +58,12 @@ pub use key_set::key_set_routes;
 pub use logout::{LogoutState, logout_routes};
 pub use openid::{DiscoveryState, UserInfoState, discovery_routes, userinfo_routes};
 pub use pages::{
-    CONSOLE_ASSETS_PATH, CONSOLE_PATHS, PAGE_ASSETS_PATH, PAGE_PATHS,
-    PAGES_CONTENT_SECURITY_POLICY, PROVIDER_CALLBACK_PAGE, Pages,
+    CONSOLE_ASSETS_PATH, CONSOLE_CONTENT_SECURITY_POLICY, CONSOLE_PATHS, PAGE_ASSETS_PATH,
+    PAGE_PATHS, PAGES_CONTENT_SECURITY_POLICY, PROVIDER_CALLBACK_PAGE, Pages,
 };
 pub use policy_agent::policy_agent_routes;
 pub use problem::Problem;
+pub use registration::{RegistrationState, registration_routes};
 pub use request::ClientAddress;
 pub use scim::{SCIM_AUDIENCE, SCIM_MEDIA_TYPE, SCIM_SCOPE, ScimState, scim_routes};
 pub use server::{Limits, public_router, public_router_behind, serve};

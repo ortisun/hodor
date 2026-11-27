@@ -678,3 +678,229 @@ async fn the_claims_parameter_never_gives_a_claim_of_a_scope_the_person_did_not_
     assert_eq!(info["email"], "ana@example.com");
     assert!(info["email_verified"].is_boolean());
 }
+
+/// Turns client registration on in acme, open to anyone, with a
+/// third-party application for the registered clients. Answers the
+/// application.
+async fn registration_open(database: &TestDatabase) -> hodor_oauth::api::ApplicationId {
+    use hodor_adapters_postgres::{PgClientRegistrationStore, PgInitialAccessTokenStore};
+    use hodor_oauth::api::{
+        ClientRegistrationPorts, ClientRegistrationService, RegistrationSettings, RegistrationWay,
+    };
+    let units = || Arc::new(database.app().clone());
+    let context = TenantContext::assume(
+        hodor_tenant::api::TenantDirectory::find_by_slug(
+            &PgTenantDirectory::new(database.app().clone()),
+            "acme",
+        )
+        .await
+        .expect("directory")
+        .expect("acme")
+        .tenant_id,
+    );
+    let application = ApplicationService::new(ApplicationPorts {
+        units_of_work: units(),
+        applications: Arc::new(PgApplicationStore),
+        clients: Arc::new(PgClientStore),
+        resource_servers: Arc::new(PgResourceServerStore),
+        digest: Arc::new(Sha256Digest),
+        random: Arc::new(OsRandom),
+        clock: Arc::new(SystemClock),
+    })
+    .create_application(
+        &context,
+        ApplicationSettings {
+            name: "Registered clients".to_owned(),
+            first_party: false,
+        },
+        Caller::system(),
+    )
+    .await
+    .expect("application");
+    ClientRegistrationService::new(ClientRegistrationPorts {
+        units_of_work: units(),
+        registrations: Arc::new(PgClientRegistrationStore),
+        tokens: Arc::new(PgInitialAccessTokenStore),
+        applications: Arc::new(PgApplicationStore),
+        digest: Arc::new(Sha256Digest),
+        random: Arc::new(OsRandom),
+        clock: Arc::new(SystemClock),
+    })
+    .replace(
+        &context,
+        RegistrationSettings {
+            enabled: true,
+            application_id: Some(application.id()),
+            ways: vec![RegistrationWay::Open],
+            ..RegistrationSettings::default()
+        },
+        Caller::system(),
+    )
+    .await
+    .expect("on");
+    application.id()
+}
+
+#[tokio::test]
+async fn a_client_that_registered_itself_asks_in_its_own_words_even_in_a_first_party_application() {
+    let database = TestDatabase::start().await;
+    tenant(&database, "acme").await;
+    let server = server(&database).await;
+    let discovery = |server: &Server| {
+        let url = format!("{}/t/acme/.well-known/openid-configuration", server.base);
+        async move {
+            reqwest::get(url)
+                .await
+                .expect("response")
+                .json::<Value>()
+                .await
+                .expect("JSON")
+        }
+    };
+    assert_eq!(
+        discovery(&server).await["registration_endpoint"],
+        Value::Null
+    );
+    let application = registration_open(&database).await;
+    assert_eq!(
+        discovery(&server).await["registration_endpoint"],
+        // The default public address of the server.
+        "http://localhost:8080/t/acme/oauth2/register"
+    );
+
+    let response = reqwest::Client::new()
+        .post(format!("{}/t/acme/oauth2/register", server.base))
+        .json(&json!({
+            "redirect_uris": [REDIRECT],
+            "client_name": "Partner portal",
+            "logo_uri": "https://billing.example.com/logo.png",
+            "policy_uri": "https://billing.example.com/privacy",
+            "scope": "openid",
+            "id_token_signed_response_alg": "ES256"
+        }))
+        .send()
+        .await
+        .expect("response");
+    assert_eq!(response.status(), StatusCode::CREATED);
+    let registered: Value = response.json().await.expect("JSON");
+    let client_id = registered["client_id"].as_str().expect("id").to_owned();
+    let secret = registered["client_secret"]
+        .as_str()
+        .expect("secret")
+        .to_owned();
+
+    // The application is made first party afterwards: the registered
+    // client still asks.
+    let context = TenantContext::assume(
+        hodor_tenant::api::TenantDirectory::find_by_slug(
+            &PgTenantDirectory::new(database.app().clone()),
+            "acme",
+        )
+        .await
+        .expect("directory")
+        .expect("acme")
+        .tenant_id,
+    );
+    ApplicationService::new(ApplicationPorts {
+        units_of_work: Arc::new(database.app().clone()),
+        applications: Arc::new(PgApplicationStore),
+        clients: Arc::new(PgClientStore),
+        resource_servers: Arc::new(PgResourceServerStore),
+        digest: Arc::new(Sha256Digest),
+        random: Arc::new(OsRandom),
+        clock: Arc::new(SystemClock),
+    })
+    .change_application(
+        &context,
+        application,
+        ApplicationSettings {
+            name: "Registered clients".to_owned(),
+            first_party: true,
+        },
+        Caller::system(),
+    )
+    .await
+    .expect("first party");
+
+    let client = client_id.parse::<ClientId>().expect("a client identifier");
+    let mut browser = signed_in(&server, "ana@example.com").await;
+    let (status, location, _) = browser
+        .navigate(Method::GET, &authorize("acme", client, "openid", &[]), None)
+        .await;
+    assert_eq!(status, StatusCode::FOUND);
+    assert_eq!(location.as_deref(), Some("/t/acme/account/consent"));
+    let (status, question) = browser
+        .send(Method::GET, "/t/acme/interaction/consent", None)
+        .await;
+    assert_eq!(status, StatusCode::OK, "{question}");
+    assert_eq!(question["application"], "Partner portal");
+    assert_eq!(question["registered"], true);
+    assert_eq!(question["logo_uri"], "https://billing.example.com/logo.png");
+    assert_eq!(
+        question["policy_uri"],
+        "https://billing.example.com/privacy"
+    );
+    assert!(question.get("tos_uri").is_none());
+
+    // The person agrees, and the client's secret, given once by the
+    // registration, proves who it is at the token endpoint.
+    let (status, _) = browser
+        .send(
+            Method::POST,
+            "/t/acme/interaction/consent",
+            Some(json!({ "decision": "allow" })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    let (_, location, _) = browser
+        .navigate(Method::GET, "/t/acme/oauth2/authorize/resume", None)
+        .await;
+    let answer = sent_back(&location.expect("a redirect"));
+    let code = answer.get("code").expect("a code").clone();
+    let exchange = |secret: String, code: String| {
+        let url = format!("{}/t/acme/oauth2/token", server.base);
+        let client_id = client_id.clone();
+        async move {
+            let response = reqwest::Client::new()
+                .post(url)
+                .basic_auth(client_id, Some(secret))
+                .header("content-type", "application/x-www-form-urlencoded")
+                .body(
+                    form_urlencoded::Serializer::new(String::new())
+                        .extend_pairs([
+                            ("grant_type", "authorization_code"),
+                            ("code", code.as_str()),
+                            ("redirect_uri", REDIRECT),
+                            ("code_verifier", VERIFIER),
+                        ])
+                        .finish(),
+                )
+                .send()
+                .await
+                .expect("response");
+            let status = response.status();
+            (
+                status,
+                response.json::<Value>().await.unwrap_or(Value::Null),
+            )
+        }
+    };
+    let (status, refused) = exchange(
+        "hodor_cs_0000000000000000000000000000000000000000000000000000000000000000".to_owned(),
+        code.clone(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED, "{refused}");
+    assert_eq!(refused["error"], "invalid_client");
+    let (status, tokens) = exchange(secret, code).await;
+    assert_eq!(status, StatusCode::OK, "{tokens}");
+    assert!(tokens["access_token"].is_string());
+    assert!(tokens["id_token"].is_string());
+
+    // The account page names it by its own name.
+    let (status, consents) = browser
+        .send(Method::GET, "/t/acme/interaction/consents", None)
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(consents["consents"][0]["application"], "Partner portal");
+}

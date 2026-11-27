@@ -299,6 +299,40 @@ impl ClientStore for InMemoryClients {
         found.sort_by_key(|c| (c.snapshot().created_at, c.id()));
         Ok(found)
     }
+
+    async fn count_for_application(
+        &self,
+        uow: &mut dyn UnitOfWork,
+        application_id: ApplicationId,
+    ) -> Result<usize, DomainError> {
+        let tenant = uow.tenant().tenant_id();
+        Ok(lock(&self.rows)
+            .iter()
+            .filter(|((owner, _), client)| {
+                *owner == tenant && client.application_id() == application_id
+            })
+            .count())
+    }
+
+    async fn count_registered_since(
+        &self,
+        uow: &mut dyn UnitOfWork,
+        address_hash: Option<&[u8; 32]>,
+        since: hodor_kernel::Timestamp,
+    ) -> Result<usize, DomainError> {
+        let tenant = uow.tenant().tenant_id();
+        Ok(lock(&self.rows)
+            .iter()
+            .filter(|((owner, _), client)| {
+                let state = client.snapshot();
+                *owner == tenant
+                    && state.created_at >= since
+                    && state
+                        .self_registration
+                        .is_some_and(|registered| registered.address_hash.as_ref() == address_hash)
+            })
+            .count())
+    }
 }
 
 /// Resource servers kept in memory.

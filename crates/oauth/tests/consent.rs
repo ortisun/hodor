@@ -30,6 +30,7 @@ struct World {
     codes: AuthorizationCodeService,
     consent: ConsentService,
     applications: ApplicationService,
+    registration: hodor_oauth::api::ClientRegistrationService,
 }
 
 fn world() -> World {
@@ -68,6 +69,11 @@ fn world() -> World {
         random: Arc::new(DistinctRandom),
         clock: clock.clone(),
     });
+    let registration = hodor_oauth::testing::client_registration_service(
+        Arc::new(units.clone()),
+        &stores,
+        clock.clone(),
+    );
     let applications = ApplicationService::new(ApplicationPorts {
         units_of_work: Arc::new(units.clone()),
         applications: Arc::new(stores.applications),
@@ -85,6 +91,7 @@ fn world() -> World {
         codes: code_service,
         consent,
         applications,
+        registration,
     }
 }
 
@@ -650,4 +657,133 @@ async fn withdrawing_a_consent_revokes_its_grants_and_asks_again() {
         types.iter().filter(|t| *t == "oauth.grant_revoked").count(),
         2
     );
+}
+
+#[tokio::test]
+async fn a_client_that_registered_itself_is_asked_for_and_shown_in_its_own_words() {
+    use hodor_oauth::api::{RegisterClient, RegistrationSettings, RegistrationWay};
+
+    let world = world();
+    let tenant = a_tenant();
+    let application = world
+        .applications
+        .create_application(
+            &tenant,
+            ApplicationSettings {
+                name: "Registered clients".to_owned(),
+                first_party: false,
+            },
+            Caller::system(),
+        )
+        .await
+        .expect("application");
+    world
+        .registration
+        .replace(
+            &tenant,
+            RegistrationSettings {
+                enabled: true,
+                application_id: Some(application.id()),
+                ways: vec![RegistrationWay::Open],
+                ..RegistrationSettings::default()
+            },
+            Caller::system(),
+        )
+        .await
+        .expect("on");
+    let (client, _) = world
+        .applications
+        .register_client(
+            &world.registration,
+            &tenant,
+            RegisterClient {
+                body: serde_json::json!({
+                    "redirect_uris": [REDIRECT],
+                    "client_name": "Partner portal",
+                    "logo_uri": "https://billing.example.com/logo.png",
+                    "tos_uri": "https://billing.example.com/terms"
+                }),
+                initial_access_token: None,
+                address_hash: None,
+            },
+            Caller::system(),
+        )
+        .await
+        .expect("registered");
+    // The application is made first party afterwards: the registered
+    // client still asks.
+    world
+        .applications
+        .change_application(
+            &tenant,
+            application.id(),
+            ApplicationSettings {
+                name: "Registered clients".to_owned(),
+                first_party: true,
+            },
+            Caller::system(),
+        )
+        .await
+        .expect("first party");
+    let request = checked(&world, &tenant, &client.id().to_string(), "openid", &[]).await;
+    assert!(
+        !request.first_party,
+        "a registered client is never first party"
+    );
+
+    let ana = person();
+    let (id, secret) = world
+        .consent
+        .hold(&tenant, request.clone(), &ana)
+        .await
+        .expect("held");
+    let question = world
+        .consent
+        .describe(&tenant, id, secret.expose(), ana.user_id, ana.session_id)
+        .await
+        .expect("described")
+        .expect("waiting");
+    assert_eq!(question.application, "Partner portal");
+    let described = question.registered.expect("its own words");
+    assert_eq!(
+        described.logo_uri.as_deref(),
+        Some("https://billing.example.com/logo.png")
+    );
+    assert_eq!(
+        described.tos_uri.as_deref(),
+        Some("https://billing.example.com/terms")
+    );
+    assert_eq!(described.policy_uri, None);
+    assert_eq!(described.client_uri, None);
+
+    agree(&world, &tenant, request, &ana).await;
+    let listed = world
+        .consent
+        .list(&tenant, ana.user_id)
+        .await
+        .expect("listed");
+    assert_eq!(listed.len(), 1);
+    assert_eq!(listed[0].application, "Partner portal");
+}
+
+#[tokio::test]
+async fn a_client_an_administrator_made_shows_nothing_it_chose() {
+    let world = world();
+    let tenant = a_tenant();
+    let client = registered(&world, &tenant).await;
+    let ana = person();
+    let request = checked(&world, &tenant, &client, "openid", &[]).await;
+    let (id, secret) = world
+        .consent
+        .hold(&tenant, request, &ana)
+        .await
+        .expect("held");
+    let question = world
+        .consent
+        .describe(&tenant, id, secret.expose(), ana.user_id, ana.session_id)
+        .await
+        .expect("described")
+        .expect("waiting");
+    assert_eq!(question.application, "Billing");
+    assert_eq!(question.registered, None);
 }
