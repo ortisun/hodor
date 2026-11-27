@@ -643,7 +643,7 @@ def the_record(admin, people):
         user = people[name]["user"]
 
         def recorded():
-            items = admin.call("GET", f"/decisions?subject_id={user}&limit=20")["items"]
+            items = admin.call("GET", f"/decisions?subject_kind=user&subject_id={user}&limit=20")["items"]
             return next((item for item in items if item["namespace"] == ORDERS and item["effect"] == effect), None)
 
         found = until(f"the decision about {name.capitalize()}", recorded)
