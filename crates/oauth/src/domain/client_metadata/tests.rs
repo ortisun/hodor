@@ -93,6 +93,8 @@ fn every_member_hodor_keeps_becomes_a_setting() {
         "require_auth_time": true,
         "backchannel_logout_uri": "https://portal.partner.example/logout",
         "backchannel_logout_session_required": true,
+        "frontchannel_logout_uri": "https://portal.partner.example/front?from=hodor",
+        "frontchannel_logout_session_required": true,
         "tls_client_certificate_bound_access_tokens": true,
         "request_uris": ["https://portal.partner.example/requests/"],
         "require_pushed_authorization_requests": true
@@ -129,6 +131,11 @@ fn every_member_hodor_keeps_becomes_a_setting() {
     assert_eq!(settings.default_acr_values, vec!["silver"]);
     assert!(settings.require_auth_time);
     assert!(settings.backchannel_logout_session_required);
+    assert_eq!(
+        settings.frontchannel_logout_uri.as_deref(),
+        Some("https://portal.partner.example/front?from=hodor")
+    );
+    assert!(settings.frontchannel_logout_session_required);
     assert!(settings.certificate_bound_access_tokens);
     assert_eq!(
         settings.display_uris(),
@@ -177,7 +184,6 @@ fn members_hodor_does_not_keep_are_ignored() {
         "software_id": "4NRB1-0XZABZI9E6-5SM3R",
         "software_version": "2.1",
         "initiate_login_uri": "https://portal.partner.example/login",
-        "frontchannel_logout_uri": "https://portal.partner.example/front",
         "client_name#ja-Jpan-JP": "クライアント名",
         "spiffe_id": "spiffe://cluster.local/ns/a/sa/b",
         "something_else": { "deep": true }
@@ -546,6 +552,7 @@ fn the_answer_gives_back_every_member_kept_and_the_secret_once() {
         "default_acr_values",
         "userinfo_signed_response_alg",
         "backchannel_logout_uri",
+        "frontchannel_logout_uri",
         "registration_access_token",
         "request_uris",
     ] {
@@ -568,4 +575,49 @@ fn the_answer_of_a_client_with_keys_gives_them_back() {
     let answer = registration_answer(&client, None);
     assert_eq!(answer["jwks"]["keys"][0]["kid"], "one");
     assert_eq!(answer["token_endpoint_auth_method"], "private_key_jwt");
+}
+
+#[test]
+fn a_front_channel_logout_address_is_kept_given_back_and_held_to_its_site() {
+    let (client, _) = registered(json!({
+        "redirect_uris": ["https://portal.partner.example/callback"],
+        "frontchannel_logout_uri": "https://portal.partner.example/front",
+        "frontchannel_logout_session_required": true
+    }));
+    let answer = registration_answer(&client, None);
+    assert_eq!(
+        answer["frontchannel_logout_uri"],
+        "https://portal.partner.example/front"
+    );
+    assert_eq!(answer["frontchannel_logout_session_required"], true);
+
+    // Read as any member, then checked by the rules of every client: on the
+    // site of a redirect address, with an address when `sid` is required.
+    for body in [
+        json!({
+            "redirect_uris": ["https://portal.partner.example/callback"],
+            "frontchannel_logout_uri": "https://elsewhere.example/front"
+        }),
+        json!({
+            "redirect_uris": ["https://portal.partner.example/callback"],
+            "frontchannel_logout_session_required": true
+        }),
+    ] {
+        let read = read(body).expect("read");
+        assert_eq!(
+            read.settings
+                .checked(read.client_type)
+                .expect_err("refused")
+                .code(),
+            "oauth.client_frontchannel_logout_uri_invalid"
+        );
+    }
+    assert_eq!(
+        code(read(with("frontchannel_logout_uri", json!(42)))),
+        "oauth.client_metadata_invalid"
+    );
+    assert_eq!(
+        code(read(with("frontchannel_logout_session_required", json!("yes")))),
+        "oauth.client_metadata_invalid"
+    );
 }

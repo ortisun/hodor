@@ -2344,6 +2344,7 @@ Every member Hodor supports becomes a setting of the client, checked by the rule
 | `request_object_signing_alg` | Its [request object algorithm](#request-objects) | None chosen |
 | `default_max_age`, `default_acr_values`, `require_auth_time` | Its [defaults for a sign-in](#defaults-for-a-sign-in) | None, none, `false` |
 | `backchannel_logout_uri`, `backchannel_logout_session_required` | Its [back-channel logout address](#the-back-channel-logout-address), checked through the guarded outbound client, and whether it needs `sid` | None, `false` |
+| `frontchannel_logout_uri`, `frontchannel_logout_session_required` | Its [front-channel logout address](#the-front-channel-logout-address), checked by the rules of every client, on the site of one of its redirect addresses, and bounded by the policy's hosts as every address of a registration is; and whether it needs `iss` and `sid` | None, `false` |
 | `tls_client_certificate_bound_access_tokens` | Whether its access tokens are [bound to its certificate](#certificate-bound-access-tokens) | `false` |
 
 A member of the wrong kind, such as a text where a list of texts is expected, is refused with `oauth.client_metadata_invalid`, whose detail names the member.
@@ -2357,7 +2358,7 @@ A member of the wrong kind, such as a text where a list of texts is expected, is
 | `id_token_encrypted_response_alg`, `id_token_encrypted_response_enc`, `userinfo_encrypted_response_alg`, `userinfo_encrypted_response_enc`, `request_object_encryption_alg`, `request_object_encryption_enc`, `authorization_encrypted_response_alg`, `authorization_encrypted_response_enc` | Encryption, 0.6.0 ([Decision 0048](../../decisions/0048-encryption.md)) |
 | `software_statement` | Software statements, Issue-135: refused with `oauth.software_statement_unapproved`, since the tenant trusts no issuer yet |
 
-**Ignored**, and left out of the answer, so that the client sees they were not kept: `contacts`, `software_id`, `software_version`, `initiate_login_uri` (Issue-134), `frontchannel_logout_uri` and `frontchannel_logout_session_required` (Milestone 16), every member written with a language tag such as `client_name#ja`, and every member Hodor does not know.
+**Ignored**, and left out of the answer, so that the client sees they were not kept: `contacts`, `software_id`, `software_version`, `initiate_login_uri` (Issue-134), every member written with a language tag such as `client_name#ja`, and every member Hodor does not know.
 
 #### What a registration goes through
 
