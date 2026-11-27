@@ -17,3 +17,7 @@ deploy/test-environment/.local/
 # The OpenID conformance run: its dependencies and the results it writes.
 deploy/conformance/node_modules/
 deploy/conformance/conformance-results.json
+
+# Leftovers of patch and of merge tools
+*.orig
+*.rej
