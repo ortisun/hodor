@@ -156,6 +156,7 @@ Many rows are only useful for a while: a session that ended, a link that was use
 | `webhook_deliveries` | The webhook delivery was delivered or set aside | 30 days | — |
 | `api_keys` | The API key of a service account or an agent expired or was revoked | 30 days | — |
 | `logout_deliveries` | The [logout delivery](../architecture/contexts/oauth.md#deliveries-and-retries) was delivered or set aside | 30 days | — |
+| `frontchannel_logouts` | The [frames kept for a signed-out page](../architecture/contexts/oauth.md#kept-on-the-server) expired, 120 seconds after the session ended | 0 | — |
 | `pending_authorizations` | A sign-in that left for an identity provider never came back | 0, fixed | — |
 | `access_tokens` | The access token recorded in the register expired | 0, fixed | — |
 
