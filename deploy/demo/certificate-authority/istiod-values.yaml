@@ -1,0 +1,30 @@
+# Istio's control plane for the demonstration of Milestone 12, on a kind cluster of one node: small, with
+# Kubernetes's own sidecar containers, as in the demonstration of Milestone 10, and with the trust domain
+# east.acme.example, so that a workload's identity is spiffe://east.acme.example/ns/<namespace>/sa/<account>.
+# Its workloads' keys are ECDSA P-256 rather than RSA: Linkerd's proxy asks for a client certificate of ECDSA
+# alone, and a client holding an RSA key sends none. istiod signs with its own root until the Secret cacerts
+# holds the intermediate Hodor signs, and with that intermediate once it is restarted.
+#
+#   python3 deploy/demo/certificate_authority.py installs it; see docs/operations/quick-start.md.
+
+pilot:
+  autoscaleEnabled: false
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+  env:
+    ENABLE_NATIVE_SIDECARS: "true"
+
+meshConfig:
+  trustDomain: east.acme.example
+  defaultConfig:
+    proxyMetadata:
+      ECC_SIGNATURE_ALGORITHM: ECDSA
+
+global:
+  proxy:
+    resources:
+      requests:
+        cpu: 10m
+        memory: 64Mi

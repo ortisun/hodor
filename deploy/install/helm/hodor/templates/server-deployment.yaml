@@ -65,6 +65,9 @@ spec:
             {{- include "hodor.secretEnvironment" (list . "HODOR_DATABASE_URL" .Values.secret.keys.serverDatabaseUrl) | nindent 12 }}
             {{- include "hodor.secretEnvironment" (list . "HODOR_SECRET_KEYS" .Values.secret.keys.secretKeys) | nindent 12 }}
             {{- include "hodor.keyProviderEnvironment" . | nindent 12 }}
+            {{- with include "hodor.certificateAuthorityEnvironment" . }}
+            {{- . | nindent 12 }}
+            {{- end }}
             - name: HODOR_DATABASE_MAX_CONNECTIONS
               value: {{ .Values.server.databaseMaxConnections | quote }}
             - name: HODOR_PASSWORD_HASH_CONCURRENCY

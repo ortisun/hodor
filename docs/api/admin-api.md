@@ -582,6 +582,8 @@ The tenant's certificate authority, specified in [the keys context](../architect
   "lifetime_days": 1826,
   "intermediate_lifetime_days": 30,
   "for_development": false,
+  "uri_constraints": true,
+  "additional_dns_names": [],
   "key": { "id": "0193f3a0-…", "provider": "openbao", "algorithm": "ES256" },
   "name_constraints": {
     "permitted_uris": ["prod.example.com", "edge.example.com"],
@@ -608,9 +610,10 @@ The tenant's certificate authority, specified in [the keys context](../architect
 ```json
 { "kind": "root", "trust_domains": ["prod.example.com", "edge.example.com"], "common_name": "Example meshes", "lifetime_days": 1826, "intermediate_lifetime_days": 30 }
 { "kind": "intermediate", "trust_domains": ["prod.example.com"] }
+{ "kind": "root", "trust_domains": ["east.example.com", "west.example.com"], "uri_constraints": false, "additional_dns_names": ["istio-system.svc"] }
 ```
 
-`common_name`, `lifetime_days` (a root's only) and `intermediate_lifetime_days` may be left out. It answers `201` with the authority: a root is active at once, and its trust domains are added to the tenant's with the source `authority`; an intermediate answers its certificate signing request, for the tenant's root to sign.
+`common_name`, `lifetime_days` (a root's only), `intermediate_lifetime_days`, `uri_constraints` and `additional_dns_names` may be left out. `uri_constraints` is `true` unless given: `false` writes the name constraints without URIs, and the answer's `name_constraints.permitted_uris` is empty. Leave URIs unconstrained when a Linkerd mesh of the tenant must accept the SPIFFE identities of its other meshes: Linkerd's proxy refuses every URI under an authority that constrains URIs. `additional_dns_names`, none unless given, are at most ten DNS names its name constraints permit after its trust domains, in its certificate and in every intermediate it signs: give `istio-system.svc` for an Istio mesh, whose istiod serves under the mesh's intermediate by names under it ([Decision 0076](../decisions/0076-names-an-authority-leaves-to-its-meshes.md)). It answers `201` with the authority: a root is active at once, and its trust domains are added to the tenant's with the source `authority`; an intermediate answers its certificate signing request, for the tenant's root to sign.
 
 `POST /certificate-authority:install` takes the certificate the tenant's root signed, in PEM, and the certificates above it if wished, nearest first:
 
@@ -629,11 +632,13 @@ and answers `200` with the authority, now active, whose trust domains are added 
 | Its trust domains would make the tenant's more than fifty | `409` | `keys.too_many_trust_domains` |
 | Installing a certificate on an authority that is not awaiting one | `409` | `keys.authority_not_awaiting_certificate` |
 | The authority changed while it was being changed | `409` | `keys.authority_changed` |
-| A kind other than `root` and `intermediate`, a lifetime out of its bounds, a common name of no characters or more than 64, a `lifetime_days` for an intermediate | `422` | `keys.authority_request_invalid` |
+| A kind other than `root` and `intermediate`, a lifetime out of its bounds, a common name of no characters or more than 64, a `lifetime_days` for an intermediate; more than ten additional DNS names, one that is not a DNS name, given twice or a trust domain | `422` | `keys.authority_request_invalid` |
 | No trust domain, more than ten, the same twice, or one that is not a DNS name | `422` | `keys.authority_trust_domain_invalid` |
-| A certificate or a chain that does not read, or a certificate that does not hold the authority's key, is not an authority, is not valid now, or whose name constraints are missing or reach past the authority's trust domains | `422` | `keys.authority_certificate_unsuitable` |
+| A certificate or a chain that does not read, or a certificate that does not hold the authority's key, is not an authority, is not valid now, or whose name constraints are missing, reach past the authority's trust domains, or constrain URIs for an authority that leaves them unconstrained | `422` | `keys.authority_certificate_unsuitable` |
 | Adding through `POST /trust-domains` a trust domain of source `authority` | `422` | `keys.trust_domain_source_invalid` |
 | Replacing through `PUT /trust-domains/{trust_domain_id}` a trust domain of source `authority` | `409` | `keys.trust_domain_of_authority` |
+
+For `keys.authority_request_invalid`, `keys.authority_trust_domain_invalid` and `keys.authority_certificate_unsuitable`, the problem's `detail` names the reason, such as the trust domain that is not a DNS name or `it does not hold the authority's key`: it is about what the caller sent. Every other refusal's `detail` is its message, as everywhere in this interface.
 
 ### Intermediates
 
@@ -705,7 +710,7 @@ Such a token that is not good, not for that audience, or not of a service accoun
 | A lifetime of less than a day, longer than the authority's bound, or ending after the authority's own certificate | `422` | `keys.intermediate_lifetime_invalid` |
 | A reason of no characters or more than 200 | `422` | `keys.intermediate_reason_invalid` |
 
-The problem's `detail` names the reason, such as the name that is outside the trust domains or the size of the key.
+The problem's `detail` names the reason, such as the name that is outside the trust domains or the size of the key, for every refusal of the `keys.intermediate_` codes, which are about what the caller sent; a refusal of another code is answered with its message, as everywhere in this interface.
 
 ### Applications, clients and resource servers
 

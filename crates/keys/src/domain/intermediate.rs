@@ -257,7 +257,10 @@ pub(crate) fn check_request(
         .iter()
         .map(|name| name.as_str())
         .collect();
-    let within_any = |name: &str| domains.iter().any(|domain| is_within(name, domain));
+    // DNS names may be within a trust domain, or within a DNS name the
+    // authority permits besides them.
+    let dns_domains = authority.dns_domains();
+    let within_any = |name: &str| dns_domains.iter().any(|domain| is_within(name, domain));
     let names = request.uris.len() + request.dns_names.len() + request.other_names.len();
     if names > MAX_INTERMEDIATE_NAMES {
         return Err(outside(format!("{names} names, more than 20")));
@@ -288,7 +291,8 @@ pub(crate) fn check_request(
         .find(|name| !is_dns_name(name) || !within_any(name))
     {
         return Err(widened(format!(
-            "it permits `{name}`, which is not within the authority's trust domains"
+            "it permits `{name}`, which is not within the authority's trust domains or the DNS \
+             names it permits"
         )));
     }
     if asked.permitted_addresses > 0 {
@@ -336,7 +340,10 @@ pub(crate) fn check_request(
     }
 
     let permitted = if asked.permitted_dns_names.is_empty() {
-        domains.iter().map(|domain| (*domain).to_owned()).collect()
+        dns_domains
+            .iter()
+            .map(|domain| (*domain).to_owned())
+            .collect()
     } else {
         asked.permitted_dns_names.clone()
     };
@@ -666,6 +673,57 @@ mod tests {
         assert_eq!(
             trust_domains_signed_for(&written, &authority),
             ["prod.example.com", "cluster.local"]
+        );
+    }
+
+    #[test]
+    fn the_additional_dns_names_of_the_authority_are_permitted_too() {
+        let names = vec!["east.example".to_owned()];
+        let request = AuthorityRequest::new("root", &names, None, Some(365), Some(30), false)
+            .expect("ok")
+            .with_additional_dns_names(&["istio-system.svc".to_owned()])
+            .expect("a DNS name");
+        let now = OffsetDateTime::now_utc();
+        let authority = CertificateAuthority::root(
+            AuthorityId::generate(),
+            &request,
+            authority(&["east.example"]).key().clone(),
+            IssuedCertificate {
+                der: vec![0x30],
+                serial_number: "01".to_owned(),
+                not_before: now,
+                not_after: now + Duration::days(365),
+                sha256: "00".to_owned(),
+            },
+            now,
+        );
+        let written = check_request(&asking(), &authority).expect("signed");
+        assert_eq!(
+            written.permitted_dns_names,
+            ["east.example", "istio-system.svc"]
+        );
+        assert_eq!(
+            trust_domains_signed_for(&written, &authority),
+            ["east.example"]
+        );
+        let mut naming = asking();
+        naming.dns_names = vec!["istiod.istio-system.svc".to_owned()];
+        assert!(check_request(&naming, &authority).is_ok());
+        naming.uris = vec!["spiffe://istio-system.svc/ns/x".to_owned()];
+        assert_eq!(
+            code(check_request(&naming, &authority)),
+            "keys.intermediate_name_outside_trust_domains"
+        );
+        let mut narrowed = asking();
+        narrowed.constraints = Some(RequestedConstraints {
+            permitted_dns_names: vec!["istio-system.svc".to_owned()],
+            ..RequestedConstraints::default()
+        });
+        assert_eq!(
+            check_request(&narrowed, &authority)
+                .expect("narrowed")
+                .permitted_dns_names,
+            ["istio-system.svc"]
         );
     }
 

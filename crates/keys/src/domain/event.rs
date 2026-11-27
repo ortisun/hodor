@@ -171,6 +171,11 @@ pub enum AuthorityEvent {
         provider: String,
         /// Whether it was made on an installation set to `development`.
         for_development: bool,
+        /// Whether its name constraints hold its trust domains as URI
+        /// hosts.
+        uri_constraints: bool,
+        /// The DNS names it permits besides its trust domains.
+        additional_dns_names: Vec<String>,
     },
     /// The authority's key signed something.
     Signed {

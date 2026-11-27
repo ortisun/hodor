@@ -88,7 +88,11 @@ bundle is taken and answered as JSON),
 and `/certificate-authority/intermediates/{intermediate_id}` with its
 `:withdraw` action in the last segment, under `certificate-authority:read`,
 `certificate-authority:write` and `certificate-authority:sign` (signing
-alone), merged into the routes only when it is
+alone); a refusal of a `keys.intermediate_` code,
+`keys.authority_certificate_unsuitable`, `keys.authority_request_invalid` or
+`keys.authority_trust_domain_invalid` that is `Invalid` or `Conflict` is
+answered with the domain error's reason as the problem's `detail`
+(`refused`), every other as `Problem::from`; merged into the routes only when it is
 `Some`; when `None`, `GET /openapi.json` answers the document without those
 operations and their schemas, and `/me` lists neither permission),
 `certificate_signing: Option<ResourceAccessService>` (`hodor_oauth`; when

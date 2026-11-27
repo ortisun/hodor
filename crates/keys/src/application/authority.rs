@@ -41,6 +41,10 @@ pub struct NewAuthority {
     pub lifetime_days: Option<u32>,
     /// The bound on the intermediates it signs, in days.
     pub intermediate_lifetime_days: Option<u32>,
+    /// `false` leaves URIs unconstrained; unset, they are constrained.
+    pub uri_constraints: Option<bool>,
+    /// The DNS names it permits besides its trust domains.
+    pub additional_dns_names: Vec<String>,
 }
 
 /// The ports the authority works through.
@@ -273,7 +277,9 @@ impl AuthorityService {
             asked.lifetime_days,
             asked.intermediate_lifetime_days,
             self.for_development,
-        )?;
+        )?
+        .with_uri_constraints(asked.uri_constraints.unwrap_or(true))
+        .with_additional_dns_names(&asked.additional_dns_names)?;
         if !self.ports.maker.signs_inside() && !self.for_development {
             return Err(DomainError::conflict(
                 "keys.authority_provider_unsuitable",
@@ -385,6 +391,8 @@ impl AuthorityService {
                 key_id: key.id,
                 provider: key.provider.clone(),
                 for_development: self.for_development,
+                uri_constraints: request.uri_constraints(),
+                additional_dns_names: request.additional_dns_names().to_vec(),
             },
         )?;
         self.record(uow.as_mut(), caller, &signed)?;

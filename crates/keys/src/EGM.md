@@ -35,7 +35,7 @@ surface through `pub mod api`.
     `NameConstraints`, `IssuedCertificate`, `CertificateFacts`,
     `FactsConstraints`, `AuthorityEvent`, `authority_trust_domain`,
     `to_pem`, `hexadecimal`, and the bounds and defaults
-    `MAX_AUTHORITY_TRUST_DOMAINS` (10), `MAX_COMMON_NAME_LENGTH` (64),
+    `MAX_AUTHORITY_TRUST_DOMAINS` (10), `MAX_ADDITIONAL_DNS_NAMES` (10), `MAX_COMMON_NAME_LENGTH` (64),
     `DEFAULT_COMMON_NAME`, `DEVELOPMENT_SUFFIX`, `DEFAULT_ROOT_LIFETIME_DAYS`
     (1826), `MAX_ROOT_LIFETIME_DAYS` (3650),
     `DEFAULT_INTERMEDIATE_LIFETIME_DAYS` (30),

@@ -22,6 +22,8 @@ hodor_kernel::define_id!(
 
 /// The most trust domains an authority may sign for.
 pub const MAX_AUTHORITY_TRUST_DOMAINS: usize = 10;
+/// The most DNS names an authority may permit besides its trust domains.
+pub const MAX_ADDITIONAL_DNS_NAMES: usize = 10;
 /// The longest common name of an authority's certificate.
 pub const MAX_COMMON_NAME_LENGTH: usize = 64;
 /// The common name of an authority unless the administrator gives one.
@@ -178,7 +180,19 @@ fn trust_domain_invalid(detail: String) -> DomainError {
 pub fn authority_trust_domain(name: &str) -> Result<TrustDomainName, DomainError> {
     let parsed = TrustDomainName::parse(name)
         .map_err(|_| trust_domain_invalid(format!("`{name}` is not a trust domain's name")))?;
-    let dns = name.len() <= 253
+    if is_dns_name(name) {
+        Ok(parsed)
+    } else {
+        Err(trust_domain_invalid(format!("`{name}` is not a DNS name")))
+    }
+}
+
+/// Whether `name` is a DNS name a constraint can hold: labels of 1 to 63
+/// lowercase letters, digits and `-`, not beginning or ending with `-`,
+/// 253 characters at most.
+fn is_dns_name(name: &str) -> bool {
+    !name.is_empty()
+        && name.len() <= 253
         && name.split('.').all(|label| {
             (1..=63).contains(&label.len())
                 && !label.starts_with('-')
@@ -186,37 +200,47 @@ pub fn authority_trust_domain(name: &str) -> Result<TrustDomainName, DomainError
                 && label
                     .bytes()
                     .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-')
-        });
-    if dns {
-        Ok(parsed)
-    } else {
-        Err(trust_domain_invalid(format!("`{name}` is not a DNS name")))
-    }
+        })
 }
 
 /// The name constraints the authority's certificate carries.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct NameConstraints {
-    /// The hosts a URI below the authority must have, exactly.
+    /// The hosts a URI below the authority must have, exactly. Empty for
+    /// an authority that leaves URIs unconstrained.
     pub permitted_uris: Vec<String>,
     /// The DNS names, and the names under them, a certificate below it
-    /// may name.
+    /// may name: its trust domains, then the DNS names it permits besides
+    /// them.
     pub permitted_dns_names: Vec<String>,
     /// The address ranges no certificate below it may name: all of them.
     pub excluded_ip_ranges: Vec<String>,
 }
 
 impl NameConstraints {
-    /// The constraints of an authority of these trust domains.
+    /// The constraints of an authority of these trust domains: their
+    /// names as URI hosts when `uri_constraints`, and as DNS names with
+    /// `additional_dns_names` after them, and no address.
     #[must_use]
-    pub fn for_trust_domains(trust_domains: &[TrustDomainName]) -> Self {
+    pub fn for_trust_domains(
+        trust_domains: &[TrustDomainName],
+        uri_constraints: bool,
+        additional_dns_names: &[String],
+    ) -> Self {
         let names: Vec<String> = trust_domains
             .iter()
             .map(|name| name.as_str().to_owned())
             .collect();
         Self {
-            permitted_uris: names.clone(),
-            permitted_dns_names: names,
+            permitted_uris: if uri_constraints {
+                names.clone()
+            } else {
+                Vec::new()
+            },
+            permitted_dns_names: names
+                .into_iter()
+                .chain(additional_dns_names.iter().cloned())
+                .collect(),
             excluded_ip_ranges: EXCLUDED_IP_RANGES.map(str::to_owned).to_vec(),
         }
     }
@@ -241,6 +265,8 @@ pub struct AuthorityRequest {
     lifetime_days: Option<u32>,
     intermediate_lifetime_days: u32,
     for_development: bool,
+    uri_constraints: bool,
+    additional_dns_names: Vec<String>,
 }
 
 impl AuthorityRequest {
@@ -317,7 +343,64 @@ impl AuthorityRequest {
             lifetime_days,
             intermediate_lifetime_days,
             for_development,
+            uri_constraints: true,
+            additional_dns_names: Vec::new(),
         })
+    }
+
+    /// The same request, whose name constraints also permit these DNS
+    /// names and the names under them, such as `istio-system.svc`, where
+    /// Istio's control plane serves under the mesh's intermediate
+    /// (Decision 0076).
+    ///
+    /// # Errors
+    ///
+    /// Returns `keys.authority_request_invalid` for more than 10 names, a
+    /// name that is not a DNS name, one given twice, or one that is a
+    /// trust domain of the request.
+    pub fn with_additional_dns_names(mut self, names: &[String]) -> Result<Self, DomainError> {
+        if names.len() > MAX_ADDITIONAL_DNS_NAMES {
+            return Err(request_invalid(&format!(
+                "{} additional DNS names, more than 10",
+                names.len()
+            )));
+        }
+        let mut kept: Vec<String> = Vec::with_capacity(names.len());
+        for name in names {
+            if !is_dns_name(name) {
+                return Err(request_invalid(&format!(
+                    "the additional DNS name `{name}` is not a DNS name"
+                )));
+            }
+            if kept.contains(name)
+                || self
+                    .trust_domains
+                    .iter()
+                    .any(|domain| domain.as_str() == name)
+            {
+                return Err(request_invalid(&format!(
+                    "the additional DNS name `{name}` is given twice, or is a trust domain"
+                )));
+            }
+            kept.push(name.clone());
+        }
+        self.additional_dns_names = kept;
+        Ok(self)
+    }
+
+    /// The DNS names it permits besides its trust domains.
+    #[must_use]
+    pub fn additional_dns_names(&self) -> &[String] {
+        &self.additional_dns_names
+    }
+
+    /// The same request, whose name constraints hold its trust domains as
+    /// URI hosts when `uri_constraints`, as they do unless said otherwise,
+    /// and leave URIs unconstrained otherwise (Decision 0076).
+    #[must_use]
+    pub const fn with_uri_constraints(mut self, uri_constraints: bool) -> Self {
+        self.uri_constraints = uri_constraints;
+        self
     }
 
     /// A root or an intermediate.
@@ -330,6 +413,12 @@ impl AuthorityRequest {
     #[must_use]
     pub fn trust_domains(&self) -> &[TrustDomainName] {
         &self.trust_domains
+    }
+
+    /// Whether its name constraints hold its trust domains as URI hosts.
+    #[must_use]
+    pub const fn uri_constraints(&self) -> bool {
+        self.uri_constraints
     }
 
     /// A root's lifetime.
@@ -346,7 +435,11 @@ impl AuthorityRequest {
     pub fn profile(&self) -> AuthorityProfile {
         AuthorityProfile {
             common_name: self.common_name.clone(),
-            name_constraints: NameConstraints::for_trust_domains(&self.trust_domains),
+            name_constraints: NameConstraints::for_trust_domains(
+                &self.trust_domains,
+                self.uri_constraints,
+                &self.additional_dns_names,
+            ),
         }
     }
 }
@@ -493,6 +586,11 @@ pub struct CertificateAuthoritySnapshot {
     pub intermediate_lifetime_days: u32,
     /// Whether it was made on an installation set to `development`.
     pub for_development: bool,
+    /// Whether its name constraints hold its trust domains as URI hosts.
+    pub uri_constraints: bool,
+    /// The DNS names its name constraints permit besides its trust
+    /// domains.
+    pub additional_dns_names: Vec<String>,
     /// Its key.
     pub key: AuthorityKey,
     /// An intermediate's request, in DER.
@@ -533,6 +631,8 @@ impl CertificateAuthority {
             lifetime_days: request.lifetime_days,
             intermediate_lifetime_days: request.intermediate_lifetime_days,
             for_development: request.for_development,
+            uri_constraints: request.uri_constraints,
+            additional_dns_names: request.additional_dns_names.clone(),
             key,
             certificate_signing_request: None,
             certificate: None,
@@ -605,6 +705,18 @@ impl CertificateAuthority {
         &self.state.trust_domains
     }
 
+    /// The names under which its certificates may name DNS names: its
+    /// trust domains, then the DNS names it permits besides them.
+    #[must_use]
+    pub fn dns_domains(&self) -> Vec<&str> {
+        self.state
+            .trust_domains
+            .iter()
+            .map(TrustDomainName::as_str)
+            .chain(self.state.additional_dns_names.iter().map(String::as_str))
+            .collect()
+    }
+
     /// Its key.
     #[must_use]
     pub const fn key(&self) -> &AuthorityKey {
@@ -626,7 +738,11 @@ impl CertificateAuthority {
     /// Its name constraints.
     #[must_use]
     pub fn name_constraints(&self) -> NameConstraints {
-        NameConstraints::for_trust_domains(&self.state.trust_domains)
+        NameConstraints::for_trust_domains(
+            &self.state.trust_domains,
+            self.state.uri_constraints,
+            &self.state.additional_dns_names,
+        )
     }
 
     /// Installs an intermediate's certificate, signed by the tenant's own
@@ -674,25 +790,32 @@ impl CertificateAuthority {
         let Some(constraints) = &certificate.name_constraints else {
             return Err(unsuitable("it carries no name constraints"));
         };
+        let domains = self.dns_domains();
         let within = |name: &str| {
-            self.state.trust_domains.iter().any(|domain| {
-                let domain = domain.as_str();
+            domains.iter().any(|domain| {
+                let domain = *domain;
                 name == domain
                     || name
                         .strip_suffix(domain)
                         .is_some_and(|head| head.ends_with('.'))
             })
         };
-        let uris_are_trust_domains = !constraints.permitted_uris.is_empty()
-            && constraints.permitted_uris.iter().all(|uri| {
-                self.state
-                    .trust_domains
-                    .iter()
-                    .any(|domain| domain.as_str() == uri)
-            });
-        if !uris_are_trust_domains {
+        if self.state.uri_constraints {
+            let uris_are_trust_domains = !constraints.permitted_uris.is_empty()
+                && constraints.permitted_uris.iter().all(|uri| {
+                    self.state
+                        .trust_domains
+                        .iter()
+                        .any(|domain| domain.as_str() == uri)
+                });
+            if !uris_are_trust_domains {
+                return Err(unsuitable(
+                    "its permitted URIs are not all trust domains of the authority",
+                ));
+            }
+        } else if !constraints.permitted_uris.is_empty() {
             return Err(unsuitable(
-                "its permitted URIs are not all trust domains of the authority",
+                "it constrains URIs, which the authority leaves unconstrained",
             ));
         }
         if !constraints
@@ -893,6 +1016,73 @@ mod tests {
         assert_eq!(constraints.permitted_uris, ["a.example", "b.example"]);
         assert_eq!(constraints.permitted_dns_names, ["a.example", "b.example"]);
         assert_eq!(constraints.excluded_ip_ranges, ["0.0.0.0/0", "::/0"]);
+        let unconstrained = request
+            .with_uri_constraints(false)
+            .profile()
+            .name_constraints;
+        assert!(unconstrained.permitted_uris.is_empty());
+        assert_eq!(
+            unconstrained.permitted_dns_names,
+            ["a.example", "b.example"]
+        );
+        assert_eq!(unconstrained.excluded_ip_ranges, ["0.0.0.0/0", "::/0"]);
+    }
+
+    #[test]
+    fn additional_dns_names_are_permitted_after_the_trust_domains() {
+        let names = |given: &[&str]| -> Vec<String> {
+            given.iter().map(|name| (*name).to_owned()).collect()
+        };
+        let request = request("root", &["a.example", "b.example"])
+            .expect("root")
+            .with_additional_dns_names(&names(&["istio-system.svc"]))
+            .expect("a DNS name");
+        assert_eq!(request.additional_dns_names(), ["istio-system.svc"]);
+        let constraints = request.profile().name_constraints;
+        assert_eq!(
+            constraints.permitted_dns_names,
+            ["a.example", "b.example", "istio-system.svc"]
+        );
+        assert_eq!(constraints.permitted_uris, ["a.example", "b.example"]);
+        for refused in [
+            names(&["Upper.svc"]),
+            names(&["under_score.svc"]),
+            names(&[""]),
+            names(&["x.svc", "x.svc"]),
+            names(&["a.example"]),
+            (0..11).map(|n| format!("n{n}.svc")).collect(),
+        ] {
+            let error = request
+                .clone()
+                .with_additional_dns_names(&refused)
+                .expect_err("refused");
+            assert_eq!(
+                error.code(),
+                "keys.authority_request_invalid",
+                "{refused:?}"
+            );
+        }
+        let mut authority = CertificateAuthority::intermediate(
+            AuthorityId::generate(),
+            &request,
+            key(),
+            vec![0x30],
+            now(),
+        );
+        assert_eq!(
+            authority.dns_domains(),
+            ["a.example", "b.example", "istio-system.svc"]
+        );
+        let mut given = facts(authority.key());
+        given
+            .name_constraints
+            .as_mut()
+            .expect("constraints")
+            .permitted_dns_names
+            .push("istio-system.svc".to_owned());
+        authority
+            .install(given, "00".to_owned(), Vec::new(), now())
+            .expect("installed");
     }
 
     fn facts(key: &AuthorityKey) -> CertificateFacts {
@@ -980,6 +1170,43 @@ mod tests {
             reason(&|f| f.name_constraints.as_mut().expect("c").permitted_other = 1)
                 .contains("another kind")
         );
+    }
+
+    #[test]
+    fn an_authority_that_leaves_uris_unconstrained_takes_a_certificate_without_uri_constraints() {
+        let request = request("intermediate", &["a.example", "b.example"])
+            .expect("request")
+            .with_uri_constraints(false);
+        let awaiting = CertificateAuthority::intermediate(
+            AuthorityId::generate(),
+            &request,
+            key(),
+            vec![0x30],
+            now(),
+        );
+        assert!(awaiting.name_constraints().permitted_uris.is_empty());
+        let mut constrained = awaiting.clone();
+        let refused = constrained
+            .install(facts(awaiting.key()), "00".to_owned(), Vec::new(), now())
+            .expect_err("it constrains URIs");
+        assert!(
+            refused
+                .detail()
+                .unwrap_or_default()
+                .contains("leaves unconstrained")
+        );
+        let mut unconstrained = awaiting.clone();
+        let mut given = facts(awaiting.key());
+        given
+            .name_constraints
+            .as_mut()
+            .expect("constraints")
+            .permitted_uris
+            .clear();
+        unconstrained
+            .install(given, "00".to_owned(), Vec::new(), now())
+            .expect("installed");
+        assert_eq!(unconstrained.state(), AuthorityState::Active);
     }
 
     #[test]

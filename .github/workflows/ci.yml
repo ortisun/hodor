@@ -254,6 +254,48 @@ jobs:
           kubectl logs --namespace spire statefulset/spire-server --tail 100
           kubectl logs --namespace spire daemonset/spire-agent --tail 100
 
+  # The demonstration of Milestone 12, as the quick-start tells an operator to
+  # run it: a kind cluster with Istio, where Hodor runs in the mesh with its
+  # chart beside OpenBao, and one with Linkerd, cert-manager and
+  # hodor-cert-manager-issuer in both, from the images built here. The script
+  # makes the clusters; kind, kubectl and Helm are installed at the versions
+  # named.
+  certificate-authority:
+    name: Meshes under one tenant's root
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: helm/kind-action@1544676c07bb3570fcb70166beaa07c4528fd4aa # v1.15.1
+        with:
+          version: v0.33.0
+          kubectl_version: v1.37.1
+          install_only: true
+      - uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
+        with:
+          version: v4.3.1
+      - name: Build the images
+        run: |
+          docker build --file deploy/docker/Dockerfile --tag hodor:milestone-12 .
+          docker build --file deploy/docker/cert-manager-issuer.Dockerfile --tag hodor-cert-manager-issuer:milestone-12 .
+      - name: Run the demonstration of Milestone 12
+        run: python3 deploy/demo/certificate_authority.py
+      - name: Show what the clusters logged
+        if: failure()
+        run: |
+          kind get kubeconfig --name hodor-milestone-12-istio > "$RUNNER_TEMP/istio"
+          kind get kubeconfig --name hodor-milestone-12-linkerd > "$RUNNER_TEMP/linkerd"
+          for cluster in istio linkerd; do
+            echo "== $cluster"
+            kubectl --kubeconfig "$RUNNER_TEMP/$cluster" get pods --all-namespaces
+            kubectl --kubeconfig "$RUNNER_TEMP/$cluster" get certificates,certificaterequests --all-namespaces --output wide
+            kubectl --kubeconfig "$RUNNER_TEMP/$cluster" logs --namespace cert-manager deployment/hodor-issuer-cert-manager-issuer --tail 100
+          done
+          kubectl --kubeconfig "$RUNNER_TEMP/istio" logs --namespace hodor deployment/hodor-server --all-containers --tail 200
+          kubectl --kubeconfig "$RUNNER_TEMP/istio" logs --namespace istio-system deployment/istiod --tail 100
+          kubectl --kubeconfig "$RUNNER_TEMP/linkerd" logs --namespace linkerd deployment/linkerd-identity --all-containers --tail 100
+          kubectl --kubeconfig "$RUNNER_TEMP/linkerd" logs --namespace ledger deployment/ledger --all-containers --tail 100
+
   # The Basic OpenID Provider, Config OpenID Provider and Back-Channel OpenID
   # Provider plans of the OpenID conformance suite, against the image; the
   # back-channel logout plan is the acceptance of Issue-100. Then the Basic
@@ -425,6 +467,18 @@ jobs:
           > rendered.yaml
           && ! grep -q 'name: hodor-issuer-hodor-server' rendered.yaml
           && grep -q 'kind: CustomResourceDefinition' rendered.yaml
+      - name: Render the chart with the certificate authority on, and refuse it for development alone
+        run: |
+          helm template hodor "$CHART" --namespace hodor $REQUIRED \
+            --set certificateAuthority.enabled=true --set keyProvider.openbao.enabled=true \
+            --set keyProvider.openbao.address=https://openbao.openbao.svc:8200 > rendered.yaml
+          grep -A1 'name: HODOR_CERTIFICATE_AUTHORITY' rendered.yaml | grep -q 'value: "on"'
+          helm template hodor "$CHART" --namespace hodor $REQUIRED \
+            --set certificateAuthority.enabled=true --set certificateAuthority.development=true > rendered.yaml
+          grep -A1 'name: HODOR_CERTIFICATE_AUTHORITY' rendered.yaml | grep -q 'value: "development"'
+          if helm template hodor "$CHART" --namespace hodor $REQUIRED --set certificateAuthority.development=true > /dev/null 2>&1; then
+            echo "development without enabled was rendered"; exit 1
+          fi
       - name: Render the chart signing in to OpenBao with an AppRole
         run: >
           helm template hodor "$CHART" --namespace hodor $REQUIRED

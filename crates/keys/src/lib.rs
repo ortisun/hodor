@@ -39,10 +39,10 @@ pub mod api {
         AuthoritySetting, AuthorityState, BACKDATING, BUNDLE_REFRESH_HINT_SECONDS,
         CertificateAuthority, CertificateAuthoritySnapshot, CertificateFacts, DEFAULT_COMMON_NAME,
         DEFAULT_INTERMEDIATE_LIFETIME_DAYS, DEFAULT_ROOT_LIFETIME_DAYS, DEVELOPMENT_SUFFIX,
-        EXCLUDED_IP_RANGES, FactsConstraints, IssuedCertificate, MAX_AUTHORITY_TRUST_DOMAINS,
-        MAX_CHAIN_LENGTH, MAX_COMMON_NAME_LENGTH, MAX_INTERMEDIATE_LIFETIME_DAYS,
-        MAX_ROOT_LIFETIME_DAYS, NameConstraints, PATH_LENGTH, authority_trust_domain, hexadecimal,
-        to_pem,
+        EXCLUDED_IP_RANGES, FactsConstraints, IssuedCertificate, MAX_ADDITIONAL_DNS_NAMES,
+        MAX_AUTHORITY_TRUST_DOMAINS, MAX_CHAIN_LENGTH, MAX_COMMON_NAME_LENGTH,
+        MAX_INTERMEDIATE_LIFETIME_DAYS, MAX_ROOT_LIFETIME_DAYS, NameConstraints, PATH_LENGTH,
+        authority_trust_domain, hexadecimal, to_pem,
     };
     pub use crate::domain::event::{AuthorityEvent, BundleSummary, KeyEvent, TrustDomainEvent};
     pub use crate::domain::intermediate::{

@@ -1,0 +1,11 @@
+# The Istio cluster of the demonstration of Milestone 12, where Hodor, OpenBao and the Istio mesh of the
+# trust domain east.acme.example run. Its pods and services take addresses of their own, apart from the
+# Linkerd cluster's, so that an address names one cluster alone.
+#
+#   python3 deploy/demo/certificate_authority.py makes it; see docs/operations/quick-start.md.
+
+kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+networking:
+  podSubnet: 10.244.0.0/16
+  serviceSubnet: 10.96.0.0/16

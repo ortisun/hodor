@@ -17005,6 +17005,19 @@
             "minimum": 1,
             "maximum": 365,
             "description": "The longest an intermediate it signs may live: 30 unless given."
+          },
+          "uri_constraints": {
+            "type": "boolean",
+            "description": "`false`: its name constraints leave URIs unconstrained, for meshes whose verifiers refuse every URI under an authority that constrains them, such as Linkerd's proxy. `true` unless given."
+          },
+          "additional_dns_names": {
+            "type": "array",
+            "maxItems": 10,
+            "items": {
+              "type": "string",
+              "description": "A DNS name: labels of lowercase letters, digits and `-`."
+            },
+            "description": "DNS names its name constraints permit besides its trust domains, with the names under them, such as `istio-system.svc`, where Istio's control plane serves under the mesh's intermediate. None unless given."
           }
         }
       },
@@ -17040,6 +17053,8 @@
           "common_name",
           "intermediate_lifetime_days",
           "for_development",
+          "uri_constraints",
+          "additional_dns_names",
           "key",
           "name_constraints",
           "chain",
@@ -17084,6 +17099,17 @@
           "for_development": {
             "type": "boolean",
             "description": "Made on an installation set to `development`, whose key provider may keep the key where Hodor can read it."
+          },
+          "uri_constraints": {
+            "type": "boolean",
+            "description": "Whether its name constraints hold its trust domains as URI hosts. When `false`, `name_constraints.permitted_uris` is empty."
+          },
+          "additional_dns_names": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "The DNS names its name constraints permit besides its trust domains, after them in `name_constraints.permitted_dns_names`."
           },
           "key": {
             "type": "object",

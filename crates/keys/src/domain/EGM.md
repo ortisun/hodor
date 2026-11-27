@@ -94,15 +94,27 @@ through `crate::api`.
   domains, a common name of 1 to 64 characters (` (development)` added for
   development), a root's lifetime of 1 to 3650 days (1826 by default, none
   for an intermediate), a bound of 1 to 365 days (30 by default) shorter
-  than the root (`keys.authority_request_invalid`); `profile()`.
-- `NameConstraints::for_trust_domains`: each trust domain permitted as a
-  URI host and a DNS name, `0.0.0.0/0` and `::/0` excluded.
+  than the root (`keys.authority_request_invalid`); `profile()`;
+  `with_uri_constraints(bool)`, `true` unless said otherwise, and
+  `uri_constraints()`; `with_additional_dns_names(names)`, at most 10 DNS
+  names, none twice nor a trust domain (`keys.authority_request_invalid`),
+  and `additional_dns_names()` (Decision 0076).
+- `NameConstraints::for_trust_domains(trust_domains, uri_constraints,
+  additional_dns_names)`: each trust domain permitted as a DNS name and,
+  with `uri_constraints`, as a URI host, the additional DNS names permitted
+  after them; `0.0.0.0/0` and `::/0` excluded.
+- `CertificateAuthority::dns_domains()`: its trust domains, then its
+  additional DNS names: what a DNS name of an intermediate's request, its
+  narrowed constraints and an installed certificate's permitted DNS names
+  must fall within, and what an intermediate permits unless narrowed.
 - `AuthorityKey { id, provider, material, public_key }`, `new` (a P-256
   key or an internal error), `version(now)`: the ES256 `KeyVersion` a
   provider is given to sign, never stored as one.
 - `CertificateAuthority`: `root`, `intermediate`, `from_snapshot`,
   `install(facts, sha256, chain, now)` (`keys.authority_not_awaiting_certificate`,
-  `keys.authority_certificate_unsuitable` with the reason), `bundle()` (a
+  `keys.authority_certificate_unsuitable` with the reason, among them URI
+  subtrees on an authority whose snapshot's `uri_constraints` is `false`),
+  `bundle()` (a
   SPIFFE bundle with its certificate, `spiffe_sequence` the activation time
   in seconds, refresh hint 300), `name_constraints()`.
 - `to_pem(label, der)`, `hexadecimal(bytes)`.
@@ -166,7 +178,7 @@ through `crate::api`.
 
 | Variant | Fields | `event_type()` |
 | --- | --- | --- |
-| `Created` | `authority_id`, `kind`, `trust_domains`, `key_id`, `provider`, `for_development` | `keys.authority_created` |
+| `Created` | `authority_id`, `kind`, `trust_domains`, `key_id`, `provider`, `for_development`, `uri_constraints`, `additional_dns_names` | `keys.authority_created` |
 | `Signed` | `authority_id`, `signed` (`certificate`, `certificate_signing_request` or `intermediate_certificate`), `signed_sha256`, `serial_number` for a certificate, `trust_domains`, and for an intermediate `intermediate_id` and `request_sha256` | `keys.authority_signed` |
 | `Activated` | `authority_id`, `serial_number`, `certificate_sha256`, `not_after` (RFC 3339) | `keys.authority_activated` |
 | `IntermediateWithdrawn` | `authority_id`, `intermediate_id`, `serial_number`, `public_key_sha256`, `reason` | `keys.intermediate_withdrawn` |

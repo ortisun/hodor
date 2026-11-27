@@ -93,7 +93,7 @@ On Kubernetes, the chart's `keyProvider` values set all of this, mount the servi
 | `on` | A tenant's administrator may create the tenant's authority. Its key is made in OpenBao whenever `HODOR_OPENBAO_ADDRESS` is set, whatever `HODOR_KEY_PROVIDER` says; without OpenBao, creating one is refused with `keys.authority_provider_unsuitable` |
 | `development` | The same, and without OpenBao the key is made by the local provider, under the root keys of `HODOR_SECRET_KEYS`. Anyone holding the database and the configuration then holds the authority's key: every answer about such an authority says `for_development: true`, and its certificate's name ends in `(development)`. Never on an installation that serves anyone |
 
-`on` and `development` need `HODOR_SECRET_KEYS`: the server refuses to start without it.
+`on` and `development` need `HODOR_SECRET_KEYS`: the server refuses to start without it. On Kubernetes, the chart's `certificateAuthority.enabled` sets it to `on`, and `certificateAuthority.development` with it to `development` ([installing on Kubernetes](install-on-kubernetes.md#settings)); `hodor-cli` run in a server's pod reads the same setting.
 
 The authority's key is named in Transit as a version's is, `tenant-<tenant>-version-<key identifier>`, and is used through the same policy: Hodor can make it and sign with it, never read its private part, export it or delete it. Removing a tenant's authority leaves its key in OpenBao; delete it there, as OpenBao's administrator, if it is to be gone. Back the Transit keys up with OpenBao: a lost authority key cannot sign again, and the tenant's meshes then need a new authority.
 

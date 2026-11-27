@@ -187,6 +187,19 @@ topologySpreadConstraints:
 
 {{/* Where the key providers' files are mounted in the container: the token of the service account that
      OpenBao checks, and the authority of OpenBao's certificate. */}}
+{{/* HODOR_CERTIFICATE_AUTHORITY, for the servers, from certificateAuthority: nothing when it is not enabled,
+     which the servers read as off (docs/operations/keys-in-openbao.md). */}}
+{{- define "hodor.certificateAuthorityEnvironment" -}}
+{{- $authority := .Values.certificateAuthority -}}
+{{- if and $authority.development (not $authority.enabled) -}}
+{{- fail "certificateAuthority.development needs certificateAuthority.enabled" -}}
+{{- end -}}
+{{- if $authority.enabled -}}
+- name: HODOR_CERTIFICATE_AUTHORITY
+  value: {{ ternary "development" "on" (eq $authority.development true) | quote }}
+{{- end -}}
+{{- end -}}
+
 {{- define "hodor.keyProviderVolumeMounts" -}}
 {{- $openbao := .Values.keyProvider.openbao -}}
 {{- if $openbao.enabled }}
