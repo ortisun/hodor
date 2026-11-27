@@ -37,12 +37,14 @@ spec:
       labels:
         {{- include "hodor.labels" . | nindent 8 }}
         app.kubernetes.io/component: cert-manager-issuer
-      annotations:
-        # The configuration is read once at start: a change of it restarts the pod.
-        checksum/config: {{ $config | sha256sum }}
-        {{- with $values.podAnnotations }}
-        {{- toYaml . | nindent 8 }}
+        {{- with include "hodor.meshLabels" (list . true) }}
+        {{- . | nindent 8 }}
         {{- end }}
+      # The configuration is read once at start: a change of it restarts the pod. With mesh.provider, the pod
+      # joins the mesh, where it proves who it is to Hodor with its mesh identity.
+      {{- with include "hodor.podAnnotations" (list . true (merge (dict "checksum/config" ($config | sha256sum)) ($values.podAnnotations | default dict))) }}
+      {{- . | trim | nindent 6 }}
+      {{- end }}
     spec:
       serviceAccountName: {{ include "hodor.certManagerIssuerServiceAccountName" . }}
       # It watches the Kubernetes interface with its service account's token.

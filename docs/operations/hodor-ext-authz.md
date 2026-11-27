@@ -37,7 +37,7 @@ Each check Envoy sends is one `evaluate`. Every part of it comes from the check,
 **A token the proxy checked.** The proxy checks the tenant's access tokens itself, as any resource server does ([Decision 0029](../decisions/0029-hodor-in-a-service-mesh.md#the-proxies-check-hodors-tokens-themselves)): Istio with `RequestAuthentication`, Envoy with its JWT filter, Envoy Gateway with a `SecurityPolicy`. `hodor-ext-authz` reads the claims the proxy checked from one of two places, which `token` in the configuration names:
 
 - **`metadata`**: the request's metadata, where Envoy's JWT filter writes the claims when `payload_in_metadata` is set. The configuration names the namespace, `envoy.filters.http.jwt_authn` by default, and the key, the value of `payload_in_metadata`. A caller cannot write metadata, so this is the place to prefer.
-- **`header`**: a header the proxy writes the claims into, base64url-encoded, as Istio's `outputPayloadToHeader` does. A caller can send such a header too, so it is believed only when it is exactly the claims part of the bearer token in `Authorization`, which the proxy has then checked and must forward (`forwardOriginalToken: true` in Istio). A header without a token, or with another token, is denied.
+- **`header`**: a header the proxy writes the claims into, base64url-encoded, as Istio's `outputPayloadToHeader` does. A caller can send such a header too, so it is believed only when it is exactly the claims part of the bearer token in `Authorization`, which the proxy has then checked and must forward (`forwardOriginalToken: true` in Istio). A header without a token, or with another token, is denied. Envoy Gateway 1.10.0 writes no such header and passes no metadata of its token check: behind it, the caller sends the claims of its own token in the header, and the gateway must require a token on the route and check it before it asks `hodor-ext-authz`, which it does not do in its own order ([Envoy Gateway](service-mesh.md#envoy-gateway)).
 
 The claims must then hold:
 
@@ -163,7 +163,7 @@ Measured on 25 November 2026 on an Apple M3 Max laptop that ran everything at on
 | A check through `hodor-ext-authz` | 11.11 ms | 29.73 ms |
 | `evaluate` called directly | 10.86 ms | 31.41 ms |
 
-The adapter adds about 0.25 ms at the 50th percentile to what `evaluate` itself takes; at the 99th the two differ by less than the machine's own noise. The target of 15 ms at the 99th percentile is not met on this machine, and `evaluate` alone does not meet it either: most of the time is Hodor's own, reading the token's register, the roles and the binding, and writing the record of decisions, on a database reached through Docker Desktop's virtual machine on a busy laptop. A measurement on a quiet machine with its own database, and in a mesh, belongs to the demonstration of the milestone (Issue-114); a cache of decisions is considered only after it. No mesh was in the way here: a sidecar on each side adds its own hops. To measure again:
+The adapter adds about 0.25 ms at the 50th percentile to what `evaluate` itself takes; at the 99th the two differ by less than the machine's own noise. The target of 15 ms at the 99th percentile is not met on this machine, and `evaluate` alone does not meet it either: most of the time is Hodor's own, reading the token's register, the roles and the binding, and writing the record of decisions, on a database reached through Docker Desktop's virtual machine on a busy laptop. A measurement on a quiet machine with its own database, and in a mesh, is still to be made: the demonstration of Milestone 11 runs every check through a mesh, on a shared machine of continuous integration, and does not time them. A cache of decisions is considered only after it. No mesh was in the way here: a sidecar on each side adds its own hops. To measure again:
 
 ```bash
 cargo test --release -p hodor-server --test ext_authz -- --ignored --nocapture latency
@@ -183,7 +183,7 @@ The chart installs it with `extAuthz.enabled`, beside Hodor or in a release of i
 
 ## In Istio
 
-These examples follow Istio's documentation and have not been tried yet: the demonstration of Milestone 11 is to run them on kind (Issue-114). [The service mesh guide](service-mesh.md) shows them with the rest of what Istio needs, does the same for ambient mode, Consul and Envoy Gateway, and says what was tried for each.
+These examples run in continuous integration, in [the demonstration of Milestone 11](quick-start.md#the-demonstration-of-milestone-11), on kind with Istio 1.30.8, and with Envoy Gateway 1.10.0 in front of Linkerd. [The service mesh guide](service-mesh.md) shows them with the rest of what Istio needs, does the same for ambient mode, Consul and Envoy Gateway, and says what was tried for each.
 
 The provider, in Istio's mesh configuration:
 
@@ -197,7 +197,7 @@ meshConfig:
         timeout: 2s
 ```
 
-The token checked by the proxy, with its claims for `hodor-ext-authz` (`"token": {"header": "x-hodor-token-claims"}`):
+The token checked by the proxy. A sidecar asks external authorization before it checks a token, so the claims for `hodor-ext-authz` (`"token": {"header": "x-hodor-token-claims"}`) are written by the ingress gateway, whose `RequestAuthentication` the guide shows ([Istio, with sidecars](service-mesh.md#istio-with-sidecars)); the one of Orders refuses a token that fails, after the check:
 
 ```yaml
 apiVersion: security.istio.io/v1
@@ -244,7 +244,7 @@ spec:
 | Missing | Until then |
 |---|---|
 | A cache of decisions | Every check is one `evaluate` (Decision 0029) |
+| Checking a token's signature itself | It believes claims that are the bearer token's own, and the proxy checks the token. Istio's sidecar and, in its own order, Envoy Gateway ask it before they check the token: check tokens at the ingress gateway, as [the service mesh guide](service-mesh.md#istio-with-sidecars) says |
 | A JWT-SVID as its credential | It proves who it is with the certificate its sidecar presents, or the identity Linkerd asserts |
 | The request's attributes, such as the address or the headers, as `context` | Policies decide on the subject, the resource and the action |
 | Reloading the configuration without a restart | A change takes a restart |
-| Being tried in a mesh | The demonstration of Milestone 11 (Issue-114). [The service mesh guide](service-mesh.md#what-was-tried-and-what-was-not) says what was tried so far |

@@ -1,0 +1,38 @@
+# The chart's settings for the demonstration of Milestone 11 in both meshes: one server and one worker,
+# small, beside the stand-ins of deploy/install/helm/evaluation.yaml, which stay out of the mesh, with mail
+# delivered to the stand-in's mailbox, which the script reads. hodor-istio.yaml and hodor-linkerd.yaml say
+# how Hodor runs in each mesh, and the script adds hodor-ext-authz once the tenant it asks for exists. The
+# images are given on the command line. NOT FOR ANYTHING REAL.
+#
+#   python3 deploy/demo/service_mesh.py installs it; see docs/operations/quick-start.md.
+
+# The address the workloads of the cluster reach Hodor at; every tenant's issuer starts with it.
+publicUrl: http://hodor.hodor.svc:8080
+secret:
+  name: hodor-evaluation
+mail:
+  enabled: true
+  from: "Hodor <no-reply@example.com>"
+
+server:
+  replicas: 1
+  passwordHashConcurrency: 1
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      memory: 512Mi
+  podDisruptionBudget:
+    enabled: false
+
+worker:
+  replicas: 1
+  resources:
+    requests:
+      cpu: 50m
+      memory: 128Mi
+    limits:
+      memory: 512Mi
+  podDisruptionBudget:
+    enabled: false

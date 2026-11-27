@@ -1,4 +1,17 @@
 {{- if and .Values.networkPolicy.enabled (include "hodor.installsHodor" .) }}
+{{- $linkerd := eq (include "hodor.meshProvider" .) "linkerd" }}
+{{- /* Who may reach the servers: networkPolicy.ingressFrom, and when it names anyone, the release's own
+       hodor-ext-authz and hodor-cert-manager-issuer, which ask the servers. Empty: anyone in the cluster. */}}
+{{- $serverPeers := list }}
+{{- with .Values.networkPolicy.ingressFrom }}
+{{- $serverPeers = . }}
+{{- range $component, $installed := dict "ext-authz" $.Values.extAuthz.enabled "cert-manager-issuer" $.Values.certManagerIssuer.enabled }}
+{{- if $installed }}
+{{- $selector := merge (dict "app.kubernetes.io/component" $component) (include "hodor.selectorLabels" $ | fromYaml) }}
+{{- $serverPeers = append $serverPeers (dict "podSelector" (dict "matchLabels" $selector)) }}
+{{- end }}
+{{- end }}
+{{- end }}
 # Applies to every pod of the release: servers, workers, the migration job, hodor-ext-authz and
 # hodor-cert-manager-issuer. Only the servers have the port `http`, and only hodor-ext-authz the port `grpc`,
 # so nothing can connect to a worker, to the job or to the issuer. The operations port is not opened to
@@ -22,12 +35,7 @@ spec:
     - ports:
         - port: http
           protocol: TCP
-        {{- if eq (include "hodor.meshProvider" .) "linkerd" }}
-        # Where Linkerd's proxy receives every connection from another of its proxies.
-        - port: 4143
-          protocol: TCP
-        {{- end }}
-      {{- with .Values.networkPolicy.ingressFrom }}
+      {{- with $serverPeers }}
       from:
         {{- toYaml . | nindent 8 }}
       {{- end }}
@@ -67,6 +75,11 @@ spec:
     - ports:
         - port: http
           protocol: TCP
+        {{- if $linkerd }}
+        # Where Linkerd's proxy beside a server receives the connection.
+        - port: 4143
+          protocol: TCP
+        {{- end }}
       to:
         - podSelector:
             matchLabels:
@@ -74,4 +87,57 @@ spec:
               app.kubernetes.io/component: server
     {{- end }}
   {{- end }}
+{{- if $linkerd }}
+---
+# Every connection between two of Linkerd's proxies arrives on port 4143, whatever port it is for. On the
+# servers' pods, it is opened to the servers' callers only.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "hodor.fullname" . }}-server-mesh
+  labels:
+    {{- include "hodor.labels" . | nindent 4 }}
+    app.kubernetes.io/component: server
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "hodor.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: server
+  policyTypes:
+    - Ingress
+  ingress:
+    - ports:
+        - port: 4143
+          protocol: TCP
+      {{- with $serverPeers }}
+      from:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+{{- if .Values.extAuthz.enabled }}
+---
+# On hodor-ext-authz's pods, port 4143 is opened to the proxies of the protected applications only.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "hodor.fullname" . }}-ext-authz-mesh
+  labels:
+    {{- include "hodor.labels" . | nindent 4 }}
+    app.kubernetes.io/component: ext-authz
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "hodor.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: ext-authz
+  policyTypes:
+    - Ingress
+  ingress:
+    - ports:
+        - port: 4143
+          protocol: TCP
+      {{- with .Values.extAuthz.networkPolicy.ingressFrom }}
+      from:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+{{- end }}
+{{- end }}
 {{- end }}

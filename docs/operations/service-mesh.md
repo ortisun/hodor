@@ -23,13 +23,13 @@ Not every example on this page has been run, and those that have were not all ru
 
 | Mark | Meaning |
 |---|---|
-| **Continuous integration** | Run on every pull request by [the demonstration of Milestone 10](quick-start.md#the-demonstration-of-milestone-10), `deploy/demo/workload_identity.py`, on a kind cluster with Istio 1.30.8 and its sidecars, SPIRE 1.15.5 and Hodor installed by its chart, against the image built from the pull request |
+| **Continuous integration** | Run on every pull request against the images built from it, by [the demonstration of Milestone 10](quick-start.md#the-demonstration-of-milestone-10), `deploy/demo/workload_identity.py`, on a kind cluster with Istio 1.30.8 and its sidecars, SPIRE 1.15.5 and Hodor installed by its chart, or by [the demonstration of Milestone 11](quick-start.md#the-demonstration-of-milestone-11), `deploy/demo/service_mesh.py`, on a kind cluster with Istio 1.30.8, its sidecars and its ingress gateway, and on one with Linkerd edge-26.11.1 and Envoy Gateway 1.10.0 in front, Hodor and `hodor-ext-authz` installed in each by the chart with `mesh.provider` |
 | **Rendered in continuous integration** | The chart is linted and rendered with these values on every pull request. Nothing is installed |
 | **Tried by hand on kind** | Run once, on a kind cluster of one node with Kubernetes 1.37, while the feature was built, and written down in [the progress of Milestone 11](../product/progress.md#milestone-11--hodor-in-a-service-mesh) or [of Milestone 12](../product/progress.md#milestone-12--an-optional-certificate-authority-per-tenant). Istio 1.31.4, Linkerd edge-26.11.1, cert-manager 1.21.3. Not repeated since |
 | **Tested against the real server** | A test of the workspace runs the real binaries against PostgreSQL, with the proxy played by the test, which writes the header a proxy would. No mesh |
 | **Not tried** | Written from the mesh's own documentation. Check it against the version you run |
 
-The demonstration of Milestone 11 ([Issue-114](../product/epics.md#slice-inside-a-mesh-epic-32)) is to run every example for Istio and Linkerd on kind in continuous integration, and the demonstration of Milestone 12 ([Issue-119](../product/epics.md#slice-meshes-on-the-authority-epic-33)) the meshes under the tenant's certificate authority. Until they do, the marks below say what is known. The script of Milestone 11 puts Envoy Gateway in front of Linkerd, so that part of Envoy Gateway is to run too. Consul is not planned to run anywhere: Milestone 11 leaves meshes other than Istio and Linkerd out of continuous integration.
+The demonstration of Milestone 11 ([Issue-114](../product/epics.md#slice-inside-a-mesh-epic-32)) runs the examples for Istio with sidecars and for Linkerd, and Envoy Gateway in front of Linkerd, on kind in continuous integration. Istio's ambient mode is not in it, and the demonstration of Milestone 12 ([Issue-119](../product/epics.md#slice-meshes-on-the-authority-epic-33)) runs the meshes under the tenant's certificate authority. Consul is not planned to run anywhere: Milestone 11 leaves meshes other than Istio and Linkerd out of continuous integration.
 
 ## What every mesh needs in Hodor
 
@@ -87,7 +87,7 @@ A JWT-SVID is used once: Hodor refuses one it has seen, so the workload fetches 
 
 ### Checking Hodor's tokens
 
-A `RequestAuthentication` names the tenant's issuer and key set. Name the audience of the application's resource server too: `hodor-ext-authz` checks the issuer and the expiry of the claims it is given, not their audience, so the proxy is where a token for another application of the tenant is refused.
+A `RequestAuthentication` names the tenant's issuer and key set. Name the audience of the application's resource server too, so that the proxy refuses a token for another application of the tenant before it asks anything. `hodor-ext-authz` refuses such a token as well, since its configuration names each application's audience ([Decision 0077](../decisions/0077-ext-authz-checks-the-audience.md)).
 
 ```yaml
 apiVersion: security.istio.io/v1
@@ -129,6 +129,29 @@ spec:
 
 Leave that policy out when other workloads call Orders with their mesh identity alone and `hodor-ext-authz` decides on it, as below.
 
+**Check the token at the ingress gateway too, for `hodor-ext-authz`.** A sidecar asks external authorization before it checks a token: Istio 1.30 puts the filter of an `AuthorizationPolicy` of action `CUSTOM` ahead of the one of `RequestAuthentication`, and both ahead of `ALLOW` and `DENY`. So the claims Orders' own sidecar writes into `x-hodor-token-claims` do not exist yet when `hodor-ext-authz` is asked, and it decides on the caller's identity instead, which for a person behind the gateway is the gateway's. The ingress gateway checks the token before it forwards anything, so give it a `RequestAuthentication` that writes the claims, and Orders' sidecar passes them to the check with the token:
+
+```yaml
+apiVersion: security.istio.io/v1
+kind: RequestAuthentication
+metadata:
+  name: edge
+  namespace: istio-system
+spec:
+  selector:
+    matchLabels:
+      istio: ingressgateway
+  jwtRules:
+    - issuer: https://login.example.com/t/acme
+      jwksUri: https://login.example.com/t/acme/oauth2/jwks
+      forwardOriginalToken: true
+      outputPayloadToHeader: x-hodor-token-claims
+```
+
+- **The gateway checks every token that goes through it**, for every host it serves. It names no audience here: `hodor-ext-authz` and Orders' own `RequestAuthentication` check that. A bearer token that is not a JSON Web Token of this issuer, such as an administrator's token for Hodor's own interface, is refused at the gateway: serve the protected applications from a gateway of their own when such tokens pass through it.
+- **Orders' own `RequestAuthentication` stays**, and refuses a token that fails, once the check is done.
+- **From inside the mesh, the check comes before any token is checked.** A workload that calls Orders directly, not through the gateway, with claims beside a token it made up, is refused by Orders' `RequestAuthentication` after `hodor-ext-authz` has asked Hodor: Hodor records a decision about claims nobody checked, and whether the answer is `403` or `401` tells the caller what it was. [What is missing](#what-is-missing) has it.
+
 ### Asking Hodor's decisions
 
 `hodor-ext-authz` runs in the mesh with an identity of its own, given by its Kubernetes service account, `hodor-ext-authz` for the release `hodor`: `spiffe://cluster.local/ns/hodor/sa/hodor-ext-authz`. Install it with the chart, beside Hodor:
@@ -144,6 +167,7 @@ extAuthz:
   applications:
     - destination: spiffe://cluster.local/ns/shop/sa/orders
       clientId: 0193f1c2-6a1d-7c55-b0c8-6b1f2c9d4e01
+      audience: https://orders.example.com
       routes:
         - methods: [GET]
           path: /orders/{id}
@@ -151,13 +175,7 @@ extAuthz:
           action: read
 ```
 
-**`mesh.provider` does not put `hodor-ext-authz` in the mesh yet**, only Hodor's server, worker and migration job ([what is missing](#what-is-missing)). Label the namespace so that Istio injects every pod of it:
-
-```bash
-kubectl label namespace hodor istio-injection=enabled
-```
-
-Then name `hodor-ext-authz` as a provider in Istio's mesh configuration, and send every request for Orders to it:
+`mesh.provider` puts `hodor-ext-authz` in the mesh with Hodor's server, worker and migration job, so the namespace needs no label ([Decision 0078](../decisions/0078-every-pod-of-the-release-in-the-mesh.md)). Then name `hodor-ext-authz` as a provider in Istio's mesh configuration, and send every request for Orders to it:
 
 ```yaml
 meshConfig:
@@ -187,7 +205,7 @@ spec:
 ```
 
 - **The application asked about** is the one whose `destination` is the identity of the workload the request is for, `destination.principal`, which Orders' sidecar fills with its own certificate's identity.
-- **The subject** is the `sub` of the checked token, read from `x-hodor-token-claims` and believed only because it equals the claims of the bearer token the proxy forwarded. With no token, it is the caller's identity, which Hodor resolves to the service account bound to it.
+- **The subject** is the `sub` of the checked token, read from `x-hodor-token-claims`, which the ingress gateway wrote, and believed only because it equals the claims of the bearer token the proxy forwarded. With no token, it is the caller's identity, which Hodor resolves to the service account bound to it.
 - **Failing closed.** `hodor-ext-authz` answers denied on every failure, and Istio's own `failOpen` is `false` unless set, so a request is refused when `hodor-ext-authz` cannot be reached. Stopping Hodor denies every request.
 - **Let only the proxies of the protected applications reach it**, with `extAuthz.networkPolicy.ingressFrom` naming the namespace `shop`.
 
@@ -221,18 +239,18 @@ networkPolicy:
           kubernetes.io/metadata.name: shop
 ```
 
-`mesh.provider` injects the sidecar, leaves the operations port out of it, trusts the sidecar's `127.0.0.6` and `::6` and its header, and reads a forwarded address only from the gateways of `gatewayIdentities`, which become `HODOR_GATEWAY_IDENTITIES`. Every other workload is known by the sidecar's address and shares one limit on sign-in attempts. [Inside a service mesh](install-on-kubernetes.md#inside-a-service-mesh) explains each value, the way out through `outboundTrafficPolicy`, and what to do on a cluster without native sidecars. A gateway made from the Gateway API runs as `<gateway>-istio` in its own namespace; name that identity instead.
+`mesh.provider` injects the sidecar, leaves the operations port out of it, trusts the sidecar's `127.0.0.6` and `::6` and its header, and reads a forwarded address only from the gateways of `gatewayIdentities`, which become `HODOR_GATEWAY_IDENTITIES`. Every other workload is known by the sidecar's address and shares one limit on sign-in attempts. [Inside a service mesh](install-on-kubernetes.md#inside-a-service-mesh) explains each value, the way out through `outboundTrafficPolicy`, and what to do on a cluster without native sidecars. A gateway made from the Gateway API runs as `<gateway>-istio` in its own namespace; one installed from Istio's `gateway` chart runs as the name of its release, `istio-ingressgateway` in the demonstration of Milestone 11. Name the identity yours runs as.
 
 | Example | What ran it |
 |---|---|
-| Hodor behind its sidecar, with `trustedProxies`, `forwardedHeader: none` and `clientIdentityHeader` | **Continuous integration** |
-| A token with `client_id` alone, `spiffe_x509` under `cluster.local` checked by the mesh, bound to the sidecar's certificate and refused without it | **Continuous integration** |
-| `X-Forwarded-Client-Cert` written by a caller outside the mesh, ignored | **Continuous integration** |
-| `mesh.provider: istio` with `gatewayIdentities` | **Rendered in continuous integration**. **Tried by hand on kind**: installed with the network policy on, the migration job completed, two clients outside the mesh behind the ingress gateway limited apart, a workload forging its address on every request limited as one |
+| Hodor behind its sidecar, with `trustedProxies`, `forwardedHeader: none` and `clientIdentityHeader` | **Continuous integration**, by the demonstration of Milestone 10 |
+| A token with `client_id` alone, `spiffe_x509` under `cluster.local` checked by the mesh, bound to the sidecar's certificate and refused without it | **Continuous integration**, by the demonstration of Milestone 10 |
+| `X-Forwarded-Client-Cert` written by a caller outside the mesh, ignored | **Continuous integration**, by the demonstration of Milestone 10 |
+| `mesh.provider: istio` with `gatewayIdentities` and the network policy on, the namespace with no label | **Continuous integration**, by the demonstration of Milestone 11: Hodor's pods and `hodor-ext-authz`'s with their sidecar, the stand-ins beside them without; two clients outside the mesh behind the ingress gateway limited apart, one locked out while the other signs in and is known by its own address; a workload of the mesh writing `X-Forwarded-For` known by the sidecar's `127.0.0.6`. **Tried by hand on kind**: a workload forging its address on every request limited as one |
+| `RequestAuthentication` against the tenant's key set, at the ingress gateway with `forwardOriginalToken` and `outputPayloadToHeader`, and at Orders with `audiences` | **Continuous integration**, by the demonstration of Milestone 11: a token of another tenant refused with `401`. Its first run in continuous integration showed the order of the filters: with Orders' `RequestAuthentication` alone, every person was refused, `hodor-ext-authz` deciding on the gateway's identity |
+| `hodor-ext-authz` as Istio's provider, in its own sidecar, with an `AuthorizationPolicy` of action `CUSTOM` | **Continuous integration**, by the demonstration of Milestone 11: a person who holds the role let through and one who does not refused with `403`, both decisions in Hodor's record; no token, `403`; Hodor stopped, `403`. **Tested against the real server**: its decision equal to `evaluate`'s, and each denial |
 | What the sidecar and the ingress gateway hand Hodor; `REGISTRY_ONLY` and the `Sidecar` that lets Hodor out | **Tried by hand on kind** |
-| `RequestAuthentication` and `AuthorizationPolicy` against the tenant's key set | **Not tried** |
-| `hodor-ext-authz` as Istio's provider, in its own sidecar | **Not tried** in a mesh. **Tested against the real server**: its decision equal to `evaluate`'s, and each denial, with its sidecar played by the header its test client writes |
-| A gateway made from the Gateway API, Istio with the way out restricted by the network policy, classic sidecars | **Not tried** |
+| A gateway made from the Gateway API, Istio with the way out restricted by the network policy, classic sidecars, `failOpen` | **Not tried** |
 
 ## Istio's ambient mode
 
@@ -385,13 +403,12 @@ networkPolicy:
 
 | Example | What ran it |
 |---|---|
-| `mesh.provider: linkerd` with `gatewayIdentities` | **Rendered in continuous integration**. **Tried by hand on kind**: installed with the network policy on and the way out restricted to the control plane and the database, the migration job completed, two callers behind a meshed pod standing in for the gateway limited apart, a workload forging its address limited as one |
-| What the proxy hands Hodor: the pod's own address, `l5d-client-id` replaced for a meshed caller and removed for one outside the mesh; port 4143; the delay on port 587 | **Tried by hand on kind** |
-| `hodor-cli mesh linkerd-policy`, its file | **Tested against the real server**, its documents checked against Linkerd's custom resource definitions of edge-26.11.2. **Tried by hand on kind**: two files it wrote accepted by `kubectl apply --dry-run=server` with those definitions |
-| The policies applied, and a workload with no role refused by Linkerd | **Not tried** |
-| A token with `linkerd_identity` | **Tested against the real server**, with the proxy played by the test. **Not tried** in Linkerd |
+| `mesh.provider: linkerd` with `gatewayIdentities` and the network policy on | **Continuous integration**, by the demonstration of Milestone 11, Envoy Gateway in front and meshed: Hodor's pods and `hodor-ext-authz`'s with their proxy, the migration job completed, port 4143 open to each one's own callers; two clients outside the mesh behind the gateway limited apart, one locked out while the other signs in and is known by its own address; a workload of the mesh writing `X-Forwarded-For` known by the pod's own address. **Tried by hand on kind**: the way out restricted to the control plane and the database |
+| `hodor-ext-authz` getting its tokens with `linkerd_identity`, its proxy asserting its identity to Hodor's | **Continuous integration**, by the demonstration of Milestone 11 |
+| `hodor-cli mesh linkerd-policy`, its file applied to a `Server`, and a workload with no role refused by Linkerd | **Continuous integration**, by the demonstration of Milestone 11: before the `Server`, a workload with no role reaches Orders, whose proxy names it in `l5d-client-id`; after the file is applied, Linkerd refuses it with `403` and lets in the workload whose service account holds the role. **Tested against the real server**, its documents checked against Linkerd's custom resource definitions |
+| What the proxy hands Hodor: `l5d-client-id` removed for a caller outside the mesh; the delay on port 587 | **Tried by hand on kind** |
+| A token with `linkerd_identity` for a workload of its own | **Tested against the real server**, with the proxy played by the test. In Linkerd, only `hodor-ext-authz`'s, above |
 | The application asking about `l5d-client-id` | **Tested against the real server**: a workload named by its identity through `evaluate`. **Not tried** in Linkerd |
-| A real ingress in front of Linkerd | **Not tried**: a meshed pod stood in for it |
 
 ## Consul
 
@@ -425,7 +442,7 @@ Sources = [
 ]
 ```
 
-Check the audience in the intentions too, as Consul's documentation shows, since `hodor-ext-authz` does not.
+Check the audience in the intentions too, as Consul's documentation shows, so that the proxy refuses a token for another application before it asks `hodor-ext-authz`, which refuses it too.
 
 ### Asking Hodor's decisions
 
@@ -466,7 +483,7 @@ There is no `mesh.provider` for Consul. Ask for Consul's proxy with `server.podA
 
 ## Envoy Gateway
 
-Envoy Gateway is a gateway built on the Gateway API, not a mesh. It checks tokens and asks `hodor-ext-authz` for the requests that come into the cluster, in front of Linkerd above all, which cannot do either.
+Envoy Gateway is a gateway built on the Gateway API, not a mesh. It checks tokens and asks `hodor-ext-authz` for the requests that come into the cluster, in front of Linkerd above all, which cannot do either. What follows is what the demonstration of Milestone 11 runs with Envoy Gateway 1.10.0, in front of Linkerd; its files are in `deploy/demo/service-mesh/`.
 
 ### Checking Hodor's tokens and asking Hodor's decisions
 
@@ -499,17 +516,73 @@ spec:
           port: 9191
 ```
 
-A reference to a service of another namespace needs a `ReferenceGrant` in the namespace `hodor`, as the Gateway API requires.
+- **The key set is fetched over HTTPS only.** `remoteJWKS` takes an `https` address. The demonstration's Hodor answers in plain HTTP inside the cluster, so it gives the key set inline instead, with `localJWKS` of type `Inline`, which must then be replaced when the tenant's keys change.
+- **A request without a good token is refused by Envoy Gateway**, with `401`, before anything is asked, unless the `jwt` section says `optional: true`. Keep it required: the next point relies on it.
+- **A reference to a service of another namespace needs a `ReferenceGrant`** in the namespace `hodor`, from the `SecurityPolicy` of the namespace `shop`, as the Gateway API requires.
 
-**At a gateway, the destination is the gateway.** Envoy fills `destination.principal` from the certificate of the listener that received the request, so `hodor-ext-authz` sees the gateway's own name, not the application's. A listener without TLS gives none, and every check is denied. The application is then chosen by the listener's certificate: one application per listener, unless the route sends the resource and the action as context per route, `hodor_resource_type`, `hodor_action` and `hodor_resource_id`, which `hodor-ext-authz` reads in place of its rules. Whether your version of Envoy Gateway can send context per route, and whether it forwards the JWT filter's metadata to the check so that `hodor-ext-authz` sees the claims, was not confirmed. A person's request from outside the cluster has no mesh identity, so without the claims it is denied.
+**The claims reach `hodor-ext-authz` from the caller.** Envoy Gateway 1.10.0 checks the token and forwards it, and writes its claims into the request's metadata, but sends `hodor-ext-authz` none of that metadata, and writes no header of the claims as Istio does. So the caller sends the claims of the token it presents in `x-hodor-token-claims`, the token's middle part as it is, and `hodor-ext-authz` reads them with `token.header`. They are believed only when they are exactly the claims of the bearer token, which Envoy Gateway has just checked: a caller that sends another token's claims beside its own token is refused with `403`, and one that sends no token never reaches the check. This is sound only while the route's `SecurityPolicy` requires a token, and only once the token is checked before `hodor-ext-authz` is asked. **Envoy Gateway asks external authorization before it checks a token**, in its default order of filters: unchanged, Hodor would be asked, and would record a decision, about the claims of a token nobody has checked yet, and whether the answer is `403` or `401` would tell the caller what Hodor decided about them. Put the JWT check first with the `filterOrder` of the `EnvoyProxy`, as below.
+
+**At a gateway, the destination is the gateway's listener.** Envoy fills `destination.principal` from the certificate of the listener that received the request: its first URI name, or else its first DNS name. So the listener for Orders serves TLS, with a certificate for `orders.example.com`, and the application's entry in `hodor-ext-authz`'s configuration names `orders.example.com` as its `destination`. A listener without TLS gives no destination, and every check is denied. One application per listener, then, unless the route sends the resource and the action as context per route, `hodor_resource_type`, `hodor_action` and `hodor_resource_id`, which `hodor-ext-authz` reads in place of its rules; the `SecurityPolicy` of Envoy Gateway 1.10.0 has `contextExtensions` for it, which was not tried.
+
+```yaml
+extAuthz:
+  enabled: true
+  tenant: acme
+  token:
+    header: x-hodor-token-claims
+  applications:
+    - destination: orders.example.com
+      clientId: 0193f1c2-6a1d-7c55-b0c8-6b1f2c9d4e01
+      audience: https://orders.example.com
+      routes:
+        - methods: [GET]
+          path: /orders/{id}
+          resourceType: order
+          action: read
+```
 
 ### Running it in front of Hodor
 
-In front of Hodor inside Linkerd, mesh the gateway's proxies, for example through Envoy Gateway's `EnvoyProxy` resource with the annotation `linkerd.io/inject: enabled` on its pods, and name the identity of the service account they run as in `gatewayIdentities`. `kubectl get pod --namespace <namespace> <pod> --output jsonpath='{.spec.serviceAccountName}'` says which it is. Envoy Gateway adds the address it received the request from to `X-Forwarded-For`, as Hodor needs. Outside a mesh, name the range its pods get their addresses from in `trustedProxies`, as for any ingress controller ([the address of each client](install-on-kubernetes.md#the-address-of-each-client)).
+In front of Hodor inside Linkerd, mesh the gateway's proxies through Envoy Gateway's `EnvoyProxy` resource, named by the `GatewayClass`'s `parametersRef`:
+
+```yaml
+apiVersion: gateway.envoyproxy.io/v1alpha1
+kind: EnvoyProxy
+metadata:
+  name: meshed
+  namespace: envoy-gateway-system
+spec:
+  # The token is checked before hodor-ext-authz is asked.
+  filterOrder:
+    - name: envoy.filters.http.jwt_authn
+      before: envoy.filters.http.ext_authz
+  provider:
+    type: Kubernetes
+    kubernetes:
+      envoyServiceAccount:
+        name: edge-gateway
+      envoyDeployment:
+        pod:
+          annotations:
+            linkerd.io/inject: enabled
+            config.linkerd.io/skip-inbound-ports: "8080,8443"
+```
+
+- **Check the token before asking `hodor-ext-authz`**, with `filterOrder`: Envoy Gateway's own order asks external authorization first.
+
+- **Leave the listeners' ports out of Linkerd's proxy on the way in**, with `config.linkerd.io/skip-inbound-ports`. Through the proxy, every client would reach Envoy from the pod's own address, and Envoy would forward that one address for everybody. Envoy listens on the listeners' own ports when they are 1024 or more; below, it adds 10000 unless `useListenerPortAsContainerPort` is set.
+- **Name the gateway's service account**, with `envoyServiceAccount`, so that its identity is known before it runs: here `edge-gateway.envoy-gateway-system.serviceaccount.identity.linkerd.cluster.local`, in `gatewayIdentities`. Otherwise Envoy Gateway makes up a name, which `kubectl get pod --namespace envoy-gateway-system <pod> --output jsonpath='{.spec.serviceAccountName}'` reads.
+- **Envoy adds the address it received the request from to `X-Forwarded-For`**, as Hodor needs.
+- **Install Envoy Gateway before Linkerd.** Its chart brings the Gateway API's definitions, which Linkerd's control plane needs and its own chart no longer installs.
+
+Outside a mesh, name the range Envoy Gateway's pods get their addresses from in `trustedProxies`, as for any ingress controller ([the address of each client](install-on-kubernetes.md#the-address-of-each-client)).
 
 | Example | What ran it |
 |---|---|
-| Everything in this section | **Not tried**. A meshed pod stood in for the gateway when Hodor was tried inside Linkerd. The demonstration of Milestone 11 (Issue-114) is to run Envoy Gateway in front of Linkerd |
+| The `SecurityPolicy` with `jwt`, the key set inline, and `extAuth` to `hodor-ext-authz`, the token checked first by `filterOrder` | **Continuous integration**, by the demonstration of Milestone 11: a person who holds the role let through and one who does not refused with `403`; no token `401`; a token of another tenant `401`; another token's claims beside the bearer token `403`; Hodor stopped, `403` |
+| The destination named by the listener's certificate | **Continuous integration**, by the demonstration of Milestone 11 |
+| Envoy Gateway meshed by Linkerd in front of Hodor, named in `gatewayIdentities` | **Continuous integration**, by the demonstration of Milestone 11 |
+| `remoteJWKS`, context per route, Envoy Gateway outside a mesh or in front of Istio | **Not tried** |
 
 ## One root for every mesh
 
@@ -531,10 +604,9 @@ helm install cert-manager oci://quay.io/jetstack/charts/cert-manager --namespace
 
 | Missing | Until then |
 |---|---|
-| `mesh.provider` putting `hodor-ext-authz` and `hodor-cert-manager-issuer` in the mesh | It injects Hodor's server, worker and migration job only. Label the namespace (`istio-injection=enabled`), or set `extAuthz.podAnnotations` and `certManagerIssuer.podAnnotations` (`linkerd.io/inject: enabled`). Issue-114 is to handle it |
-| The network policy for `hodor-ext-authz` in Linkerd | With `mesh.provider: linkerd`, meshed connections arrive on port 4143, which the chart opens to `networkPolicy.ingressFrom`, not to `extAuthz.networkPolicy.ingressFrom`: name the callers of `hodor-ext-authz` in the first too |
+| `hodor-ext-authz` checking a token's signature itself | Istio's sidecar asks it before checking the token, so claims from inside the mesh reach Hodor unchecked, and Orders' own `RequestAuthentication` refuses them only after. Check tokens at the ingress gateway, and keep the proxy's own check ([Istio, with sidecars](#istio-with-sidecars)) |
+| Envoy Gateway handing `hodor-ext-authz` the claims it checked | The caller sends them in `x-hodor-token-claims`, believed only when they are the claims of the token Envoy Gateway checked first, with the JWT check put before external authorization ([Envoy Gateway](#envoy-gateway)) |
 | A value of the chart for Consul and for Istio's ambient mode | `trustedProxies`, `clientIdentityHeader`, `gatewayIdentities`, the pod annotations and a network policy of your own |
-| `hodor-ext-authz` reading the token's audience | It checks the issuer and the expiry. Check the audience at the proxy |
 | The proxies checking a token's binding to a certificate | A bound token checked only by a proxy is a bearer token there. Hodor checks the binding wherever it accepts a token |
 | A revoked token refused by the proxies | They accept it until it expires, five minutes by default, as any resource server that checks tokens by itself does ([Decision 0004](../decisions/0004-token-formats.md)) |
 | A controller that applies Linkerd policies as roles change | Run `hodor-cli mesh linkerd-policy` after each change of roles, and apply its file |
@@ -555,10 +627,10 @@ The adapter adds about a quarter of a millisecond. **Whether the target is met i
 
 | Mesh | Checking tokens | Asking decisions | Workloads' identity at Hodor | Hodor inside |
 |---|---|---|---|---|
-| Istio, with sidecars | Not tried | `hodor-ext-authz` tested against the real server; not tried in Istio | Continuous integration: `spiffe_x509`, bound tokens, a forged header ignored; a JWT-SVID from SPIRE | Rendered in continuous integration; tried by hand on kind with `mesh.provider` and the ingress gateway. Continuous integration with `trustedProxies` and no gateway |
+| Istio, with sidecars | Continuous integration: `RequestAuthentication` | Continuous integration: `hodor-ext-authz` as the provider of an `AuthorizationPolicy` of action `CUSTOM` | Continuous integration: `spiffe_x509`, bound tokens, a forged header ignored; a JWT-SVID from SPIRE; `hodor-ext-authz`'s own | Continuous integration with `mesh.provider`, the ingress gateway and the network policy, and with `trustedProxies` and no gateway |
 | Istio, ambient | Not tried | Not tried | A JWT-SVID needs no mesh; nothing else reaches Hodor | What ztunnel and a waypoint hand Hodor tried by hand on kind |
-| Linkerd | Not possible | Policies checked against Linkerd's definitions and on a dry run; not applied. The application asking tested against the real server | `linkerd_identity` tested against the real server; not tried in Linkerd | Rendered in continuous integration; tried by hand on kind |
+| Linkerd | Not possible: Envoy Gateway in front, in continuous integration | Continuous integration: Envoy Gateway in front, and the policies of `hodor-cli mesh linkerd-policy` applied. The application asking tested against the real server | Continuous integration: `hodor-ext-authz`'s, with `linkerd_identity` | Continuous integration with `mesh.provider`, Envoy Gateway in front and the network policy |
 | Consul | Not tried | Not tried | Not tried | Not tried |
-| Envoy Gateway | Not tried; Issue-114 is to run it in front of Linkerd | Not tried; Issue-114 is to run it in front of Linkerd | Not a mesh | Not tried; a meshed pod stood in for it |
+| Envoy Gateway | Continuous integration, in front of Linkerd, the key set inline | Continuous integration, in front of Linkerd, the claims sent by the caller | Not a mesh | Continuous integration, meshed by Linkerd |
 
 Never tried anywhere: a cluster of several nodes, a network plugin other than kind's, Istio's classic sidecars, Istio's gateways made from the Gateway API, Istio with the way out restricted by the network policy, Kuma, Cilium and any mesh not named here. A mesh built on Envoy that forwards `X-Forwarded-Client-Cert` and speaks Envoy's external authorization should work as Istio and Consul do, but none was tried.

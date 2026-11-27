@@ -118,9 +118,10 @@ gatewayIdentities: []
 # Hodor's pods with the proxy of a service mesh beside them. Istio's ambient mode needs nothing here: see
 # "Inside a service mesh" in docs/operations/install-on-kubernetes.md.
 mesh:
-  # istio or linkerd: the server's and the worker's pods join that mesh; the health checks on the operations
-  # port stay out of its proxy; the proxy is a trusted proxy for the caller's identity; and the forwarded
-  # address is read only from gatewayIdentities. Empty: nothing is done for a mesh.
+  # istio or linkerd: the server's and the worker's pods join that mesh, and so do hodor-ext-authz's and
+  # hodor-cert-manager-issuer's; the health checks on the operations port stay out of its proxy; the proxy is
+  # a trusted proxy for the caller's identity; and the forwarded address is read only from
+  # gatewayIdentities. Empty: nothing is done for a mesh.
   provider: ""
   # The migration job joins the mesh too. Keep it with native sidecars, which both meshes inject on
   # Kubernetes 1.33 and newer. With a classic sidecar the job never completes: set false, if the database can
@@ -243,8 +244,10 @@ ingress:
 
 networkPolicy:
   enabled: false
-  # Who may reach the servers' public port, as Kubernetes writes network policy peers. Empty: anyone in
-  # the cluster. For an ingress controller in the namespace ingress-nginx:
+  # Who may reach the servers' public port, as Kubernetes writes network policy peers, and with
+  # mesh.provider linkerd their port 4143. When it names anyone, the release's own hodor-ext-authz and
+  # hodor-cert-manager-issuer may reach them too. Empty: anyone in the cluster. For an ingress controller in
+  # the namespace ingress-nginx:
   #   - namespaceSelector:
   #       matchLabels:
   #         kubernetes.io/metadata.name: ingress-nginx
@@ -312,11 +315,13 @@ extAuthz:
     enabled: true
     maxUnavailable: 1
   networkPolicy:
-    # With networkPolicy.enabled, who may reach its gRPC port, as Kubernetes writes network policy peers.
-    # Empty: anyone in the cluster. Name the namespaces of the protected applications, whose proxies call it.
+    # With networkPolicy.enabled, who may reach its gRPC port, as Kubernetes writes network policy peers,
+    # and with mesh.provider linkerd its port 4143. Empty: anyone in the cluster. Name the namespaces of the
+    # protected applications, whose proxies call it.
     ingressFrom: []
   extraEnvironment: []
-  # Where a mesh's sidecar is asked for, when the namespace does not ask for it already.
+  # Annotations of its pods. With mesh.provider, the chart asks for the mesh's proxy itself; these win over
+  # its annotations.
   podAnnotations: {}
   nodeSelector: {}
   tolerations: []
@@ -384,7 +389,8 @@ certManagerIssuer:
     limits:
       memory: 128Mi
   extraEnvironment: []
-  # Where a mesh's sidecar is asked for, when the namespace does not ask for it already.
+  # Annotations of its pods. With mesh.provider, the chart asks for the mesh's proxy itself; these win over
+  # its annotations.
   podAnnotations: {}
   nodeSelector: {}
   tolerations: []

@@ -197,8 +197,10 @@ kubectl rollout restart --namespace hodor deployment/hodor-server deployment/hod
 
 With `networkPolicy.enabled`, one policy applies to every pod of the release:
 
-- **In**: only the servers' public port accepts connections, from the peers listed in `networkPolicy.ingressFrom`, or from anywhere in the cluster when the list is empty. Nothing can connect to a worker or to the migration job. The health checks still work, because the kubelet that runs them is not subject to network policies.
+- **In**: only the servers' public port accepts connections, from the peers listed in `networkPolicy.ingressFrom`, or from anywhere in the cluster when the list is empty. When the list names peers, the release's own [`hodor-ext-authz`](#envoys-external-authorization) and [cert-manager's issuer](#cert-managers-issuer) are let in too, when they are installed, since they ask the servers. `hodor-ext-authz`'s gRPC port accepts connections from `extAuthz.networkPolicy.ingressFrom`. Nothing can connect to a worker, to the migration job or to the issuer. The health checks still work, because the kubelet that runs them is not subject to network policies.
 - **Out**: unrestricted, unless `networkPolicy.egress.enabled` is set. Then the pods reach the cluster's name service and what `networkPolicy.egress.to` lists, and nothing else. List the database, the mail server, the collector of metrics and traces, the identity providers and directories your tenants use, and OpenBao when the keys are there.
+
+With `mesh.provider: linkerd`, two more policies open port 4143, where every connection between two of Linkerd's proxies arrives: on the servers' pods to `networkPolicy.ingressFrom`, and on `hodor-ext-authz`'s pods to `extAuthz.networkPolicy.ingressFrom`. Each port is opened only to its own callers ([Decision 0078](../decisions/0078-every-pod-of-the-release-in-the-mesh.md)).
 
 A cluster enforces network policies only if its network plugin does.
 
@@ -265,7 +267,7 @@ networkPolicy:
 
 | | `istio` | `linkerd` |
 |---|---|---|
-| The server's and the worker's pods join the mesh | Label `sidecar.istio.io/inject: "true"` | Annotation `linkerd.io/inject: enabled` |
+| The server's and the worker's pods join the mesh, and so do `hodor-ext-authz`'s and cert-manager's issuer's when they are installed | Label `sidecar.istio.io/inject: "true"` | Annotation `linkerd.io/inject: enabled` |
 | The migration job joins it too, unless `mesh.injectMigration` is `false` | The same label | The same annotation |
 | The health checks stay on the operations port, which the proxy leaves alone, so the kubelet reaches them directly | `traffic.sidecar.istio.io/excludeInboundPorts: "9090"` | `config.linkerd.io/skip-inbound-ports: "9090"` |
 | Hodor starts after its proxy | `holdApplicationUntilProxyStarts`, in `proxy.istio.io/config`, for a cluster without native sidecars | Linkerd's own `config.linkerd.io/proxy-await`, on by default |
@@ -273,10 +275,11 @@ networkPolicy:
 | The header of the caller's identity, unless `clientIdentityHeader` names one | `x-forwarded-client-cert` | `l5d-client-id` |
 | The forwarded address | Read from the gateways of `gatewayIdentities` only, in the header `forwardedHeader` names. With no gateway named, `none`: never read | The same |
 | The network policy admits, from `networkPolicy.ingressFrom` | The public port | The public port and 4143, the proxy's own port, where every connection between two of Linkerd's proxies arrives |
+| The network policy admits to `hodor-ext-authz`, from `extAuthz.networkPolicy.ingressFrom` | Its gRPC port | Its gRPC port and 4143 |
 | Ports in `mesh.skipOutboundPorts` bypass the proxy on the way out | `traffic.sidecar.istio.io/excludeOutboundPorts` | `config.linkerd.io/skip-outbound-ports` |
 | With `networkPolicy.egress.enabled`, the pods may also reach | The namespace `istio-system`, where the proxy gets its configuration and certificate | The namespace `linkerd` |
 
-Both meshes inject their proxy as a native sidecar on Kubernetes 1.33 and newer: it starts before Hodor and stops after it, and the migration job completes. On a cluster where the proxy is a classic container, the job's proxy never stops, so the job never completes: set `mesh.injectMigration` to `false`, if the database can be reached from outside the mesh.
+Each of the release's pods gets the same annotations, so the namespace needs no label of its own, and the stand-ins of [trying the chart](#trying-the-chart-on-a-cluster-of-your-own) beside Hodor stay out of the mesh ([Decision 0078](../decisions/0078-every-pod-of-the-release-in-the-mesh.md)). Both meshes inject their proxy as a native sidecar on Kubernetes 1.33 and newer: it starts before Hodor and stops after it, and the migration job completes. On a cluster where the proxy is a classic container, the job's proxy never stops, so the job never completes: set `mesh.injectMigration` to `false`, if the database can be reached from outside the mesh.
 
 #### The gateways
 
@@ -333,7 +336,9 @@ On kind, with Kubernetes 1.37, Istio 1.31.4 and Linkerd edge-26.11.1:
 - **The limits.** Behind Istio's ingress gateway, two clients outside the mesh were each limited on their own, whatever `X-Forwarded-For` they wrote. A workload of the mesh that wrote a new address on every request was limited as one client, and so was a caller outside the mesh that reached Hodor's sidecar directly. With Linkerd, the same, with a meshed pod writing `X-Forwarded-For` in the gateway's place.
 - **What each proxy hands an application**: the address and the headers, the gateway's identity among them, with sidecars, ztunnel and a waypoint. The network policy with Linkerd's port 4143 and ambient mode's port 15008. Going out with Istio's `ALLOW_ANY` and `REGISTRY_ONLY`, and Linkerd's delay on port 587.
 
-Not tried: a cluster of several nodes, a network plugin other than kind's, a real ingress in front of Linkerd such as Envoy Gateway, Istio's gateways made from the Gateway API, Istio with the way out restricted by the network policy, classic sidecars, and the probes' address in ambient mode under a network plugin that enforces it. [The service mesh guide](service-mesh.md#what-was-tried-and-what-was-not) gathers what was tried for every mesh, and the demonstration of Milestone 11 (Issue-114) is to run the examples for Istio and Linkerd on kind.
+[The demonstration of Milestone 11](quick-start.md#the-demonstration-of-milestone-11) installs the chart this way in continuous integration, on a kind cluster with Istio and its ingress gateway and on one with Linkerd and Envoy Gateway in front, each with `mesh.provider`, `gatewayIdentities`, `hodor-ext-authz` and the network policy on, and checks that two clients behind the gateway are limited apart and that a forwarded address from another workload is ignored.
+
+Not tried: a cluster of several nodes, a network plugin other than kind's, Istio's gateways made from the Gateway API, Istio with the way out restricted by the network policy, classic sidecars, and the probes' address in ambient mode under a network plugin that enforces it. [The service mesh guide](service-mesh.md#what-was-tried-and-what-was-not) gathers what was tried for every mesh.
 
 ### The identity of a workload
 
@@ -387,24 +392,26 @@ extAuthz:
 | `extAuthz.service.port` | `9191` | The gRPC port of its Service, which the mesh's provider names |
 | `extAuthz.resources` | 100m and 32Mi to 128Mi | Requests and limits |
 | `extAuthz.networkPolicy.ingressFrom` | Empty | With `networkPolicy.enabled`, who may reach its gRPC port, as network policy peers. Empty: anyone in the cluster. Name the namespaces of the protected applications, whose proxies call it |
-| `extAuthz.podAnnotations`, `extAuthz.extraEnvironment`, `extAuthz.nodeSelector`, `extAuthz.tolerations`, `extAuthz.affinity` | Empty | As for the server. The annotations are where a mesh's sidecar is asked for, when the namespace does not ask for it already |
+| `extAuthz.podAnnotations`, `extAuthz.extraEnvironment`, `extAuthz.nodeSelector`, `extAuthz.tolerations`, `extAuthz.affinity` | Empty | As for the server. With `mesh.provider`, its pods join the mesh as the server's do, and the annotations given here win over the chart's |
 
-With `networkPolicy.enabled` and `networkPolicy.egress.enabled`, its pods may also reach the servers' public port. Setting up the tenant, the service account and the clients it uses is in [setting it up in Hodor](hodor-ext-authz.md#setting-it-up-in-hodor).
+With `mesh.provider`, its pods join the mesh with Hodor's, which they must: it proves who it is to Hodor with its mesh identity alone. With `networkPolicy.enabled`, the servers let it in, and with `networkPolicy.egress.enabled` its pods may also reach the servers' public port, and port 4143 in Linkerd. Setting up the tenant, the service account and the clients it uses is in [setting it up in Hodor](hodor-ext-authz.md#setting-it-up-in-hodor).
 
 ### cert-manager's issuer
 
 With `certManagerIssuer.enabled`, the chart installs [`hodor-cert-manager-issuer`](hodor-cert-manager-issuer.md), which signs the intermediates cert-manager keeps for the tenant's meshes through the tenant's certificate authority. It runs from its own image, `ghcr.io/ortisun/hodor-cert-manager-issuer`, as a Kubernetes service account of its own, `<release>-cert-manager-issuer`, bound to the one ClusterRole of [what it may do in the cluster](hodor-cert-manager-issuer.md#what-it-may-do-in-the-cluster). Its configuration file is written from the values into a ConfigMap, and a change of the values restarts its pod. cert-manager must be installed first, with its feature gate `UseCertificateRequestBasicConstraints` on, so that the requests it writes ask for an authority ([what it signs](hodor-cert-manager-issuer.md#what-it-signs)).
 
-Beside Hodor, proving who it is with its mesh identity:
+Beside Hodor in Linkerd, proving who it is with its mesh identity:
 
 ```yaml
+mesh:
+  provider: linkerd
 certManagerIssuer:
   enabled: true
   tenant: acme
   clientId: 0193f3c0-2d4e-7b1a-9c55-6b1f2c9d4e01
-  podAnnotations:
-    linkerd.io/inject: enabled
 ```
+
+`mesh.provider` puts the issuer's pod in the mesh with Hodor's. Without it, ask for the proxy in `certManagerIssuer.podAnnotations`, with `linkerd.io/inject: enabled`.
 
 Alone, in a cluster of meshes where Hodor does not run, proving who it is with its key:
 
@@ -432,7 +439,7 @@ helm install hodor-issuer deploy/install/helm/hodor --namespace cert-manager \
 | `certManagerIssuer.approveWithCertManager.enabled`, `serviceAccount`, `namespace` | `false`; `cert-manager`; `cert-manager` | Lets cert-manager's own approver approve every request of Hodor's two kinds. Prefer approver-policy: [who may have an intermediate signed](hodor-cert-manager-issuer.md#who-may-have-an-intermediate-signed) |
 | `certManagerIssuer.serviceAccount.name`, `certManagerIssuer.serviceAccount.annotations` | `<release>-cert-manager-issuer` | Its Kubernetes service account. `certManagerIssuer.serviceAccount.create: false` uses one that exists |
 | `certManagerIssuer.resources` | 50m and 32Mi to 128Mi | Requests and limits |
-| `certManagerIssuer.podAnnotations`, `certManagerIssuer.extraEnvironment`, `certManagerIssuer.nodeSelector`, `certManagerIssuer.tolerations`, `certManagerIssuer.affinity` | Empty | As for the server. The annotations are where a mesh's sidecar is asked for, when the namespace does not ask for it already |
+| `certManagerIssuer.podAnnotations`, `certManagerIssuer.extraEnvironment`, `certManagerIssuer.nodeSelector`, `certManagerIssuer.tolerations`, `certManagerIssuer.affinity` | Empty | As for the server. With `mesh.provider`, its pod joins the mesh as the server's do, and the annotations given here win over the chart's |
 
 With `networkPolicy.enabled` and `networkPolicy.egress.enabled`, its pod may also reach the servers' public port; list the Kubernetes interface's address in `networkPolicy.egress.to`, since the issuer watches it. Setting up the tenant, the service account and the client it uses is in [setting it up in Hodor](hodor-cert-manager-issuer.md#setting-it-up-in-hodor). Uninstalling the release removes the two kinds, and every `HodorIssuer` and `HodorClusterIssuer` with them.
 
@@ -536,7 +543,6 @@ kind delete cluster --name hodor
 | Missing | Until then |
 |---|---|
 | Istio's ambient mode as a value of the chart | `trustedProxies` and a network policy of your own, as [inside a service mesh](#inside-a-service-mesh) says |
-| `mesh.provider` putting `hodor-ext-authz` and `hodor-cert-manager-issuer` in the mesh | It injects the server, the worker and the migration job only. Label the namespace for Istio, or set `extAuthz.podAnnotations` and `certManagerIssuer.podAnnotations` for Linkerd, as [the service mesh guide](service-mesh.md#what-is-missing) says (Issue-114) |
 | Autoscaling on request concurrency | The autoscaler follows processor use only |
 | Dashboards and alerts | Metrics and traces are sent where `telemetry` says; what is drawn and alerted from them is yours |
 | The Open Policy Agent sidecar and Redis | Neither is used by Hodor yet: both belong to later phases of the [roadmap](../product/roadmap.md) |
