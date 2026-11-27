@@ -328,6 +328,7 @@ async fn a_grant(ports: RefreshStorePorts<'_>, tenant: &TenantContext) -> Grant 
         scopes: vec!["openid".to_owned(), "offline_access".to_owned()],
         audiences: vec!["https://api.payroll.example.com".to_owned()],
         organization: None,
+        claims: crate::api::GrantClaims::default(),
         status: GrantStatus::Active,
         created_at: moment(),
         revoked_at: None,

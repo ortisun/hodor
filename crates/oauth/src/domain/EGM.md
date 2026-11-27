@@ -121,7 +121,14 @@ randomness and hashing are passed in. Every module is `pub(crate)` in
   request object when there is one, never serialized; `hinted(checked)`
   keeps the `sub` of a hint issued to the request's client,
   `names_person(subject)`; read as `None` from a request stored before
-  it); `Grant` (`make`, `revoke`);
+  it); Issue-124: the request keeps `claims` (a `ClaimsRequest`, read by
+  `read_claims`; an essential `acr` with values becomes `acr_values`, which
+  the client's `default_acr_values` then do not replace, and an `acr` with
+  values beside `acr_values` is `invalid_request`) and `claims_locales`,
+  both left out of a stored request that has none, and
+  `names_another(subject)` says whether it asked for another `sub`; `Grant`
+  (`make`, `revoke`, and `claims`, the `GrantClaims` it gives, empty from
+  `make`);
   `AuthorizationCode` (`issue`, `check_redemption`); `CodeHash`
   (`of_presented` answers `None` for a value without the shape of a code);
   `s256_challenge`. Its cases are in `authorization/tests.rs`, and those of
@@ -244,7 +251,28 @@ randomness and hashing are passed in. Every module is `pub(crate)` in
   `userinfo_signing_alg_values_supported`; `with_registration(document, open)`
   and `prompt_values_supported(open)` add `create` for a tenant open to
   registration. Its cases, with `every_claim`, a person with every standard
-  claim that the claim mapper cases share, are in `openid/tests.rs`.
+  claim that the claim mapper cases share, are in `openid/tests.rs`. It also
+  has `PERSON_CLAIMS`, the nineteen claims of a person with the scope that
+  covers each, in the order they are written; `scope_of_claim`;
+  `person_claim(name, person)`, one claim's value as UserInfo writes it;
+  `userinfo_claims_with(subject, scopes, asked, person)`, which adds the
+  claims a grant was asked for UserInfo to those of the scopes;
+  `PersonClaims::from_attributes`; and `claims_parameter_supported` true in
+  discovery.
+- `claims_parameter.rs`: the `claims` parameter (Decisions 0047 and 0068).
+  `read_claims(text)` (at most `MAX_CLAIMS_BYTES`, 4096, and
+  `MAX_CLAIMS_NAMED`, 64 claims across `id_token` and `userinfo`; a member
+  or a claim of the wrong JSON type is refused with the description of
+  `invalid_request`; unknown names, names with a language tag and `groups`
+  ignored) into `ReadClaims { request, essential_acr, acr_with_values }`;
+  `ClaimsRequest { id_token, userinfo, subject }`, the person's claims in
+  the order of `PERSON_CLAIMS` and the `sub` asked with a value;
+  `ClaimsRequest::given(scopes, consented) -> GrantClaims`, the claims a
+  consented scope covers, none without `openid`; and `add_asked_claims(claims,
+  asked, person, mapped)`, which adds the claims to an ID token within
+  `MOST_MAPPED_BYTES`, the mappers' claims counting first, leaving out
+  whole a claim that would cross it. Its cases are in
+  `claims_parameter/tests.rs`.
 - `introspection.rs`: revocation and introspection. `TokenQuery::parse`
   (`token` required, a parameter twice or more than one way of proving who
   the client is `invalid_request`, no client named `invalid_client`),
@@ -339,7 +367,10 @@ randomness and hashing are passed in. Every module is `pub(crate)` in
   `prompt=consent` and `offline_access` always ask; otherwise unless a
   consent covers the request), `ConsentAnswer`, `ConsentWait` (whom a
   pending request waits for, in which session, and the answer),
-  `ConsentActor`, `ConsentAction`, `ConsentHistoryEntry`, and
+  `ConsentActor`, `ConsentAction`, `ConsentHistoryEntry`,
+  `consented_scopes(request, standing, allowed, now)` (a first-party
+  client's allowed scopes, or the request's and those of a consent that
+  stands, for the `claims` parameter), and
   `DEFAULT_CONSENT_LIFETIME` (365 days), `SHORTEST_CONSENT_LIFETIME`,
   `LONGEST_CONSENT_LIFETIME` (1 and 730 days). `TokenPolicy::consent` is
   the client's lifetime, checked against those bounds. Its cases are in
@@ -363,7 +394,7 @@ randomness and hashing are passed in. Every module is `pub(crate)` in
   from the bounds `hodor-identity` exports (`LARGEST_ADDRESS` for the
   address, the object of its six parts at their longest);
   `PersonAttributes`, what a mapper reads of a person, the standard claims
-  in `claims`; `needs`, `mapped_claims` (by claim name, a value larger than
+  in `claims` and `updated_at`, which no mapper reads; `needs`, `mapped_claims` (by claim name, a value larger than
   its bound or more than 100 groups leaving the claim out, and
   `phone_number_verified` written only with a number) and `add_mapped_claims`,
   the one hook the token endpoint and UserInfo call after Hodor's own

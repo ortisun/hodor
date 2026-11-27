@@ -433,6 +433,7 @@ async fn a_grant(
         scopes: scopes.iter().map(|scope| (*scope).to_owned()).collect(),
         audiences: Vec::new(),
         organization: None,
+        claims: crate::api::GrantClaims::default(),
         status: GrantStatus::Active,
         created_at: moment(),
         revoked_at: None,

@@ -416,6 +416,8 @@ fn request_for(client_id: ClientId) -> AuthorizationRequest {
         response_mode: crate::domain::response::ResponseMode::FormPost,
         id_token_hint: None,
         given_hint: None,
+        claims: crate::api::ClaimsRequest::default(),
+        claims_locales: None,
     }
 }
 
@@ -454,12 +456,15 @@ fn tenant() -> TenantContext {
 async fn a_pending_request_is_stored_whole_and_removed_once(ports: AuthorizationStorePorts<'_>) {
     let tenant = tenant();
     let client = a_client(ports, &tenant).await;
-    let (pending, _) = PendingAuthorization::hold(
-        request_for(client.id()),
-        moment(),
-        &super::DistinctRandom,
-        &FakeDigest,
-    );
+    let mut request = request_for(client.id());
+    request.claims = crate::api::ClaimsRequest {
+        id_token: vec!["email".to_owned()],
+        userinfo: vec!["name".to_owned()],
+        subject: Some("someone".to_owned()),
+    };
+    request.claims_locales = Some("fr-CA".to_owned());
+    let (pending, _) =
+        PendingAuthorization::hold(request, moment(), &super::DistinctRandom, &FakeDigest);
     let mut uow = ports.units_of_work.begin(&tenant).await.expect("begin");
     ports
         .requests
@@ -839,7 +844,12 @@ async fn the_active_grants_of_a_person_for_a_client_are_listed(ports: Authorizat
 async fn a_grant_is_stored_and_its_revocation_kept(ports: AuthorizationStorePorts<'_>) {
     let tenant = tenant();
     let client = a_client(ports, &tenant).await;
-    let grant = Grant::make(&request_for(client.id()), &person(), moment());
+    let mut grant = Grant::make(&request_for(client.id()), &person(), moment());
+    // What it gives through the `claims` parameter is kept, in order.
+    grant.claims = crate::api::GrantClaims {
+        id_token: vec!["name".to_owned(), "email".to_owned()],
+        userinfo: vec!["phone_number".to_owned()],
+    };
     let mut uow = ports.units_of_work.begin(&tenant).await.expect("begin");
     ports
         .grants

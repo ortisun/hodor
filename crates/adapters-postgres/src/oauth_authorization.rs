@@ -7,8 +7,8 @@ use crate::uow::{connection, database_error};
 use hodor_kernel::{DomainError, OrganizationId, Timestamp, UnitOfWork, UserId};
 use hodor_oauth::api::{
     AuthorizationCode, AuthorizationCodeStore, AuthorizationRequest, AuthorizationRequestStore,
-    ClientId, CodeHash, ConsentAnswer, ConsentWait, Grant, GrantId, GrantStatus, GrantStore,
-    PendingAuthorization, PendingAuthorizationId, PushedAuthorization, ReferenceHash,
+    ClientId, CodeHash, ConsentAnswer, ConsentWait, Grant, GrantClaims, GrantId, GrantStatus,
+    GrantStore, PendingAuthorization, PendingAuthorizationId, PushedAuthorization, ReferenceHash,
 };
 use hodor_session::api::SessionId;
 use sqlx::Row as _;
@@ -287,6 +287,10 @@ fn grant_from(row: &PgRow) -> Result<Grant, DomainError> {
             .try_get::<Option<sqlx::types::Uuid>, _>("organization")
             .map_err(get)?
             .map(OrganizationId::from_uuid),
+        claims: GrantClaims {
+            id_token: row.try_get("id_token_claims").map_err(get)?,
+            userinfo: row.try_get("userinfo_claims").map_err(get)?,
+        },
         status: GrantStatus::from_stored(&status)?,
         created_at: row.try_get("created_at").map_err(get)?,
         revoked_at: row.try_get("revoked_at").map_err(get)?,
@@ -301,8 +305,9 @@ impl GrantStore for PgGrantStore {
         sqlx::query(
             "INSERT INTO oauth.authorization_grant
                  (tenant_id, id, client_id, user_id, session_id, scopes, audiences, organization,
-                  status, created_at, revoked_at, revocation_reason)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)",
+                  status, created_at, revoked_at, revocation_reason, id_token_claims,
+                  userinfo_claims)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)",
         )
         .bind(tenant.as_uuid())
         .bind(grant.id.as_uuid())
@@ -320,6 +325,8 @@ impl GrantStore for PgGrantStore {
         .bind(grant.created_at)
         .bind(grant.revoked_at)
         .bind(grant.revocation_reason.as_deref())
+        .bind(&grant.claims.id_token)
+        .bind(&grant.claims.userinfo)
         .execute(connection(uow)?)
         .await
         .map_err(|e| refused(e, GRANT_CLIENT_CONSTRAINT, client_not_found))?;
@@ -334,8 +341,7 @@ impl GrantStore for PgGrantStore {
         let tenant = uow.tenant().tenant_id();
         sqlx::query(
             "SELECT id, client_id, user_id, session_id, scopes, audiences, organization, status,
-                    created_at,
-                    revoked_at, revocation_reason
+                    created_at, revoked_at, revocation_reason, id_token_claims, userinfo_claims
              FROM oauth.authorization_grant
              WHERE tenant_id = $1 AND id = $2",
         )
@@ -380,8 +386,7 @@ impl GrantStore for PgGrantStore {
         let tenant = uow.tenant().tenant_id();
         sqlx::query(
             "SELECT id, client_id, user_id, session_id, scopes, audiences, organization, status,
-                    created_at,
-                    revoked_at, revocation_reason
+                    created_at, revoked_at, revocation_reason, id_token_claims, userinfo_claims
              FROM oauth.authorization_grant
              WHERE tenant_id = $1 AND user_id = $2 AND client_id = $3 AND status = 'active'
              ORDER BY created_at, id",
@@ -405,7 +410,7 @@ impl GrantStore for PgGrantStore {
         let tenant = uow.tenant().tenant_id();
         sqlx::query(
             "SELECT id, client_id, user_id, session_id, scopes, audiences, organization, status,
-                    created_at, revoked_at, revocation_reason
+                    created_at, revoked_at, revocation_reason, id_token_claims, userinfo_claims
              FROM oauth.authorization_grant
              WHERE tenant_id = $1 AND user_id = $2 AND status = 'active'
              ORDER BY created_at, id",

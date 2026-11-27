@@ -2,6 +2,8 @@
 
 Status: Proposed (requested by the project owner, who asked for every OpenID certification profile)
 
+Which scopes count for the `claims` parameter is refined by [Decision 0068](0068-claims-of-every-consented-scope.md): every scope consented to for the client, not only those of the request.
+
 ## Context
 
 Hodor does not read the `claims` parameter today, and discovery says `claims_parameter_supported` is false ([discovery](../architecture/contexts/oauth.md#discovery)). The suite's test `oidcc-claims-essential` ends in a warning because of it ([expected results](../operations/conformance.md#expected-results)). The person's claims are never put in the ID token: a client reads them at UserInfo with the access token Hodor always issues with it ([the ID token](../architecture/contexts/oauth.md#the-id-token)).

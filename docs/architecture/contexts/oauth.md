@@ -395,7 +395,9 @@ A client of another tenant is unknown here: the client is looked up only in the 
 | `prompt` holds a value other than `none`, `login`, `consent`, `select_account` and `create`, or `none` with another | `invalid_request` |
 | `display` is not `page`, `popup` or `touch` | `invalid_request` |
 | `max_age` is not a whole number of seconds from 0 to 31 536 000 | `invalid_request` |
-| `login_hint`, `ui_locales` or `acr_values` is longer than 255 characters | `invalid_request` |
+| `login_hint`, `ui_locales`, `claims_locales` or `acr_values` is longer than 255 characters | `invalid_request` |
+| `claims` is longer than 4096 bytes, names more than 64 claims, or is not written as [the `claims` parameter](#the-claims-parameter) says | `invalid_request` |
+| `claims` asks for `acr` with a value or values, and `acr_values` is given too | `invalid_request` |
 | `organization` is not the identifier of an organization, a UUID | `invalid_request` |
 | `scope` is missing or empty, holds a scope the client may not ask for, or a scope that neither OpenID Connect nor a resource server of the request defines | `invalid_scope` |
 | More than 10 `resource` values; a `resource` that is not an absolute address without a fragment; or one that is not the audience of a resource server of this tenant ([RFC 8707](https://www.rfc-editor.org/rfc/rfc8707)) | `invalid_target` |
@@ -404,7 +406,7 @@ A client of another tenant is unknown here: the client is looked up only in the 
 
 **The resource servers of a request.** When the request names resources, they are the resource servers whose audiences it names, and every scope that is not one of OpenID Connect's must be defined by one of them. When it names none, they are the resource servers of the tenant that define the scopes asked for. The resource servers become the audiences of the tokens issued from the code (Issue-56).
 
-`nonce`, `login_hint` and `ui_locales` are kept with the request for the [ID token and the pages](#what-a-request-may-ask-of-the-sign-in); `acr_values` and `max_age` decide [the assurance and the step-up](#assurance-and-step-up), and a request that leaves either out takes the client's [default](#defaults-for-a-sign-in) for it, if the client has one; `organization` names [the organization of the sign-in](#the-organization-of-a-sign-in); the `sub` of `id_token_hint` is kept to [compare with the person](#whether-the-person-must-sign-in). Parameters the endpoint does not know are ignored, as RFC 6749 requires; `claims` is one of them, so an `acr` asked for through it asks for nothing.
+`nonce`, `login_hint` and `ui_locales` are kept with the request for the [ID token and the pages](#what-a-request-may-ask-of-the-sign-in); `acr_values` and `max_age` decide [the assurance and the step-up](#assurance-and-step-up), and a request that leaves either out takes the client's [default](#defaults-for-a-sign-in) for it, if the client has one; `organization` names [the organization of the sign-in](#the-organization-of-a-sign-in); the `sub` of `id_token_hint` is kept to [compare with the person](#whether-the-person-must-sign-in); `claims` and `claims_locales` are kept for [the `claims` parameter](#the-claims-parameter), and an `acr` asked through `claims` as essential becomes the request's `acr_values`, so the client's default assurance levels apply only to a request that names levels in neither. Parameters the endpoint does not know are ignored, as RFC 6749 requires.
 
 **The last two checks read the tenant**, its registration policy and its published keys, so they are made once everything else has passed. The hint is checked as the end-session endpoint checks its own: an ID token of this tenant, signed by a key the tenant publishes, with the tenant's issuer, whose expiry is not checked, since OpenID Connect sends an ID token that may have expired long ago as a hint ([section 3.1.2.1](https://openid.net/specs/openid-connect-core-1_0.html#AuthRequest)). Its `aud` must be the client of the request: it says who that client believes is signed in, and only that client knows the person by that `sub`, which for a [pairwise client](#pairwise-subject-identifiers) is no user identifier. A hint is a hint, never a credential: it decides nothing but whether the browser's session answers the request.
 
@@ -536,6 +538,7 @@ A checked request needs a person signed in to the tenant. The session cookie of 
 | No valid session, or `prompt` holds `login` or `select_account` | The person signs in, then the request goes on. With `prompt=none`, error `login_required` instead |
 | `prompt` holds `create` | The person is sent to [register](#registering-for-an-application) instead of to sign in, then the request goes on |
 | A valid session of a person other than the one `id_token_hint` names | As without a session: the person signs in, then the request goes on; with `prompt=none`, error `login_required`, described as the person signed in not being the one the hint names |
+| A valid session of another person than the `sub` the request asks for with a value through [`claims`](#the-claims-parameter) | The same as no session: the person signs in, or with `prompt=none` error `login_required` |
 | A valid session that is [enough](#assurance-and-step-up) for the request | [Consent](#when-a-person-is-asked) is decided; when nobody needs to be asked, a code is issued at once |
 | A valid session that is not enough: too old for `max_age`, or below the level asked for | A [step-up](#assurance-and-step-up) asks the person for what the session lacks, then the request goes on. With `prompt=none`, error `login_required` instead |
 | A valid session that is not enough, and the person cannot reach the level asked for with the factors they have | Error `unmet_authentication_requirements` at the redirect address ([OpenID Connect Unmet Authentication Requirements](https://openid.net/specs/openid-connect-unmet-authentication-requirements-1_0.html)) |
@@ -546,7 +549,7 @@ A checked request needs a person signed in to the tenant. The session cookie of 
 
 ### Assurance and step-up
 
-An application asks how strongly the person must have proved who they are with `acr_values`, a list of the [assurance levels](tenant.md#assurance-levels) of the tenant, separated by spaces, and how recently with `max_age`.
+An application asks how strongly the person must have proved who they are with `acr_values`, a list of the [assurance levels](tenant.md#assurance-levels) of the tenant, separated by spaces, and how recently with `max_age`. An `acr` asked through [the `claims` parameter](#the-claims-parameter) as essential, with its `values`, is read exactly as `acr_values` is.
 
 **The level asked for.** The names of `acr_values` that are not levels of this tenant are ignored; a request that names none of its levels asks for no level. Of the levels it names, the weakest is what the request asks for: OpenID Connect lists the values the client accepts in order of preference, and any of them is acceptable, so the weakest is enough and a stronger one is more than enough. Hodor treats the request as one that must be met: a session below it is stepped up, and a person who cannot reach it gets `unmet_authentication_requirements` rather than a token with less.
 
@@ -576,7 +579,7 @@ When the person must sign in, the request is kept and the browser is sent to the
 2. The browser is redirected to `/t/{slug}/account/sign-in?continue=authorization`. That address tells the sign-in page to start a sign-in even when the browser is signed in already, since the request asked for a new one.
 3. The person signs in with any way the tenant offers, an identity provider included. When the sign-in completes, the interaction interface sees the cookie and adds `"continue": "/t/{slug}/oauth2/authorize/resume"` to its answer ([the interaction interface](../../api/interaction-api.md#what-a-sign-in-response-looks-like)). The page goes there instead of to the account page.
 4. `GET /t/{slug}/oauth2/authorize/resume` reads the cookie, takes the pending request, which can therefore be resumed once, and removes the cookie. Without the cookie, with a wrong secret or after ten minutes, it answers with Hodor's own error page, `oauth.authorization_request_not_found`.
-5. The session is checked again against the request. A request that asked for a new sign-in (`prompt=login`, `select_account` or `create`) needs a session that signed in after the request arrived; otherwise the answer is `access_denied` at the redirect address, because the person did not sign in again. A request with `id_token_hint` needs the session's person to be the one the hint names; otherwise the answer is `login_required`, as OpenID Connect suggests for a hint whose person is not signed in. Then the session must be [enough](#assurance-and-step-up): when it is, [consent](#when-a-person-is-asked) is decided and, when nobody needs to be asked, a code is issued. When it is not, after a new sign-in that did not reach the level asked for, a step-up is started as when the request arrived, and the request is kept again; when the person cannot reach the level, the answer is `unmet_authentication_requirements`. A step-up demands the level, so its completion is always enough, and the request does not go round twice.
+5. The session is checked again against the request. A request that asked for a new sign-in (`prompt=login`, `select_account` or `create`) needs a session that signed in after the request arrived; otherwise the answer is `access_denied` at the redirect address, because the person did not sign in again. A request with `id_token_hint` needs the session's person to be the one the hint names; otherwise the answer is `login_required`, as OpenID Connect suggests for a hint whose person is not signed in. A request that asked for a `sub` with a value through [`claims`](#the-claims-parameter) needs the person signed in to be the one it names; otherwise the answer is `access_denied`. Then the session must be [enough](#assurance-and-step-up): when it is, [consent](#when-a-person-is-asked) is decided and, when nobody needs to be asked, a code is issued. When it is not, after a new sign-in that did not reach the level asked for, a step-up is started as when the request arrived, and the request is kept again; when the person cannot reach the level, the answer is `unmet_authentication_requirements`. A step-up demands the level, so its completion is always enough, and the request does not go round twice.
 
 The cookie:
 
@@ -615,7 +618,7 @@ Hodor does not ask the person which organization they mean: the client names it,
 
 When the person is signed in and the session is enough, a **grant** and an **authorization code** are made.
 
-- **The grant** records that this person let this client act for them, with the scopes and audiences of the request, the session it was made in and the [organization](#the-organization-of-a-sign-in) the request named, if any. It is what the refresh tokens of Issue-57 belong to, and it can be revoked; revoking it ends whatever was issued from it.
+- **The grant** records that this person let this client act for them, with the scopes and audiences of the request, the session it was made in, the [organization](#the-organization-of-a-sign-in) the request named, if any, and the claims asked through [`claims`](#the-claims-parameter) that a consented scope covers, for the ID token and for UserInfo. It is what the refresh tokens of Issue-57 belong to, and it can be revoked; revoking it ends whatever was issued from it.
 - **The code** is 32 random bytes from the operating system, written as base64url without padding. Hodor keeps only its SHA-256 hash ([Decision 0004](../../decisions/0004-token-formats.md)), with the grant, the client, the redirect address, the code challenge, the scopes, the audiences, the `nonce`, the session, the user, when they signed in, with which methods and the `acr` they reached ([what the code says](#assurance-and-step-up)). It lives **60 seconds**.
 - The answer goes to the redirect address with `code`, `state` when the request had one, and `iss`, in the request's [response mode](#response-modes): by default the browser is redirected with them added to the address's query, after its own.
 
@@ -700,7 +703,7 @@ When a person is deprovisioned, every active grant of theirs, for every client, 
 | Table | Holds |
 |---|---|
 | `oauth.authorization_request` | `tenant_id`, `id`, `secret_hash` (32 bytes, the hash of a browser's secret, null for a pushed request), `reference_hash` (32 bytes, the SHA-256 of a [pushed request](#pushed-authorization-requests)'s reference, unique in the tenant, null for a request kept for a browser), `client_id`, the checked request as `request` (`jsonb`), `received_at`, `expires_at` |
-| `oauth.authorization_grant` | `tenant_id`, `id`, `client_id`, `user_id`, `session_id`, `scopes`, `audiences`, `organization` (null when the request named none), `status` (`active` or `revoked`), `created_at`, `revoked_at`, `revocation_reason` |
+| `oauth.authorization_grant` | `tenant_id`, `id`, `client_id`, `user_id`, `session_id`, `scopes`, `audiences`, `organization` (null when the request named none), `id_token_claims` and `userinfo_claims` (the claims of the `claims` parameter it gives, at most 64 each, empty when none was asked; migration 0104), `status` (`active` or `revoked`), `created_at`, `revoked_at`, `revocation_reason` |
 | `oauth.authorization_code` | `tenant_id`, `code_hash` (32 bytes, the key), `grant_id`, `client_id`, `redirect_uri`, `scopes`, `audiences`, `code_challenge`, `nonce`, `session_id`, `user_id`, `signed_in_at`, `methods`, `acr` (null when no level was reached), `issued_at`, `expires_at`, `redeemed_at` |
 
 All three are tenant tables under row-level security. The request and the code reference their client, and the code its grant, with the tenant in the reference. A pending request and a code hold the hash of a secret, never the secret. A check constraint keeps exactly one of the two hashes of a pending request, and the life of a pushed request at 600 seconds at most.
@@ -1221,7 +1224,7 @@ OpenID Connect Registration makes `RS256` the default for a client that names no
 
 `azp` is not added: the audience is always the one client, and OpenID Connect asks for `azp` only when it is not.
 
-**The person's claims are not in the ID token.** OpenID Connect returns the claims of the `profile`, `email`, `address` and `phone` scopes from UserInfo whenever an access token is issued as well ([section 5.4](https://openid.net/specs/openid-connect-core-1_0.html#ScopeClaims)), and Hodor always issues one. A client that wants the person's name or address reads UserInfo with the access token. This keeps personal data out of a token that a browser may hold. An administrator may still put a claim into a client's ID tokens with a [claim mapper](#claim-mappers) that names the ID token, the person's [standard claims](identity.md#standard-claims) included, under a name of the tenant's own; it is added after the claims above.
+**The person's claims are in the ID token only when asked for.** OpenID Connect returns the claims of the `profile`, `email`, `address` and `phone` scopes from UserInfo whenever an access token is issued as well ([section 5.4](https://openid.net/specs/openid-connect-core-1_0.html#ScopeClaims)), and Hodor always issues one. A client that wants the person's name or address reads UserInfo with the access token, which keeps personal data out of a token that a browser may hold unless the client asks otherwise. It may: a claim asked for the ID token through [the `claims` parameter](#the-claims-parameter) is added under its own name after the claims above, when a consented scope covers it and it fits the bound. An administrator may also put a claim into a client's ID tokens with a [claim mapper](#claim-mappers) that names the ID token, the person's [standard claims](identity.md#standard-claims) included, under a name of the tenant's own; it is added last.
 
 ### Methods and assurance
 
@@ -1289,7 +1292,7 @@ The answer is JSON with `sub`, the token's own, which is the `sub` of the ID tok
 | `phone` | `phone_number`, in E.164, and `phone_number_verified`. Left out when they have no number |
 | `groups` | `groups`, the identifiers of the person's [effective groups](#the-groups-claim), all of them. An empty list when they are in none |
 
-The [claim mappers](#claim-mappers) of the token's client that name UserInfo add their claims after these.
+The claims the grant of the token was asked for UserInfo through [the `claims` parameter](#the-claims-parameter), when a consented scope covers them, are added to these, under the same names and with the same values, whatever the scopes of the token. The [claim mappers](#claim-mappers) of the token's client that name UserInfo add their claims after these.
 
 The answer carries `Cache-Control: no-store`. A browser on another origin cannot call UserInfo yet: clients have no registered origins, so no cross-origin headers are sent.
 
@@ -1318,6 +1321,36 @@ Issue-89. The scope `groups` asks for the [groups](identity.md#groups) the perso
 - **Where.** In the access token and at UserInfo, not in the ID token: like the person's other claims, they stay out of a token that a browser may hold ([the ID token](#the-id-token)).
 - **How many.** The access token carries at most 100. A person in more gets an access token without `groups`, so that a token never grows without bound, and UserInfo answers them all. A resource server that must decide for such a person asks the [Authorization API](../../api/api-spec.md), which reads every group.
 
+### The `claims` parameter
+
+Issue-124. A client asks for single claims of the person with `claims` ([OpenID Connect Core, section 5.5](https://openid.net/specs/openid-connect-core-1_0.html#ClaimsParameter)): a JSON object whose members `id_token` and `userinfo` each name the claims wanted there, each claim with `null` or an object of `essential`, `value` and `values`. The rules are [Decision 0047](../../decisions/0047-claims-and-the-person-s-claims.md), with the scopes that count as [Decision 0068](../../decisions/0068-claims-of-every-consented-scope.md) says.
+
+**What it may ask for.** The person's claims, each covered by one scope:
+
+| Scope | Claims |
+|---|---|
+| `profile` | `name`, `preferred_username`, `given_name`, `family_name`, `middle_name`, `nickname`, `profile`, `picture`, `website`, `gender`, `birthdate`, `zoneinfo`, `locale`, `updated_at` |
+| `email` | `email`, `email_verified` |
+| `address` | `address` |
+| `phone` | `phone_number`, `phone_number_verified` |
+
+A claim is given only when its scope is **consented to** for the client. For a client of a first-party application, that is a scope the client may ask for: its administrator decided for the person when the application was registered, as [consent](#consent) says. For a client of a third-party application, it is a scope of the request, every one of which the person agreed to before a code is issued, or a scope of the person's consent for the client that stands. A claim of any other scope is left out, as a voluntary claim Hodor does not give is: the person is not asked for it, and the consent page stays a page of scopes.
+
+`sub`, `auth_time`, `acr`, `amr` and `sid` are in every ID token already, and `sub` in every answer of UserInfo; asking for them changes nothing but what the paragraphs on `acr` and `sub` below say. Any other name, `groups` and a name with a language tag such as `name#fr` among them, is ignored. Nothing in `claims` is used for a request without the scope `openid`.
+
+**Where.** A claim asked under `id_token` is added to the ID token of the code; one asked under `userinfo` to the answer of UserInfo for every access token of the grant, beside the claims of its scopes; one asked under both, to both. Which claims are given is decided when the code is issued, from the consent at that moment, and kept with the grant. Each is the person's value when the token is issued or UserInfo answers, as UserInfo writes it, and is left out when the person has none.
+
+**Essential claims.** A claim asked as essential that Hodor cannot give is left out, and the request goes on: OpenID Connect says a provider does not fail it, and the client decides what to do. The `value` and `values` of a claim are not checked against what the person has, but for two claims:
+
+- **`acr`**, asked under `id_token` as essential, with `values` or `value`, is read as `acr_values` is: the weakest of the tenant's levels named must be reached, by a [step-up](#assurance-and-step-up) if needed, or the answer is `unmet_authentication_requirements`. Asked without `essential`, it is a preference: the person is not stepped up for it, and the ID token says what the session reached, as it always does. Each value is a text of printable characters without a space. An `acr` with a value or values and `acr_values` in one request is `invalid_request`.
+- **`sub`**, asked with a `value` under either member, names the person the client expects. A session of someone else is not used: with `prompt=none` the answer is `login_required`, and otherwise the person signs in again. When the person who signs in is still not the one named, the answer is `access_denied`, so that a token never names someone the client did not expect. For a [pairwise client](#pairwise-subject-identifiers) the value is the pairwise identifier. A `sub` asked with two different values is `invalid_request`.
+
+**The bound of the ID token.** The claims asked for the ID token share the bound of 4096 bytes that the [claim mappers](#the-bound-on-a-token) of the client have there. The mappers' claims count first, as they are written. Then each claim asked, in the order of the table above, costs its name and its value as JSON writes them, the two quotes, the colon and the comma. A claim that would cross the bound is left out whole, never cut, and those after it that still fit are added. The answer of UserInfo has no such bound.
+
+**The bounds of the parameter.** `claims` holds at most 4096 bytes and names at most 64 claims across its two members, counted before unknown names are ignored. A member other than `id_token` and `userinfo` is ignored. A `claims` that is not a JSON object, a member `id_token` or `userinfo` that is not an object, a claim that is neither `null` nor an object, an `essential` that is not `true` or `false`, or `values` that is not a list, is `invalid_request`.
+
+**`claims_locales`.** The languages the client prefers for the claims, separated by spaces, at most 255 characters, kept with the request. Hodor keeps each claim of a person in one language, so each claim is answered in it, without a language tag, whatever `claims_locales` asks: what OpenID Connect recommends of a provider that has claims in one language only ([section 5.2](https://openid.net/specs/openid-connect-core-1_0.html#ClaimsLanguagesAndScripts)).
+
 ### What a request may ask of the sign-in
 
 The authorization endpoint already checks and keeps these parameters ([checking the request](#checking-the-request)). What each one does:
@@ -1334,6 +1367,8 @@ The authorization endpoint already checks and keeps these parameters ([checking 
 | `display` | `page`, `popup` or `touch`. The pages are one layout that fits a whole window, a small one opened for them and a touch screen alike, so each value shows the same pages. `wap`, pages for telephones without a modern browser, is not offered |
 | `login_hint` | The sign-in page starts with the identifier filled in. The person can change it; it is a hint, never a claim |
 | `ui_locales` | The pages use the first of these languages they have, before the browser's own |
+| `claims` | Asks for the person's claims one by one, in the ID token, at UserInfo or both; an essential `acr` is a level to reach, and a `sub` with a value names the person expected ([the `claims` parameter](#the-claims-parameter)) |
+| `claims_locales` | Kept. Every claim of a person has one language, which answers whatever is asked ([the `claims` parameter](#the-claims-parameter)) |
 
 `login_hint` and `ui_locales` reach the pages in the address of the sign-in page, as `login_hint` and `ui_locales`.
 
@@ -1373,7 +1408,7 @@ It names only what is built:
 | `request_object_signing_alg_values_supported` | `ES256`, `RS256`, `PS256` and `none`: `none` only for a client whose administrator chose it |
 | `request_uri_parameter_supported` | `true`: [request objects at a client's address](#request-objects-at-a-clients-address) are fetched. Hodor's own references to pushed requests are named by `pushed_authorization_request_endpoint` and `require_pushed_authorization_requests` |
 | `require_request_uri_registration` | `true`: only an address that starts with one the client registered is fetched |
-| `claims_parameter_supported` | `false` |
+| `claims_parameter_supported` | `true`: [the `claims` parameter](#the-claims-parameter) is read |
 | `require_pushed_authorization_requests` | Whether the tenant [requires pushed requests](#requiring-pushed-requests) of every client: `false` unless it does |
 | `backchannel_logout_supported`, `backchannel_logout_session_supported` | `true`: [back-channel logout](#back-channel-logout) is offered, and every logout token carries `sid` |
 | `tls_client_certificate_bound_access_tokens` | `true` when the operator names a header that forwards certificates, `client-cert` or `x-forwarded-client-cert`: [certificate-bound access tokens](#certificate-bound-access-tokens) are offered (RFC 8705, section 3.3). Left out otherwise |
@@ -1392,6 +1427,7 @@ The document may be kept by caches for five minutes and carries `Access-Control-
 | `UnitOfWork` | The transaction the client is read in |
 | `SignatureVerifier` | Checks the access token's signature, from the kernel |
 | `IdentityService` | Reads the person, for UserInfo, from the identity context |
+| `PersonClaimSources` | Reads the person's claims at the token endpoint, for those a client asks for the ID token through [the `claims` parameter](#the-claims-parameter), as for the [claim mappers](#claim-mappers) |
 | `PersonMemberships` | The person's effective groups, for the `groups` claim |
 
 ## Logout initiated by the relying party
@@ -1887,7 +1923,7 @@ These are every claim of [the ID token](#the-id-token), [the access token](#the-
 
 The claims the mappers of one client add to one target are at most **4096 bytes** as JSON writes them, in the worst case. Each mapper's worst case is the largest value of its source plus its name, its two quotes, the colon and the comma that separate it. When a mapper is created or changed, the worst cases of every mapper of the client that names a target, the new or changed one included, are added up for each target; if any target would pass 4096 bytes, the mapper is refused with `oauth.claim_mapper_token_too_large`, which says the target and the sum, and nothing is stored.
 
-Since no value is written larger than its worst case, the bound holds for every token the mappers ever write into: a token is never refused or cut when it is issued. One mapper of the person's groups, 3901 bytes and its name, fits; two into the same target do not. Hodor's own claims are bounded by their own rules, such as the hundred groups of the `groups` claim.
+Since no value is written larger than its worst case, the bound holds for every token the mappers ever write into: a token is never refused or cut when it is issued. The claims a client asks for the ID token through [the `claims` parameter](#the-claims-parameter) share the bound with the mappers' claims of the ID token, which count first; one that would cross it is left out. One mapper of the person's groups, 3901 bytes and its name, fits; two into the same target do not. Hodor's own claims are bounded by their own rules, such as the hundred groups of the `groups` claim.
 
 ### What mappers apply to
 
@@ -2111,13 +2147,13 @@ Administrators reach them through [the administration interface](../../api/admin
 | Limits on the number of requests to the token, revocation and introspection endpoints, per client and per address ([limits](#limits)) | With the other limits per address, before any deployment behind a load balancer |
 | The metadata at the address RFC 8414 prefers for an issuer with a path, `/.well-known/oauth-authorization-server/t/{slug}`: it is outside the tenant's addresses, so only the address after the issuer is served | When a client needs it |
 | Calling UserInfo from a browser on another origin | With origins in the client settings |
-| The person's claims in the ID token when asked for with the `claims` parameter | 0.5.0, [Milestone 13](../../product/epics.md#milestone-13-requests-that-say-what-they-need) ([Decision 0047](../../decisions/0047-claims-and-the-person-s-claims.md)) |
 | More than one `resource` in a refresh or client credentials request: a parameter may be given once | With resource indicators given more than once at the token endpoint |
 | Calling the token endpoint from a browser on another origin: clients have no registered origins yet, so no cross-origin headers are sent | With origins in the client settings |
 | Client assertions, request objects and JWT-SVIDs signed with `ES384` or `EdDSA`, which client keys on P-384 and Ed25519 would need. The kernel's signature checking covers `EdDSA` since Issue-130, for the tenant's own signatures; no header of another's is read as `EdDSA` yet | When a client needs it; `ES384` when the kernel's signature checking covers it |
 | Choosing a client's ID token and UserInfo algorithms from the console | With the console pages of clients |
 | Encrypted UserInfo answers and ID tokens | 0.6.0, [Milestone 18](../../product/epics.md#milestone-18-fapi-20-message-signing-and-fapi-10-advanced) ([Decision 0048](../../decisions/0048-encryption.md)) |
-| Asking for an `acr` with the `claims` parameter. `acr_values` is the way to ask | 0.5.0, [Milestone 13](../../product/epics.md#milestone-13-requests-that-say-what-they-need) |
+| A claim in more than one language, asked with a language tag such as `name#fr` or chosen by `claims_locales`: a person's claims have one language each | When a tenant needs claims in several languages |
+| The `value` and `values` of a claim of the `claims` parameter checked against the person's, but for `acr` and `sub` | Not planned: OpenID Connect leaves it to the provider, and the client checks what it gets |
 | A page where a person sees the history of their consents | The account console, Phase 2 |
 | Limits on requests to the authorization endpoint per address | With the other limits per address, before any deployment behind a load balancer |
 | Keeping a request object fetched from a client's address, to fetch it less often | Not planned: it is fetched for each request ([Decision 0045](../../decisions/0045-request-objects-and-pushed-requests.md)) |

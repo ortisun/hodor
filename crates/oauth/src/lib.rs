@@ -85,6 +85,10 @@ pub mod api {
         OrganizationAttribute, PersonAttribute, PersonAttributes, PersonFacts, RESERVED_CLAIMS,
         add_mapped_claims, check_together, is_reserved, mapped_claims,
     };
+    pub use crate::domain::claims_parameter::{
+        ClaimsRequest, GrantClaims, MAX_CLAIMS_BYTES, MAX_CLAIMS_NAMED, ReadClaims,
+        add_asked_claims, read_claims,
+    };
     pub use crate::domain::client::{
         AuthenticationMethod, Client, ClientId, ClientSettings, ClientSnapshot, ClientType,
         ExchangeRule, GrantType, IdTokenAlgorithm, MAX_CLIENTS, MAX_EXCHANGE_RULES,
@@ -92,7 +96,8 @@ pub mod api {
     };
     pub use crate::domain::consent::{
         Consent, ConsentAction, ConsentActor, ConsentAnswer, ConsentHistoryEntry, ConsentWait,
-        DEFAULT_CONSENT_LIFETIME, LONGEST_CONSENT_LIFETIME, SHORTEST_CONSENT_LIFETIME, must_ask,
+        DEFAULT_CONSENT_LIFETIME, LONGEST_CONSENT_LIFETIME, SHORTEST_CONSENT_LIFETIME,
+        consented_scopes, must_ask,
     };
     pub use crate::domain::event::OauthEvent;
     pub use crate::domain::exchange::{
@@ -122,10 +127,11 @@ pub mod api {
         refusal as logout_refusal,
     };
     pub use crate::domain::openid::{
-        BearerRefusal, CheckedAccessToken, IdTokenNames, OPENID_SCOPE, PersonClaims, PublishedKey,
-        ReadAccessToken, UI_LOCALES, access_token_hash, asks_for_openid, authentication_methods,
-        check_access_token, discovery_document, id_token_claims, is_multi_factor,
-        read_access_token, userinfo_claims,
+        BearerRefusal, CheckedAccessToken, IdTokenNames, OPENID_SCOPE, PERSON_CLAIMS, PersonClaims,
+        PublishedKey, ReadAccessToken, UI_LOCALES, access_token_hash, asks_for_openid,
+        authentication_methods, check_access_token, discovery_document, id_token_claims,
+        is_multi_factor, person_claim, read_access_token, scope_of_claim, userinfo_claims,
+        userinfo_claims_with,
     };
     pub use crate::domain::openid::{prompt_values_supported, with_registration};
     pub use crate::domain::pairwise::{

@@ -227,6 +227,36 @@ async fn a_signed_request_object_is_checked_and_kept_as_the_request() {
 }
 
 #[tokio::test]
+async fn the_claims_parameter_inside_a_request_object_is_read_as_the_parameter() {
+    let world = world();
+    let tenant = TenantContext::assume(TenantId::generate());
+    let (client, key) = signing_client(&world, &tenant, 3, None).await;
+    let mut inside = claims(&world, client);
+    // A JSON object inside the object, not a text holding one.
+    inside["claims"] = json!({
+        "id_token": {"acr": {"essential": true, "values": ["gold"]}, "email": null},
+        "userinfo": {"name": {"essential": true}},
+    });
+    inside["claims_locales"] = json!("pt-BR en");
+    let checked = world
+        .service
+        .check(
+            &tenant,
+            ISSUER,
+            &request(client, &signed(&key, &inside)),
+            &hodor_oauth::api::PushedRequestPolicy::default(),
+        )
+        .await
+        .expect("storage")
+        .expect("accepted");
+    assert_eq!(checked.claims.id_token, ["email"]);
+    assert_eq!(checked.claims.userinfo, ["name"]);
+    assert_eq!(checked.claims_locales.as_deref(), Some("pt-BR en"));
+    // An essential `acr` is the request's `acr_values`, as outside one.
+    assert_eq!(checked.acr_values.as_deref(), Some("gold"));
+}
+
+#[tokio::test]
 async fn an_object_signed_by_another_client_s_key_is_refused() {
     let world = world();
     let tenant = TenantContext::assume(TenantId::generate());

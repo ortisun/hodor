@@ -12,13 +12,16 @@ use crate::application::ports::{
 use crate::domain::authorization::{CodePresentation, GrantStatus};
 use crate::domain::binding::{CONFIRMATION_CLAIM, CertificateThumbprint};
 use crate::domain::claim_mapper::{ClaimTarget, add_mapped_claims};
+use crate::domain::claims_parameter::add_asked_claims;
 use crate::domain::client::{
     AuthenticationMethod, Client, ClientId, ClientType, GrantType, TokenPolicy,
 };
 use crate::domain::event::OauthEvent;
 use crate::domain::forwarded::presented_thumbprint;
 use crate::domain::introspection::AccessTokenRecord;
-use crate::domain::openid::{IdTokenNames, asks_for_openid, id_token_claims, id_token_header};
+use crate::domain::openid::{
+    IdTokenNames, PersonClaims, asks_for_openid, id_token_claims, id_token_header,
+};
 use crate::domain::refresh::{
     DEFAULT_RETRY_WINDOW, FAMILY_SECRET_PURPOSE, FamilySecret, LONGEST_RETRY_WINDOW,
     RefreshDecision, RefreshFamily, RefreshRefusal, RefreshTokenHash,
@@ -609,8 +612,9 @@ impl TokenService {
     }
 
     /// Signs the ID token for a redeemed `code`, issued with
-    /// `access_token`, naming the person as `subject`, with the claims the
-    /// client's mappers add after Hodor's own.
+    /// `access_token`, naming the person as `subject`, with the person's
+    /// claims of `asked`, those the `claims` parameter asked for, and then
+    /// those the client's mappers add, after Hodor's own.
     #[allow(
         clippy::too_many_arguments,
         reason = "each is one part of the ID token; grouping them would only rename them"
@@ -624,6 +628,7 @@ impl TokenService {
         organization: Option<OrganizationId>,
         access_token: &str,
         subject: &str,
+        asked: &[String],
         mapped: &Map<String, Value>,
     ) -> Result<Result<Secret<String>, TokenError>, DomainError> {
         let lifetime = client.snapshot().settings.token_policy.id_token;
@@ -649,6 +654,12 @@ impl TokenService {
             id_token_algorithm,
             self.ports.digest.as_ref(),
         );
+        if !asked.is_empty() {
+            let person = PersonClaims::from_attributes(
+                self.ports.mapping.person(tenant, code.user_id).await?,
+            );
+            add_asked_claims(&mut claims, asked, &person, mapped);
+        }
         add_mapped_claims(&mut claims, mapped);
         let algorithm = id_token_algorithm.key_algorithm();
         let signed = self
@@ -802,6 +813,7 @@ impl TokenService {
                     grant.organization,
                     &signed.token,
                     &known_as,
+                    &grant.claims.id_token,
                     &mapped.of(ClaimTarget::IdToken),
                 )
                 .await?

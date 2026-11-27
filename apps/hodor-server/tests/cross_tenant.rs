@@ -7352,3 +7352,59 @@ async fn a_request_object_address_of_one_tenants_client_is_never_fetched_for_ano
     );
     assert_eq!(web.asked(), ["/acme/one"]);
 }
+
+#[tokio::test]
+async fn a_sub_asked_through_claims_never_names_the_same_person_of_another_tenant() {
+    let world = world_with(&[("HODOR_SECRET_KEYS", ROOT_KEY)]).await;
+    let (acme, globex) = (&world.acme, &world.globex);
+    let (acme_client, acme_secret) = first_party_client(&world, acme).await;
+    let mut browser = Browser::not_following(&world.server);
+    let (_, body) = browser.sign_in(acme.slug, EMAIL, PASSWORD).await;
+    assert_eq!(body["status"], "completed", "{body}");
+
+    // The same address and password at Globex is another person: a request
+    // of Acme's client that names Globex's never gets Acme's session.
+    let of_globex =
+        serde_json::json!({"id_token": {"sub": {"value": globex.ana.to_string()}}}).to_string();
+    let back = authorized(
+        &mut browser,
+        &authorize_path_with(
+            acme.slug,
+            &acme_client,
+            &[("claims", of_globex.as_str()), ("prompt", "none")],
+        ),
+    )
+    .await;
+    assert_eq!(
+        back.get("error").map(String::as_str),
+        Some("login_required")
+    );
+    assert!(!back.contains_key("code"));
+
+    // Named by her identifier at Acme, she gets a code, and the ID token
+    // names her as Acme knows her.
+    let of_acme =
+        serde_json::json!({"id_token": {"sub": {"value": acme.ana.to_string()}}}).to_string();
+    let back = authorized(
+        &mut browser,
+        &authorize_path_with(acme.slug, &acme_client, &[("claims", of_acme.as_str())]),
+    )
+    .await;
+    let code = back.get("code").expect("a code");
+    let (status, tokens) = oauth_form(
+        &world,
+        acme,
+        "token",
+        (&acme_client, &acme_secret),
+        &[
+            ("grant_type", "authorization_code"),
+            ("code", code),
+            ("redirect_uri", REDIRECT),
+            ("code_verifier", VERIFIER),
+        ],
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{tokens}");
+    let identity = claims_of(tokens["id_token"].as_str().expect("an ID token"));
+    assert_eq!(identity["sub"], acme.ana.to_string());
+}

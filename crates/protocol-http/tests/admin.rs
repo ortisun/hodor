@@ -3829,6 +3829,8 @@ async fn agreed(world: &World, user: UserId, client: &str) {
         response_mode: hodor_oauth::api::ResponseMode::Query,
         id_token_hint: None,
         given_hint: None,
+        claims: hodor_oauth::api::ClaimsRequest::default(),
+        claims_locales: None,
     };
     let person = hodor_oauth::api::SignedInPerson {
         user_id: user,

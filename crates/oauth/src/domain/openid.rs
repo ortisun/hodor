@@ -6,6 +6,7 @@
 
 use crate::domain::authorization::AuthorizationCode;
 use crate::domain::binding::{CONFIRMATION_CLAIM, CertificateThumbprint, check_confirmation};
+use crate::domain::claim_mapper::PersonAttributes;
 use crate::domain::client::{ClientId, IdTokenAlgorithm, RequestObjectAlgorithm};
 use crate::domain::resource_server::GROUPS_SCOPE;
 use crate::domain::response::{ResponseMode, ResponseType};
@@ -471,6 +472,24 @@ pub struct PersonClaims {
     pub groups: Vec<GroupId>,
 }
 
+impl PersonClaims {
+    /// The claims of a person whose attributes are `attributes`, without
+    /// their groups: what the ID token may carry through the `claims`
+    /// parameter.
+    #[must_use]
+    pub fn from_attributes(attributes: PersonAttributes) -> Self {
+        Self {
+            name: attributes.display_name,
+            preferred_username: attributes.username,
+            locale: attributes.locale,
+            updated_at: attributes.updated_at,
+            email: attributes.email,
+            claims: attributes.claims,
+            groups: Vec::new(),
+        }
+    }
+}
+
 /// The postal address as OpenID Connect writes it: an object of the parts
 /// the person has.
 #[must_use]
@@ -483,63 +502,104 @@ pub(crate) fn address_claim(address: &PostalAddress) -> Value {
     Value::Object(parts)
 }
 
+/// The person's claims, each with the scope that covers it (OpenID
+/// Connect Core, section 5.4), in the order UserInfo and the ID token
+/// write them. What the `claims` parameter may ask for.
+pub const PERSON_CLAIMS: [(&str, &str); 19] = [
+    ("name", "profile"),
+    ("preferred_username", "profile"),
+    ("given_name", "profile"),
+    ("family_name", "profile"),
+    ("middle_name", "profile"),
+    ("nickname", "profile"),
+    ("profile", "profile"),
+    ("picture", "profile"),
+    ("website", "profile"),
+    ("gender", "profile"),
+    ("birthdate", "profile"),
+    ("zoneinfo", "profile"),
+    ("locale", "profile"),
+    ("updated_at", "profile"),
+    ("email", "email"),
+    ("email_verified", "email"),
+    ("address", "address"),
+    ("phone_number", "phone"),
+    ("phone_number_verified", "phone"),
+];
+
+/// The scope that covers the person's claim `name`, if it is one.
+#[must_use]
+pub fn scope_of_claim(name: &str) -> Option<&'static str> {
+    PERSON_CLAIMS
+        .iter()
+        .find(|(claim, _)| *claim == name)
+        .map(|(_, scope)| *scope)
+}
+
+/// The value of the person's claim `name`, as UserInfo writes it. `None`
+/// when the person has no such value, or `name` is not a claim of the
+/// person: `email_verified` without an address, `phone_number_verified`
+/// without a number.
+#[must_use]
+pub fn person_claim(name: &str, person: &PersonClaims) -> Option<Value> {
+    let standard = &person.claims;
+    let text = |value: &Option<String>| value.as_ref().map(|value| json!(value));
+    match name {
+        "name" => text(&person.name),
+        "preferred_username" => text(&person.preferred_username),
+        "given_name" => text(&standard.given_name),
+        "family_name" => text(&standard.family_name),
+        "middle_name" => text(&standard.middle_name),
+        "nickname" => text(&standard.nickname),
+        "profile" => text(&standard.profile),
+        "picture" => text(&standard.picture),
+        "website" => text(&standard.website),
+        "gender" => text(&standard.gender),
+        "birthdate" => text(&standard.birthdate),
+        "zoneinfo" => text(&standard.zoneinfo),
+        "locale" => text(&person.locale),
+        "updated_at" => person
+            .updated_at
+            .map(|updated_at| json!(updated_at.unix_timestamp())),
+        "email" => person.email.as_ref().map(|(email, _)| json!(email)),
+        "email_verified" => person.email.as_ref().map(|(_, verified)| json!(verified)),
+        "address" => standard.address.as_ref().map(address_claim),
+        "phone_number" => text(&standard.phone_number),
+        "phone_number_verified" => standard
+            .phone_number
+            .as_ref()
+            .map(|_| json!(standard.phone_number_verified)),
+        _ => None,
+    }
+}
+
 /// The answer of UserInfo for the person the client knows as `subject`,
 /// with the claims of `scopes`.
 #[must_use]
 pub fn userinfo_claims(subject: &str, scopes: &[String], person: &PersonClaims) -> Value {
+    userinfo_claims_with(subject, scopes, &[], person)
+}
+
+/// The answer of UserInfo for the person the client knows as `subject`,
+/// with the claims of `scopes` and those of `asked`, the claims the grant
+/// was asked for UserInfo through the `claims` parameter that a consented
+/// scope covers.
+#[must_use]
+pub fn userinfo_claims_with(
+    subject: &str,
+    scopes: &[String],
+    asked: &[String],
+    person: &PersonClaims,
+) -> Value {
     let has = |scope: &str| scopes.iter().any(|given| given == scope);
     let mut claims = Map::new();
     claims.insert("sub".to_owned(), json!(subject));
-    let standard = &person.claims;
-    if has("profile") {
-        if let Some(name) = &person.name {
-            claims.insert("name".to_owned(), json!(name));
+    for (name, scope) in PERSON_CLAIMS {
+        if (has(scope) || asked.iter().any(|claim| claim == name))
+            && let Some(value) = person_claim(name, person)
+        {
+            claims.insert(name.to_owned(), value);
         }
-        if let Some(username) = &person.preferred_username {
-            claims.insert("preferred_username".to_owned(), json!(username));
-        }
-        for (name, value) in [
-            ("given_name", &standard.given_name),
-            ("family_name", &standard.family_name),
-            ("middle_name", &standard.middle_name),
-            ("nickname", &standard.nickname),
-            ("profile", &standard.profile),
-            ("picture", &standard.picture),
-            ("website", &standard.website),
-            ("gender", &standard.gender),
-            ("birthdate", &standard.birthdate),
-            ("zoneinfo", &standard.zoneinfo),
-        ] {
-            if let Some(value) = value {
-                claims.insert(name.to_owned(), json!(value));
-            }
-        }
-        if let Some(locale) = &person.locale {
-            claims.insert("locale".to_owned(), json!(locale));
-        }
-        if let Some(updated_at) = person.updated_at {
-            claims.insert("updated_at".to_owned(), json!(updated_at.unix_timestamp()));
-        }
-    }
-    if has("email")
-        && let Some((email, verified)) = &person.email
-    {
-        claims.insert("email".to_owned(), json!(email));
-        claims.insert("email_verified".to_owned(), json!(verified));
-    }
-    if has("address")
-        && let Some(address) = &standard.address
-    {
-        claims.insert("address".to_owned(), address_claim(address));
-    }
-    if has("phone")
-        && let Some(number) = &standard.phone_number
-    {
-        claims.insert("phone_number".to_owned(), json!(number));
-        claims.insert(
-            "phone_number_verified".to_owned(),
-            json!(standard.phone_number_verified),
-        );
     }
     // Every group, however many: a token holds at most a hundred, and a
     // client reads the rest here.
@@ -657,7 +717,7 @@ pub fn discovery_document(issuer: &str, acr_values: &[&str], pushed_required: bo
         "request_uri_parameter_supported": true,
         "require_request_uri_registration": true,
         "require_pushed_authorization_requests": pushed_required,
-        "claims_parameter_supported": false,
+        "claims_parameter_supported": true,
         // Every client with a back-channel logout address is told when a
         // session it signed a person in with ends, and every logout token
         // carries `sid`.

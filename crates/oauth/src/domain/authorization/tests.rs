@@ -1052,3 +1052,130 @@ fn the_s256_challenge_is_that_of_rfc_7636() {
         CHALLENGE
     );
 }
+
+#[test]
+fn the_claims_parameter_is_kept_with_the_request_and_its_essential_acr_becomes_acr_values() {
+    let setting = setting();
+    let claims = r#"{"id_token":{"email":null,"acr":{"essential":true,"values":["urn:hodor:acr:mfa"]}},"userinfo":{"name":{"essential":true},"sub":{"value":"someone"}}}"#;
+    let pairs = with(good(&setting.client), "claims", Some(claims));
+    let pairs = with(pairs, "claims_locales", Some("fr-CA en"));
+    let request = check(&setting, pairs).expect("accepted");
+    assert_eq!(request.claims.id_token, ["email"]);
+    assert_eq!(request.claims.userinfo, ["name"]);
+    assert_eq!(request.claims.subject.as_deref(), Some("someone"));
+    assert_eq!(request.acr_values.as_deref(), Some("urn:hodor:acr:mfa"));
+    assert_eq!(request.claims_locales.as_deref(), Some("fr-CA en"));
+    // Kept as it is while the person signs in.
+    let written = serde_json::to_value(&request).expect("written");
+    let read: AuthorizationRequest = serde_json::from_value(written).expect("read");
+    assert_eq!(read, request);
+}
+
+#[test]
+fn an_acr_asked_without_essential_is_a_preference_and_asks_for_no_level() {
+    let setting = setting();
+    let claims = r#"{"id_token":{"acr":{"values":["urn:hodor:acr:mfa"]}}}"#;
+    let request = check(
+        &setting,
+        with(good(&setting.client), "claims", Some(claims)),
+    )
+    .expect("accepted");
+    assert_eq!(request.acr_values, None);
+}
+
+#[test]
+fn a_malformed_or_conflicting_claims_parameter_is_an_invalid_request() {
+    let setting = setting();
+    let too_many: String = format!(
+        "{{\"userinfo\":{{{}}}}}",
+        (0..65)
+            .map(|index| format!("\"claim_{index}\":null"))
+            .collect::<Vec<_>>()
+            .join(",")
+    );
+    let too_large = format!(
+        "{{\"userinfo\":{{\"name\":{{\"value\":\"{}\"}}}}}}",
+        "a".repeat(4096)
+    );
+    for claims in [
+        "not json",
+        "[]",
+        r#"{"id_token":[]}"#,
+        r#"{"userinfo":{"name":true}}"#,
+        r#"{"userinfo":{"name":{"essential":"yes"}}}"#,
+        r#"{"userinfo":{"name":{"values":"one"}}}"#,
+        r#"{"id_token":{"acr":{"essential":true,"values":[1]}}}"#,
+        r#"{"id_token":{"sub":{"value":1}}}"#,
+        r#"{"id_token":{"sub":{"value":"a"}},"userinfo":{"sub":{"value":"b"}}}"#,
+        too_many.as_str(),
+        too_large.as_str(),
+    ] {
+        let pairs = with(good(&setting.client), "claims", Some(claims));
+        assert_eq!(
+            error_of(check(&setting, pairs)),
+            "invalid_request",
+            "{claims}"
+        );
+    }
+    let both = with(
+        with(
+            good(&setting.client),
+            "claims",
+            Some(r#"{"id_token":{"acr":{"essential":true,"value":"urn:hodor:acr:mfa"}}}"#),
+        ),
+        "acr_values",
+        Some("urn:hodor:acr:mfa"),
+    );
+    assert_eq!(error_of(check(&setting, both)), "invalid_request");
+    // An `acr` without a value asks for nothing more beside `acr_values`.
+    let named = with(
+        with(
+            good(&setting.client),
+            "claims",
+            Some(r#"{"id_token":{"acr":null}}"#),
+        ),
+        "acr_values",
+        Some("urn:hodor:acr:mfa"),
+    );
+    assert!(check(&setting, named).is_ok());
+    let locales = with(
+        good(&setting.client),
+        "claims_locales",
+        Some(&"a".repeat(256)),
+    );
+    assert_eq!(error_of(check(&setting, locales)), "invalid_request");
+}
+
+#[test]
+fn a_request_names_another_person_only_when_it_asked_for_a_sub_with_a_value() {
+    let setting = setting();
+    let plain = check(&setting, good(&setting.client)).expect("accepted");
+    assert!(!plain.names_another("anyone"));
+    let asked = check(
+        &setting,
+        with(
+            good(&setting.client),
+            "claims",
+            Some(r#"{"id_token":{"sub":{"value":"ana"}}}"#),
+        ),
+    )
+    .expect("accepted");
+    assert!(!asked.names_another("ana"));
+    assert!(asked.names_another("bruno"));
+}
+
+#[test]
+fn a_grant_is_made_giving_no_claim() {
+    let setting = setting();
+    let request = check(
+        &setting,
+        with(
+            good(&setting.client),
+            "claims",
+            Some(r#"{"id_token":{"email":null}}"#),
+        ),
+    )
+    .expect("accepted");
+    let grant = Grant::make(&request, &person(MOMENT), MOMENT);
+    assert_eq!(grant.claims, GrantClaims::default());
+}
