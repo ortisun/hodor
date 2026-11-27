@@ -162,7 +162,7 @@ Some plans need what is not built on `develop` yet. The script never guesses: `p
 | `front-channel-logout` | Issue-139, pull request 184 | The Front-Channel client and plan |
 | `session-management` | Issue-140 | The tenant `certification-session` and the Session plan. Also give its `tenantCommands` the command of `hodor-cli` that turns session management on for a tenant, which that issue names |
 | `registration-endpoint` | Issue-133, pull request 179; built | The tenant `certification-dynamic` with registration on, made once a plan that uses it is ready: the 3rd Party-Init plan with Issue-134, the Dynamic plan with Issues 127, 128, 134 and 137. Its command names `{responseTypes}` where the response types go, which the script replaces with each response type that is built, as it does for the clients, so the tenant's policy never names one Hodor would refuse |
-| `registration-management` | Issue-134; built | The 3rd Party-Init plan, and with the others the Dynamic plan |
+| `registration-management` | Issue-134, pull request 192; built | The 3rd Party-Init plan, and with the others the Dynamic plan |
 | `dynamic-plan` | Issue-137 | What the Dynamic plan needs of a tenant beyond the endpoint, such as registered clients without PKCE, which Issue-137 decides; its `tenantCommands` take the command it names |
 
 ## Running the plans on the hosted suite

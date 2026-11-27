@@ -36,6 +36,7 @@
     "registration-management": {
       "built": true,
       "issue": "Issue-134",
+      "pullRequest": 192,
       "what": "managing a registration and third-party initiated login"
     },
     "dynamic-plan": {
