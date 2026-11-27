@@ -55,7 +55,7 @@ jobs:
         with:
           node-version: 24
       - name: Test the choice of plans
-        run: node --test deploy/conformance/test/
+        run: node --test deploy/conformance/test/runs.test.mjs
       - name: Choose the plans
         id: choose
         run: |

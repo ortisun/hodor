@@ -11,7 +11,7 @@ The Basic OpenID Provider, Config OpenID Provider and Back-Channel OpenID Provid
 - `plans.json` - every plan `run.mjs` can run, by its short name (`basic`, `config`, `backchannel`, `basic-pairwise`, `backchannel-pairwise`, `formpost-basic`, `implicit-id-token`, `hybrid-code-id-token`), each with `core`, true for the core set. The workflow's matrix is made from it.
 - `expected.json` - for each test that may end other than `PASSED`, each result it may end with (`REVIEW`, `WARNING` or `SKIPPED` only), `why`, and `plans`, the short names of the plans it may end so in.
 - `runs.mjs` - Node's standard library only. Exports the checks of `plans.json` and `expected.json`, `allowedResults`, `choose` (the set, `core`, `every` or `none`, for a GitHub event: `schedule` and a pull request into `main` or labelled `conformance: full` every plan, a push and a pull request into `develop` the core set, any other label added nothing) and `report` (the body of the issue of a failed night). `node runs.mjs choose` prints `set=` and `plans=` for `$GITHUB_OUTPUT`; `node runs.mjs report DIRECTORY` prints the issue from the downloaded artifacts `conformance-results-{plan}`.
-- `test/runs.test.mjs` - `node --test deploy/conformance/test/`.
+- `test/runs.test.mjs` - `node --test deploy/conformance/test/runs.test.mjs`.
 - `package.json`, `package-lock.json` - Playwright 1.65.1, the version `frontend/auth-ui` uses.
 
 ## Invariants
@@ -25,7 +25,7 @@ The Basic OpenID Provider, Config OpenID Provider and Back-Channel OpenID Provid
 ## Verification
 
 ```sh
-node --test deploy/conformance/test/
+node --test deploy/conformance/test/runs.test.mjs
 docker build --file deploy/docker/Dockerfile --tag hodor:conformance .
 HODOR_IMAGE=hodor:conformance docker compose -f deploy/conformance/compose.yaml up --wait
 (cd deploy/conformance && npm ci && npx playwright install chromium && node run.mjs)

@@ -2,7 +2,7 @@
 // results allowed for a test in a plan, the set of plans each event calls
 // for, and the issue of a failed night.
 //
-//   node --test deploy/conformance/test/
+//   node --test deploy/conformance/test/runs.test.mjs
 
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
