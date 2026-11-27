@@ -724,7 +724,7 @@ fn the_document_and_the_routes_list_the_same_operations_and_permissions() {
         })
         .collect();
     assert_eq!(documented, served);
-    assert_eq!(served.len(), 161);
+    assert_eq!(served.len(), 163);
 
     // Every operation says how it refuses.
     let document: serde_json::Value = serde_json::from_str(ADMIN_OPENAPI).expect("valid JSON");
@@ -4830,6 +4830,123 @@ async fn an_administrator_reads_and_sets_the_email_sign_in_policy() {
         read.body,
         serde_json::json!({ "code": true, "link": false })
     );
+}
+
+#[tokio::test]
+async fn an_administrator_reads_and_sets_the_pushed_request_policy() {
+    let world = world().await;
+    let read = world
+        .as_administrator(Method::GET, "/pushed-authorization-requests", None)
+        .await;
+    assert_eq!(read.status, StatusCode::OK, "{:?}", read.body);
+    assert_eq!(
+        read.body,
+        serde_json::json!({ "lifetime_seconds": 60, "required": false })
+    );
+    let set = world
+        .as_administrator(
+            Method::PUT,
+            "/pushed-authorization-requests",
+            Some(serde_json::json!({ "lifetime_seconds": 600, "required": true })),
+        )
+        .await;
+    assert_eq!(set.status, StatusCode::OK, "{:?}", set.body);
+    assert_eq!(
+        set.body,
+        serde_json::json!({ "lifetime_seconds": 600, "required": true })
+    );
+    for (refused, code) in [
+        (
+            serde_json::json!({ "lifetime_seconds": 9, "required": false }),
+            "tenant.settings_invalid",
+        ),
+        (
+            serde_json::json!({ "lifetime_seconds": 601, "required": false }),
+            "tenant.settings_invalid",
+        ),
+        (
+            serde_json::json!({ "lifetime_seconds": 60 }),
+            "request.body_invalid",
+        ),
+        (
+            serde_json::json!({ "lifetime_seconds": -1, "required": false }),
+            "request.body_invalid",
+        ),
+        (
+            serde_json::json!({ "lifetime_seconds": 60, "required": false, "per_client": 5 }),
+            "request.body_invalid",
+        ),
+    ] {
+        let answer = world
+            .as_administrator(Method::PUT, "/pushed-authorization-requests", Some(refused))
+            .await;
+        assert_eq!(answer.status, StatusCode::UNPROCESSABLE_ENTITY);
+        assert_eq!(answer.body["code"], code);
+    }
+    let read = world
+        .as_administrator(Method::GET, "/pushed-authorization-requests", None)
+        .await;
+    assert_eq!(
+        read.body,
+        serde_json::json!({ "lifetime_seconds": 600, "required": true }),
+        "a refusal changes nothing"
+    );
+}
+
+#[tokio::test]
+async fn a_client_may_be_required_to_push_its_requests() {
+    let world = world().await;
+    let application = new_application(&world, "Billing", true).await;
+    let path = format!("/applications/{application}/clients");
+    let created = world
+        .as_administrator(Method::POST, &path, Some(web_client()))
+        .await;
+    assert_eq!(created.status, StatusCode::CREATED, "{}", created.body);
+    assert_eq!(
+        created.body["require_pushed_authorization_requests"], false,
+        "not unless given"
+    );
+    let mut body = web_client();
+    body["require_pushed_authorization_requests"] = true.into();
+    let strict = world
+        .as_administrator(Method::POST, &path, Some(body))
+        .await;
+    assert_eq!(strict.status, StatusCode::CREATED, "{}", strict.body);
+    assert_eq!(strict.body["require_pushed_authorization_requests"], true);
+
+    let client_path = format!("/clients/{}", created.body["id"].as_str().expect("id"));
+    let changed = world
+        .as_administrator(
+            Method::PATCH,
+            &client_path,
+            Some(serde_json::json!({ "require_pushed_authorization_requests": true })),
+        )
+        .await;
+    assert_eq!(changed.status, StatusCode::OK, "{}", changed.body);
+    assert_eq!(changed.body["require_pushed_authorization_requests"], true);
+    let renamed = world
+        .as_administrator(
+            Method::PATCH,
+            &client_path,
+            Some(serde_json::json!({ "name": "Billing site" })),
+        )
+        .await;
+    assert_eq!(
+        renamed.body["require_pushed_authorization_requests"], true,
+        "kept through a change of something else"
+    );
+    let refused = world
+        .as_administrator(
+            Method::PATCH,
+            &client_path,
+            Some(serde_json::json!({ "require_pushed_authorization_requests": "yes" })),
+        )
+        .await;
+    assert_eq!(refused.status, StatusCode::UNPROCESSABLE_ENTITY);
+    let read = world
+        .as_administrator(Method::GET, &client_path, None)
+        .await;
+    assert_eq!(read.body["require_pushed_authorization_requests"], true);
 }
 
 #[tokio::test]

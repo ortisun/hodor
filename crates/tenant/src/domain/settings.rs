@@ -417,6 +417,51 @@ pub struct ProvisioningPolicy {
     pub deprovisioning: Deprovisioning,
 }
 
+/// How long a request a client pushes waits for its browser, and whether
+/// every client of the tenant must push its requests. Specified in
+/// `docs/architecture/contexts/tenant.md`, "Pushed authorization request
+/// policy".
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PushedRequestPolicy {
+    /// The life of a pushed request, in seconds: 10 to 600.
+    pub lifetime_seconds: u16,
+    /// Whether every client must push its requests.
+    pub required: bool,
+}
+
+impl PushedRequestPolicy {
+    /// The shortest life a tenant may give a pushed request, in seconds.
+    pub const SHORTEST_LIFETIME_SECONDS: u16 = 10;
+    /// The longest, in seconds.
+    pub const LONGEST_LIFETIME_SECONDS: u16 = 600;
+
+    /// The life of a pushed request.
+    #[must_use]
+    pub fn lifetime(&self) -> Duration {
+        Duration::seconds(i64::from(self.lifetime_seconds))
+    }
+
+    fn validate(&self) -> Result<(), DomainError> {
+        if !(Self::SHORTEST_LIFETIME_SECONDS..=Self::LONGEST_LIFETIME_SECONDS)
+            .contains(&self.lifetime_seconds)
+        {
+            return Err(invalid(
+                "the life of a pushed request must be between 10 and 600 seconds",
+            ));
+        }
+        Ok(())
+    }
+}
+
+impl Default for PushedRequestPolicy {
+    fn default() -> Self {
+        Self {
+            lifetime_seconds: 60,
+            required: false,
+        }
+    }
+}
+
 /// All the policies of one tenant.
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub struct TenantSettings {
@@ -440,6 +485,11 @@ pub struct TenantSettings {
     /// existed read as the default.
     #[serde(default)]
     pub provisioning: ProvisioningPolicy,
+    /// How pushed authorization requests are kept and whether they are
+    /// required. Settings stored before this policy existed read as the
+    /// default.
+    #[serde(default)]
+    pub pushed_requests: PushedRequestPolicy,
 }
 
 impl TenantSettings {
@@ -453,6 +503,7 @@ impl TenantSettings {
         self.session.validate()?;
         self.lockout.validate()?;
         self.groups.validate()?;
+        self.pushed_requests.validate()?;
         self.authentication.assurance_levels.validate()
     }
 }
@@ -510,6 +561,37 @@ mod tests {
         }
         settings.groups.max_depth = 10;
         settings.validate().expect("valid");
+    }
+
+    #[test]
+    fn a_pushed_request_lives_a_minute_by_default_and_ten_to_six_hundred_seconds() {
+        let mut settings = TenantSettings::default();
+        assert_eq!(settings.pushed_requests.lifetime_seconds, 60);
+        assert_eq!(settings.pushed_requests.lifetime(), Duration::minutes(1));
+        assert!(!settings.pushed_requests.required);
+        let mut stored = serde_json::to_value(&settings).expect("serializes");
+        stored
+            .as_object_mut()
+            .expect("an object")
+            .remove("pushed_requests");
+        let read: TenantSettings = serde_json::from_value(stored).expect("older settings read");
+        assert_eq!(
+            read.pushed_requests,
+            PushedRequestPolicy::default(),
+            "settings stored before the policy read as the default"
+        );
+        for seconds in [0, 9, 601, u16::MAX] {
+            settings.pushed_requests.lifetime_seconds = seconds;
+            assert_eq!(
+                settings.validate().expect_err("refused").code(),
+                "tenant.settings_invalid",
+                "{seconds}"
+            );
+        }
+        for seconds in [10, 600] {
+            settings.pushed_requests.lifetime_seconds = seconds;
+            settings.validate().expect("valid");
+        }
     }
 
     #[test]

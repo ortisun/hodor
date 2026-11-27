@@ -4,7 +4,7 @@ The `oauth` context makes Hodor an OAuth 2.x authorization server and an OpenID 
 
 It does not sign anyone in. When a request needs a person, it hands the request to the `authentication` context and takes the session that comes back. The two contexts do not depend on each other: the HTTP layer joins them ([crates.md](../crates.md)).
 
-This page specifies what Issue-53 builds: applications, clients and resource servers, and the rules they keep; what Issue-55 builds: the authorization endpoint, grants and authorization codes; what Issue-56 builds: the token endpoint, client authentication and access tokens; what Issue-59 builds: the OpenID Provider; what Issue-60 builds: logout initiated by the relying party; what Issue-62 builds: [consent](#consent); what Issue-93 builds: [clients that act as a workload](#clients-that-act-as-a-workload); what Issue-106 builds: [a JWT-SVID as a client's proof](#checking-a-jwt-svid); what Issue-107 builds: [an identity forwarded by a proxy](#an-identity-forwarded-by-a-proxy) as a client's proof; what Issue-95 builds: [token exchange](#token-exchange); what Issue-100 builds: [back-channel logout](#back-channel-logout); what Issue-98 builds: [pairwise subject identifiers](#pairwise-subject-identifiers); and what Issue-99 builds: [claim mappers](#claim-mappers); what Issue-120 builds: [request objects](#request-objects); and what Issue-125 builds: the parameters of a request that were still ignored, `id_token_hint`, `display` and `prompt=create`, a client's [defaults for a sign-in](#defaults-for-a-sign-in), the access token in a form body at [UserInfo](#userinfo); and what Issue-132 builds: [the settings of client registration](#client-registration) and initial access tokens. The other endpoints and tokens are added by Issue-57 and Issue-58, under the headings at the end of this page.
+This page specifies what Issue-53 builds: applications, clients and resource servers, and the rules they keep; what Issue-55 builds: the authorization endpoint, grants and authorization codes; what Issue-56 builds: the token endpoint, client authentication and access tokens; what Issue-59 builds: the OpenID Provider; what Issue-60 builds: logout initiated by the relying party; what Issue-62 builds: [consent](#consent); what Issue-93 builds: [clients that act as a workload](#clients-that-act-as-a-workload); what Issue-106 builds: [a JWT-SVID as a client's proof](#checking-a-jwt-svid); what Issue-107 builds: [an identity forwarded by a proxy](#an-identity-forwarded-by-a-proxy) as a client's proof; what Issue-95 builds: [token exchange](#token-exchange); what Issue-100 builds: [back-channel logout](#back-channel-logout); what Issue-98 builds: [pairwise subject identifiers](#pairwise-subject-identifiers); and what Issue-99 builds: [claim mappers](#claim-mappers); what Issue-120 builds: [request objects](#request-objects); what Issue-121 builds: [pushed authorization requests](#pushed-authorization-requests); and what Issue-125 builds: the parameters of a request that were still ignored, `id_token_hint`, `display` and `prompt=create`, a client's [defaults for a sign-in](#defaults-for-a-sign-in), the access token in a form body at [UserInfo](#userinfo); and what Issue-132 builds: [the settings of client registration](#client-registration) and initial access tokens. The other endpoints and tokens are added by Issue-57 and Issue-58, under the headings at the end of this page.
 
 ## Applications
 
@@ -41,6 +41,7 @@ A client is what talks to Hodor's endpoints. Its identifier is the `client_id` o
 | ID token algorithm | How its [ID tokens](#the-id-token) are signed, its `id_token_signed_response_alg` of OpenID Connect Registration: `ES256` unless changed, or `RS256`, `PS256` or `EdDSA`. See [which algorithm](#the-id-token) |
 | UserInfo algorithm | How its [UserInfo answers](#signed-userinfo-answers) are signed, its `userinfo_signed_response_alg` of OpenID Connect Registration: none unless chosen, and UserInfo answers it in JSON; or one of `ES256`, `RS256`, `PS256` and `EdDSA`, and UserInfo answers it with a JSON Web Token signed with that algorithm |
 | Request object algorithm | How it signs its [request objects](#request-objects), its `request_object_signing_alg` of OpenID Connect Registration: none chosen unless changed, which accepts `ES256`, `RS256` and `PS256`; one of the three, which accepts only it; or `none`, which accepts only unsigned request objects |
+| Pushed requests required | Whether every request of the client must be [pushed](#pushed-authorization-requests) to Hodor first, its `require_pushed_authorization_requests` of RFC 9126: `false` unless chosen. A tenant may require it of every client ([requiring pushed requests](#requiring-pushed-requests)) |
 | Subject type | How it knows a person, its `subject_type` of OpenID Connect Registration: `public`, the person's user identifier, unless changed, or `pairwise`, an identifier of its sector alone. See [pairwise subject identifiers](#pairwise-subject-identifiers) |
 | Sector identifier address | Optional, for a pairwise client: an address that lists its redirect addresses and whose host is its sector, its `sector_identifier_uri`. See [the sector identifier address](#the-sector-identifier-address) |
 | Default max age | Optional: the `max_age`, in seconds, of a request of the client that names none, its `default_max_age` of OpenID Connect Registration. See [defaults for a sign-in](#defaults-for-a-sign-in) |
@@ -230,7 +231,7 @@ For an operator who can reach the database, as for tenants and identity provider
 | `hodor-cli application add --tenant acme --name Billing [--first-party]` | Registers an application, enabled; third party unless `--first-party` is given. Prints its identifier |
 | `hodor-cli application list --tenant acme` | One line per application: identifier, status, first or third party, name |
 | `hodor-cli application disable --tenant acme --id …`, `enable` | |
-| `hodor-cli client add --tenant acme --application … --name … --type confidential --grant authorization_code --redirect-uri https://… --scope openid` | Creates a client. `--grant`, `--redirect-uri`, `--post-logout-redirect-uri` and `--scope` are given once per value; `--method` chooses the authentication method, `--secret-days` the lifetime of the first secret, `--without-pkce` lets a confidential client redeem a code without PKCE, `--id-token-algorithm` signs its ID tokens with `RS256`, `PS256` or `EdDSA` instead of `ES256`, `--userinfo-signed-response-alg` signs its [UserInfo answers](#signed-userinfo-answers) with one of the four, `--request-object-signing-alg` chooses its [request object algorithm](#request-objects), `ES256`, `RS256`, `PS256` or `none`, `--backchannel-logout-uri` gives it a [back-channel logout address](#the-back-channel-logout-address), checked with the development exception of `HODOR_OUTBOUND_DEVELOPMENT_HOSTS` as the server has it, `--backchannel-logout-session-required` records that it needs `sid`, `--subject-type pairwise` makes it [pairwise](#pairwise-subject-identifiers), `--sector-identifier-uri` gives it a [sector identifier address](#the-sector-identifier-address), fetched through a guarded client with the same development exception, `--principal` binds it to a service account or an agent, `--exchange-rule '<subject audience>=><audience>'`, once per rule, gives an agent's client its exchange rules, `--spiffe-id` and `--linkerd-identity` bind a service account's client using `spiffe_jwt`, `spiffe_x509`, `tls_client_auth` or `linkerd_identity` to [its workload's identity](#an-identity-forwarded-by-a-proxy), and `--bound-tokens` asks for [certificate-bound access tokens](#certificate-bound-access-tokens). Prints the `client_id` and, for a client with a secret method, the secret, once |
+| `hodor-cli client add --tenant acme --application … --name … --type confidential --grant authorization_code --redirect-uri https://… --scope openid` | Creates a client. `--grant`, `--redirect-uri`, `--post-logout-redirect-uri` and `--scope` are given once per value; `--method` chooses the authentication method, `--secret-days` the lifetime of the first secret, `--without-pkce` lets a confidential client redeem a code without PKCE, `--id-token-algorithm` signs its ID tokens with `RS256`, `PS256` or `EdDSA` instead of `ES256`, `--userinfo-signed-response-alg` signs its [UserInfo answers](#signed-userinfo-answers) with one of the four, `--request-object-signing-alg` chooses its [request object algorithm](#request-objects), `ES256`, `RS256`, `PS256` or `none`, `--require-pushed-authorization-requests` has every request of it [pushed](#pushed-authorization-requests) first, `--backchannel-logout-uri` gives it a [back-channel logout address](#the-back-channel-logout-address), checked with the development exception of `HODOR_OUTBOUND_DEVELOPMENT_HOSTS` as the server has it, `--backchannel-logout-session-required` records that it needs `sid`, `--subject-type pairwise` makes it [pairwise](#pairwise-subject-identifiers), `--sector-identifier-uri` gives it a [sector identifier address](#the-sector-identifier-address), fetched through a guarded client with the same development exception, `--principal` binds it to a service account or an agent, `--exchange-rule '<subject audience>=><audience>'`, once per rule, gives an agent's client its exchange rules, `--spiffe-id` and `--linkerd-identity` bind a service account's client using `spiffe_jwt`, `spiffe_x509`, `tls_client_auth` or `linkerd_identity` to [its workload's identity](#an-identity-forwarded-by-a-proxy), and `--bound-tokens` asks for [certificate-bound access tokens](#certificate-bound-access-tokens). Prints the `client_id` and, for a client with a secret method, the secret, once |
 | `hodor-cli client list --tenant acme --application …` | One line per client: `client_id`, status, type, authentication method, name |
 | `hodor-cli client rotate-secret --tenant acme --id … [--lifetime-days 365] [--keep-previous-days 7]` | Gives a client a new secret and prints it, once |
 | `hodor-cli client disable --tenant acme --id …`, `enable` | |
@@ -295,6 +296,7 @@ Every table is a tenant table under row-level security, in the schema `oauth`. R
 | `id_token_algorithm` | `text` | `ES256`, `RS256`, `PS256` or `EdDSA`, by a check constraint (`PS256` and `EdDSA` since migration 0109); `ES256` for a client made before it existed |
 | `userinfo_signed_response_alg` | `text` | `ES256`, `RS256`, `PS256` or `EdDSA`, by a check constraint, or null for a client whose UserInfo answers are JSON, as for every client made before it existed (migration 0109) |
 | `request_object_signing_alg` | `text` | `ES256`, `RS256`, `PS256` or `none`, by a check constraint, or null when none is chosen, as for every client made before it existed |
+| `require_pushed_authorization_requests` | `boolean` | Whether its requests must be pushed; `false` for a client made before it existed |
 | `backchannel_logout_uri` | `text` | The [back-channel logout address](#the-back-channel-logout-address), or null. At most 2000 characters, `https://` or `http://`, compared byte for byte (`COLLATE "C"`); a check constraint allows it only with the `authorization_code` grant |
 | `backchannel_logout_session_required` | `boolean` | `false` for a client made before it existed; a check constraint allows `true` only with an address |
 | `subject_type` | `text` | `public` or `pairwise`, by a check constraint; `public` for a client made before it existed. A check constraint allows `pairwise` only with the `authorization_code` grant |
@@ -368,7 +370,8 @@ A client of another tenant is unknown here: the client is looked up only in the 
 |---|---|
 | A parameter other than `resource` is given more than once | `invalid_request` |
 | `request` is given: it is read as a [request object](#request-objects), whose checks come first | `invalid_request_object` |
-| `request_uri` is given: references to a request object are not supported yet | `request_uri_not_supported` |
+| `request_uri` is given: it is read as the reference of a [pushed request](#using-the-reference), whose checks come first | `invalid_request_uri` |
+| The client or the tenant [requires pushed requests](#requiring-pushed-requests), and the request was not pushed | `invalid_request` |
 | `response_type` is missing | `invalid_request` |
 | `response_type` is anything but `code` | `unsupported_response_type` |
 | `response_mode` is given and is not a [response mode](#response-modes) Hodor offers, `query` or `form_post`, or is one the response type does not allow | `invalid_request` |
@@ -394,7 +397,7 @@ A client of another tenant is unknown here: the client is looked up only in the 
 
 ### Request objects
 
-Issue-120. A client may send its request as a **request object**: a JSON Web Token whose claims are the parameters of the request, given by value as `request` ([OpenID Connect Core, section 6](https://openid.net/specs/openid-connect-core-1_0.html#JWTRequests), and [RFC 9101](https://www.rfc-editor.org/rfc/rfc9101)). A request object signed by the client tells Hodor that the request is the client's, and nobody changed it in the browser on the way. How it is checked is [Decision 0045](../../decisions/0045-request-objects-and-pushed-requests.md). A reference to one, `request_uri`, is answered `request_uri_not_supported` until pushed authorization requests (Issue-121) and references at a client's address (Issue-122) are built.
+Issue-120. A client may send its request as a **request object**: a JSON Web Token whose claims are the parameters of the request, given by value as `request` ([OpenID Connect Core, section 6](https://openid.net/specs/openid-connect-core-1_0.html#JWTRequests), and [RFC 9101](https://www.rfc-editor.org/rfc/rfc9101)). A request object signed by the client tells Hodor that the request is the client's, and nobody changed it in the browser on the way. How it is checked is [Decision 0045](../../decisions/0045-request-objects-and-pushed-requests.md). A reference, `request_uri`, is either Hodor's own reference to a [pushed request](#pushed-authorization-requests), or an address of the client's, which is answered `request_uri_not_supported` until references at a client's address (Issue-122) are built.
 
 **How a client signs.** Its request object algorithm, its `request_object_signing_alg` of OpenID Connect Registration, says which objects are accepted from it:
 
@@ -429,6 +432,64 @@ The keys are the client's own [keys](#keys), which only a client with `private_k
 **Then every check of the endpoint applies** to the parameters read from the object, in the order of [checking the request](#checking-the-request): a redirect address in the object that is not one of the client's is answered with Hodor's own page, whatever the one outside says, and PKCE, the scopes and the resources are checked as for any request. The object itself is never kept: what waits while the person signs in is the checked request, as for every request.
 
 **Where a refused object is answered.** An error goes only to one of the client's redirect addresses: to the `redirect_uri` outside the object when it is one, otherwise to the object's own when it is one, read without trusting anything else it says, each with the `state` given beside it. When neither is, the answer is Hodor's own page, `oauth.authorization_request_object_invalid`. A redirect address of the client is where its answers go in any case, so an error sent there tells nobody else anything.
+
+### Pushed authorization requests
+
+Issue-121. A client may push its request to Hodor first, over its own connection, and send the browser with nothing but a reference to it ([RFC 9126](https://www.rfc-editor.org/rfc/rfc9126)). The request then never travels through the browser, where it could be read or changed, and it is checked, with the client proven, before any browser is sent anywhere. How it is kept is [Decision 0045](../../decisions/0045-request-objects-and-pushed-requests.md): as the same pending request that waits while a person signs in.
+
+**The endpoint** is at `/t/{slug}/oauth2/par` and answers `POST` with a form (`application/x-www-form-urlencoded`) only; any other method is answered `405`, and a body that is not a form is `invalid_request`. A parameter given more than once is `invalid_request`, but for `resource`, which an authorization request may name several times.
+
+**The client proves who it is** exactly as at [the token endpoint](#how-a-client-proves-who-it-is): one method only, the one it was registered with, a JWT-SVID or an [identity forwarded by a proxy](#an-identity-forwarded-by-a-proxy) included, the same checks, and `invalid_client` with status `401`. A public client sends its `client_id` alone, which proves nothing, as RFC 9126 allows: its request is held to PKCE as at the authorization endpoint. An assertion's `aud` may also be the address of this endpoint, `{issuer}/oauth2/par`, besides the issuer and the token endpoint, as RFC 9126 asks. `client_id`, when the form gives it, must name the client that proved who it is.
+
+**The rest of the form is the request**, read as the authorization endpoint reads its parameters, with a [request object](#request-objects) given as `request` when the client signs its request. `client_secret`, `client_assertion` and `client_assertion_type` prove who the client is and are not parameters of the request.
+
+**Checked when pushed.** Every check of [checking the request](#checking-the-request) is made at once, in its order, for the client that proved who it is; a request object is checked first, as at the authorization endpoint. A failure is answered there, as JSON with `error` and `error_description`, never at a redirect address:
+
+| Failure | `error` |
+|---|---|
+| The client may not use the authorization code | `unauthorized_client` |
+| `redirect_uri` missing, given twice, or not one of the client's redirect addresses | `invalid_request` |
+| The request object is refused | `invalid_request_object`, or `invalid_request` when what is outside contradicts it |
+| `request_uri` is given: a pushed request cannot be a reference to another | `invalid_request` |
+| `id_token_hint`, inside the request object when there is one, is not an ID token the tenant issued to this client, checked as at the authorization endpoint | `invalid_request` |
+| Any other check of the authorization endpoint | The `error` the authorization endpoint would send to the redirect address: `invalid_request`, `unsupported_response_type`, `invalid_scope` or `invalid_target` |
+
+Errors are answered with status `400`, `invalid_client` with `401` and `WWW-Authenticate` as at the token endpoint, and a failure of storage with `500` and `server_error`. The reason is in Hodor's logs only.
+
+**The answer** is status `201`:
+
+```json
+{
+  "request_uri": "urn:ietf:params:oauth:request_uri:2YotnFZFEjr1zCsicMWpAA2YotnFZFEjr1zCsicMWpA",
+  "expires_in": 60
+}
+```
+
+- **The reference** is `urn:ietf:params:oauth:request_uri:` followed by 32 random bytes in base64url without padding, 43 characters. It holds nothing of the request.
+- **`expires_in`** is the life of the pushed request, in seconds.
+- **Caching:** the answer carries `Cache-Control: no-store` and `Pragma: no-cache`, as every answer of the endpoint does.
+
+**Kept as a pending request.** The checked request is stored as a pending authorization request, in the table that holds those waiting while a person signs in, with the SHA-256 of its reference where those hold the hash of a browser's secret. The reference itself is stored nowhere, as a code is stored nowhere. It lives the tenant's [life of a pushed request](tenant.md#pushed-authorization-request-policy), 60 seconds unless the tenant sets 10 to 600. **A client has at most 5 waiting**: when it pushes a sixth, the oldest of its waiting requests is removed first, in the same transaction, so a client that pushes more than its browsers use only loses requests of its own.
+
+#### Using the reference
+
+The client sends the browser to the authorization endpoint with `client_id` and `request_uri`:
+
+1. **The client** is looked up as for every request, only in the tenant the address names. An unknown or disabled client, or one that may not use the authorization code, gets Hodor's own page, `oauth.authorization_client_unknown`.
+2. **The reference** is looked up by its hash, only in that tenant and only for that client, and **taken**: the one conditional change that finds it removes it, as a code is redeemed, so that of two requests with the same reference at the same moment exactly one has it. A reference taken past its life is gone as well. A reference used before, past its life, pushed by another client, pushed at another tenant, or that is not Hodor's shape at all is refused with `invalid_request_uri`; so is `request_uri` given twice. An address (`https://…`) is answered `request_uri_not_supported` until [references at a client's address](#not-built-yet) are built. `request` beside `request_uri` is `invalid_request`.
+3. **Where a refused reference is answered.** Nothing of the request can be read: the error goes to the `redirect_uri` outside when it is one of the client's redirect addresses, with the `state` given beside it, in the [response mode](#response-modes) named beside it, as for a refused request object, and otherwise to Hodor's own page, `oauth.authorization_request_uri_invalid`.
+4. **The pushed request is the request.** Of the parameters outside, only `client_id` is read, as for a request object. OpenID Connect asks a client to repeat `response_type` and `scope` outside; when it does, they must be the pushed request's own, `code` and the same scopes in any order, or the answer is `invalid_request` at the pushed request's redirect address, with its `state`, in its response mode. The others are ignored, `response_mode` and `id_token_hint` among them: the pushed request keeps its own [response mode](#response-modes), and the `sub` of its own hint, checked when it was pushed.
+5. **Then the request goes on as any other**, from [whether the person must sign in](#whether-the-person-must-sign-in): the checks were made when it was pushed, against the same client. When the person must sign in, step up or be asked for consent, it is kept for the browser with the cookie as every request is, for the ten minutes of a sign-in from then.
+
+The reference is used once whatever comes after it. A browser that presents it again, a reload included, is refused with `invalid_request_uri`; the client pushes the request again.
+
+#### Requiring pushed requests
+
+A client whose `require_pushed_authorization_requests` is `true` must push every request, and so must every client of a tenant whose [policy](tenant.md#pushed-authorization-request-policy) requires it: the tenant's requirement holds for every client, and a client can be held to it on a tenant that does not require it. A request to the authorization endpoint without a pushed reference from such a client, a request object by value included, is refused with `invalid_request` and the description `this client must push its authorization requests`, at the redirect address once the client and the address are trusted, as every other check.
+
+**Discovery** names the endpoint as `pushed_authorization_request_endpoint`, and the tenant's requirement as `require_pushed_authorization_requests`. A client's own requirement is said only through its settings.
+
+**The cleanup job** removes a pushed request that was never used once its life is over, with the requests kept for browsers ([the cleanup](../../operations/deployment.md#cleanup)).
 
 ### Whether the person must sign in
 
@@ -536,7 +597,7 @@ Issue-129. The **response mode** says how the answer reaches the client's redire
 - **The response type decides which modes it allows.** `code` allows both. The types that return a token, which Issue-127 and Issue-128 bring, will never be answered in the query, as Multiple Response Type Encoding Practices says, and will default to the fragment.
 - **Any other mode is refused**, `invalid_request`: an unknown one, and those not built yet, `fragment` (Issue-127) and the four of JWT Secured Authorization Response Mode, `query.jwt`, `fragment.jwt`, `form_post.jwt` and `jwt` (Issue-148).
 - **The mode is chosen once**, when the request is checked, and kept with it: a request kept while the person signs in, steps up or is asked for consent is answered in its mode when the browser comes back. A request kept before modes existed reads as the query.
-- **An error comes in the mode the answer would have had**, as Form Post asks of a server that offers it: the mode the request names, when Hodor offers it and the response type allows it; otherwise the default of the response type; and the query when the response type cannot be read either. A refused [request object](#request-objects) is answered in the mode named beside the redirect address it is answered at, outside the object or inside it. An error answered with Hodor's own page, before the redirect address is trusted, is never sent to the client in any mode.
+- **An error comes in the mode the answer would have had**, as Form Post asks of a server that offers it: the mode the request names, when Hodor offers it and the response type allows it; otherwise the default of the response type; and the query when the response type cannot be read either. A refused [request object](#request-objects) is answered in the mode named beside the redirect address it is answered at, outside the object or inside it. A refused [pushed reference](#using-the-reference) is answered in the mode named outside, beside the `redirect_uri`; once a pushed request is taken, its own mode is the one. An error answered with Hodor's own page, before the redirect address is trusted, is never sent to the client in any mode.
 - **The parameters are the same in every mode**: `code`, `state` when the request had one, and `iss`; or `error`, `error_description`, `state` and `iss`.
 
 #### The page of `form_post`
@@ -589,7 +650,7 @@ When a person is deprovisioned, every active grant of theirs, for every client, 
 
 | Port | Purpose |
 |---|---|
-| `AuthorizationRequestStore` | Store a pending authorization request; load one by its identifier; remove it only if it is still there, so that it is resumed once |
+| `AuthorizationRequestStore` | Store a pending authorization request; load one by its identifier; remove it only if it is still there, so that it is resumed once. Store a pushed request, removing the oldest of its client's beyond the newest five; take a pushed request by the hash of its reference, for its client, only if it is still there, so that it is used once |
 | `GrantStore` | Store a grant; load one; store its revocation; list a person's active grants, for one client or for all |
 | `AuthorizationCodeStore` | Store a code; find one by its hash; mark it redeemed only if it was not |
 | `PersonMemberships` | Whether the person is a member of an organization, and the person's effective groups. The server implements it over the identity context |
@@ -601,11 +662,11 @@ When a person is deprovisioned, every active grant of theirs, for every client, 
 
 | Table | Holds |
 |---|---|
-| `oauth.authorization_request` | `tenant_id`, `id`, `secret_hash` (32 bytes), `client_id`, the checked request as `request` (`jsonb`), `received_at`, `expires_at` |
+| `oauth.authorization_request` | `tenant_id`, `id`, `secret_hash` (32 bytes, the hash of a browser's secret, null for a pushed request), `reference_hash` (32 bytes, the SHA-256 of a [pushed request](#pushed-authorization-requests)'s reference, unique in the tenant, null for a request kept for a browser), `client_id`, the checked request as `request` (`jsonb`), `received_at`, `expires_at` |
 | `oauth.authorization_grant` | `tenant_id`, `id`, `client_id`, `user_id`, `session_id`, `scopes`, `audiences`, `organization` (null when the request named none), `status` (`active` or `revoked`), `created_at`, `revoked_at`, `revocation_reason` |
 | `oauth.authorization_code` | `tenant_id`, `code_hash` (32 bytes, the key), `grant_id`, `client_id`, `redirect_uri`, `scopes`, `audiences`, `code_challenge`, `nonce`, `session_id`, `user_id`, `signed_in_at`, `methods`, `acr` (null when no level was reached), `issued_at`, `expires_at`, `redeemed_at` |
 
-All three are tenant tables under row-level security. The request and the code reference their client, and the code its grant, with the tenant in the reference. A pending request and a code hold the hash of a secret, never the secret.
+All three are tenant tables under row-level security. The request and the code reference their client, and the code its grant, with the tenant in the reference. A pending request and a code hold the hash of a secret, never the secret. A check constraint keeps exactly one of the two hashes of a pending request, and the life of a pushed request at 600 seconds at most.
 
 ## Token endpoint and client authentication
 
@@ -648,6 +709,8 @@ The checks, in order:
    - A JWT-SVID is checked as [checking a JWT-SVID](#checking-a-jwt-svid) says.
    - A forwarded identity is checked as [an identity forwarded by a proxy](#an-identity-forwarded-by-a-proxy) says.
 
+The [pushed request endpoint](#pushed-authorization-requests), revocation and introspection authenticate a client the same way.
+
 An `invalid_client` is answered with status `401`. When the client used `Basic`, the answer also carries `WWW-Authenticate: Basic realm="{issuer}"`, as RFC 6749 requires. Every other error is answered with status `400`. The client is told only the error, never which check failed; the reason is in Hodor's logs.
 
 ### Checking a client assertion
@@ -661,7 +724,7 @@ An assertion is a compact JSON Web Signature of at most 8 kibibytes. When the fo
 | Key | The header names a `kid` the client does not have, or names none while more than one of the client's keys fits the algorithm. The key must fit the algorithm: a P-256 key for `ES256`, an RSA key for `RS256` and `PS256`, and the key's own `alg` when it has one |
 | Signature | It does not verify over the first two parts, exactly as they arrived |
 | `iss` and `sub` | Either is not the client's identifier |
-| `aud` | It does not hold the tenant's issuer or the address of the token endpoint, `{issuer}/oauth2/token`. Both are accepted: RFC 7523 names the token endpoint, and the revision of OAuth 2.1 recommends the issuer |
+| `aud` | It does not hold the tenant's issuer or the address of the token endpoint, `{issuer}/oauth2/token`. Both are accepted: RFC 7523 names the token endpoint, and the revision of OAuth 2.1 recommends the issuer. At the [pushed request endpoint](#pushed-authorization-requests), revocation and introspection, the address of the endpoint itself is accepted as well |
 | `exp` | Missing, in the past (allowing 60 seconds for clocks), or more than 5 minutes ahead: an assertion is for one request, and a long one would have to be remembered long |
 | `nbf`, `iat` | In the future, allowing 60 seconds |
 | `jti` | Missing, longer than 255 characters, or seen before for this client |
@@ -1249,7 +1312,7 @@ It names only what is built:
 | Member | Value |
 |---|---|
 | `issuer` | The tenant's issuer, exactly as every token and redirect carries it |
-| `authorization_endpoint`, `token_endpoint`, `userinfo_endpoint`, `jwks_uri`, `revocation_endpoint`, `introspection_endpoint`, `end_session_endpoint` | The seven addresses under `{issuer}/oauth2`; the last is [logout](#logout-initiated-by-the-relying-party) |
+| `authorization_endpoint`, `token_endpoint`, `userinfo_endpoint`, `jwks_uri`, `revocation_endpoint`, `introspection_endpoint`, `end_session_endpoint`, `pushed_authorization_request_endpoint` | The eight addresses under `{issuer}/oauth2`; the seventh is [logout](#logout-initiated-by-the-relying-party), the last the [pushed request endpoint](#pushed-authorization-requests) |
 | `response_types_supported` | `code` |
 | `response_modes_supported` | `query`, `form_post`: the [response modes](#response-modes) the authorization endpoint answers in |
 | `grant_types_supported` | The grants the token endpoint answers: `authorization_code`, `refresh_token`, `client_credentials` and `urn:ietf:params:oauth:grant-type:token-exchange` |
@@ -1271,7 +1334,8 @@ It names only what is built:
 | `authorization_response_iss_parameter_supported` | `true` |
 | `request_parameter_supported` | `true`: [request objects](#request-objects) by value are read |
 | `request_object_signing_alg_values_supported` | `ES256`, `RS256`, `PS256` and `none`: `none` only for a client whose administrator chose it |
-| `request_uri_parameter_supported`, `claims_parameter_supported` | `false` |
+| `request_uri_parameter_supported`, `claims_parameter_supported` | `false`. OpenID Connect Discovery means by the first references at a client's address, which are not read yet; Hodor's own references to pushed requests are named by the two members below |
+| `require_pushed_authorization_requests` | Whether the tenant [requires pushed requests](#requiring-pushed-requests) of every client: `false` unless it does |
 | `backchannel_logout_supported`, `backchannel_logout_session_supported` | `true`: [back-channel logout](#back-channel-logout) is offered, and every logout token carries `sid` |
 | `tls_client_certificate_bound_access_tokens` | `true` when the operator names a header that forwards certificates, `client-cert` or `x-forwarded-client-cert`: [certificate-bound access tokens](#certificate-bound-access-tokens) are offered (RFC 8705, section 3.3). Left out otherwise |
 
@@ -2017,7 +2081,9 @@ Administrators reach them through [the administration interface](../../api/admin
 | Asking for an `acr` with the `claims` parameter. `acr_values` is the way to ask | 0.5.0, [Milestone 13](../../product/epics.md#milestone-13-requests-that-say-what-they-need) |
 | A page where a person sees the history of their consents | The account console, Phase 2 |
 | Limits on requests to the authorization endpoint per address | With the other limits per address, before any deployment behind a load balancer |
-| Pushed authorization requests, and request objects by reference at a client's address (`request_uri`) | 0.5.0, [Milestone 13](../../product/epics.md#milestone-13-requests-that-say-what-they-need), Issue-121 and Issue-122 ([Decision 0045](../../decisions/0045-request-objects-and-pushed-requests.md)) |
+| Request objects by reference at a client's address (`request_uri` as an address the client registered) | 0.5.0, [Milestone 13](../../product/epics.md#milestone-13-requests-that-say-what-they-need), Issue-122 ([Decision 0045](../../decisions/0045-request-objects-and-pushed-requests.md)) |
+| A limit on the number of requests to the pushed request endpoint, per client | With the limits of the token endpoint ([limits](#limits)) |
+| Requiring pushed requests, and the tenant's life of a pushed request, from the console | With the console pages of clients and of the tenant's settings |
 | Request objects signed with a key at the client's `jwks_uri` | 0.5.0, [Milestone 15](../../product/epics.md#milestone-15-clients-that-register-themselves) |
 | Encrypted request objects | 0.6.0, [Milestone 18](../../product/epics.md#milestone-18-fapi-20-message-signing-and-fapi-10-advanced) ([Decision 0048](../../decisions/0048-encryption.md)) |
 | `exp`, `nbf` and `jti` required in a request object, and its `jti` remembered | 0.6.0, with [security profiles](../../decisions/0052-security-profiles.md) |

@@ -187,6 +187,7 @@ async fn a_request_waits_for_its_browser_and_is_resumed_once() {
             &tenant,
             "https://hodor.example.com/t/acme",
             &parameters(&client_id),
+            &hodor_oauth::api::PushedRequestPolicy::default(),
         )
         .await
         .expect("storage")
@@ -260,6 +261,7 @@ async fn a_request_keeps_its_response_mode_while_it_waits() {
             &tenant,
             "https://hodor.example.com/t/acme",
             &AuthorizationParameters::from_pairs(pairs),
+            &hodor_oauth::api::PushedRequestPolicy::default(),
         )
         .await
         .expect("storage")
@@ -284,6 +286,7 @@ async fn a_request_keeps_its_response_mode_while_it_waits() {
             &tenant,
             "https://hodor.example.com/t/acme",
             &AuthorizationParameters::from_pairs(pairs),
+            &hodor_oauth::api::PushedRequestPolicy::default(),
         )
         .await
         .expect("storage")
@@ -309,7 +312,8 @@ async fn a_client_of_another_tenant_is_unknown() {
             .check(
                 &elsewhere,
                 "https://hodor.example.com/t/acme",
-                &parameters(&client_id)
+                &parameters(&client_id),
+                &hodor_oauth::api::PushedRequestPolicy::default(),
             )
             .await
             .expect("storage"),
@@ -330,6 +334,7 @@ async fn a_code_is_redeemed_once_and_a_second_redemption_revokes_the_grant() {
             &tenant,
             "https://hodor.example.com/t/acme",
             &parameters(&client_id),
+            &hodor_oauth::api::PushedRequestPolicy::default(),
         )
         .await
         .expect("storage")
@@ -417,6 +422,7 @@ async fn a_code_lives_sixty_seconds() {
             &tenant,
             "https://hodor.example.com/t/acme",
             &parameters(&client_id),
+            &hodor_oauth::api::PushedRequestPolicy::default(),
         )
         .await
         .expect("storage")

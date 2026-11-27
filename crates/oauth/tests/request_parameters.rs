@@ -233,7 +233,12 @@ async fn check(
 ) -> Result<AuthorizationRequest, (AuthorizationRefusal, &'static str)> {
     let request = world
         .service
-        .check(tenant, ISSUER, parameters)
+        .check(
+            tenant,
+            ISSUER,
+            parameters,
+            &hodor_oauth::api::PushedRequestPolicy::default(),
+        )
         .await
         .expect("storage")
         .expect("the request passes its own checks");
@@ -342,6 +347,7 @@ async fn a_hint_signed_by_another_tenant_or_for_another_client_is_refused() {
             &globex,
             OTHER_ISSUER,
             &parameters(&elsewhere, &[("id_token_hint", &hint)]),
+            &hodor_oauth::api::PushedRequestPolicy::default(),
         )
         .await
         .expect("storage")
@@ -457,7 +463,12 @@ async fn a_service_that_cannot_check_a_hint_refuses_it() {
     );
     let with_hint = parameters(&payroll, &[("id_token_hint", &hint)]);
     let request = bare
-        .check(&acme, ISSUER, &with_hint)
+        .check(
+            &acme,
+            ISSUER,
+            &with_hint,
+            &hodor_oauth::api::PushedRequestPolicy::default(),
+        )
         .await
         .expect("storage")
         .expect("checked");
@@ -553,7 +564,12 @@ async fn display_create_and_the_client_s_defaults_reach_the_request() {
 
     let refused = world
         .service
-        .check(&acme, ISSUER, &parameters(&payroll, &[("display", "wap")]))
+        .check(
+            &acme,
+            ISSUER,
+            &parameters(&payroll, &[("display", "wap")]),
+            &hodor_oauth::api::PushedRequestPolicy::default(),
+        )
         .await
         .expect("storage");
     assert!(matches!(

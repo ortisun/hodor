@@ -508,8 +508,21 @@ fn userinfo_answers_only_the_claims_of_the_token_s_scopes() {
 
 #[test]
 fn discovery_names_only_what_is_built() {
-    let document = discovery_document(ISSUER, &["urn:example:one", "urn:example:two"]);
+    let document = discovery_document(ISSUER, &["urn:example:one", "urn:example:two"], false);
     assert_eq!(document["issuer"], ISSUER);
+    assert_eq!(
+        document["pushed_authorization_request_endpoint"],
+        format!("{ISSUER}/oauth2/par")
+    );
+    assert_eq!(
+        document["require_pushed_authorization_requests"],
+        json!(false)
+    );
+    assert_eq!(
+        discovery_document(ISSUER, &[], true)["require_pushed_authorization_requests"],
+        json!(true),
+        "the tenant's requirement"
+    );
     assert_eq!(
         document["acr_values_supported"],
         json!(["urn:example:one", "urn:example:two"]),
@@ -622,11 +635,7 @@ fn discovery_names_only_what_is_built() {
     );
     assert_eq!(document["request_uri_parameter_supported"], json!(false));
     assert_eq!(document["claims_parameter_supported"], json!(false));
-    for absent in [
-        "registration_endpoint",
-        "pushed_authorization_request_endpoint",
-        "device_authorization_endpoint",
-    ] {
+    for absent in ["registration_endpoint", "device_authorization_endpoint"] {
         assert!(document.get(absent).is_none(), "{absent} is not built");
     }
 }
@@ -692,7 +701,7 @@ fn the_metadata_page_names_the_version_of_the_spiffe_draft() {
         )),
         "the metadata page names the version of the draft Hodor follows"
     );
-    let document = discovery_document(ISSUER, &[]);
+    let document = discovery_document(ISSUER, &[], false);
     assert!(
         document["token_endpoint_auth_methods_supported"]
             .as_array()

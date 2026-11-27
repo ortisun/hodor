@@ -133,6 +133,12 @@ pub mod api {
         PAIRWISE_SECRET_BYTES, PAIRWISE_SECRET_PURPOSE, PairwiseSecret, SECTOR_DOCUMENT_TIME_LIMIT,
         SubjectType, check_sector_document, check_sector_identifier_uri, host_of, sector_of,
     };
+    pub use crate::domain::pushed::{
+        DEFAULT_PUSHED_LIFETIME, LONGEST_PUSHED_LIFETIME, MAX_PUSHED_PER_CLIENT, PushedAnswer,
+        PushedAuthorization, PushedRequest, PushedRequestPolicy, REFERENCE_PREFIX, Reference,
+        ReferenceHash, RequestReference, SHORTEST_PUSHED_LIFETIME, check_pushed_request,
+        check_reference, pushed_lifetime,
+    };
     pub use crate::domain::refresh::{
         DEFAULT_RETRY_WINDOW, FAMILY_SECRET_PURPOSE, FamilySecret, FamilyStatus,
         LONGEST_RETRY_WINDOW, OFFLINE_ACCESS, RefreshAsk, RefreshDecision, RefreshFamily,

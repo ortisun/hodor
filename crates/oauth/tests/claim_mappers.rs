@@ -310,7 +310,12 @@ async fn signed_in(
     );
     let request = world
         .codes
-        .check(tenant, "https://hodor.example.com/t/acme", &parameters)
+        .check(
+            tenant,
+            "https://hodor.example.com/t/acme",
+            &parameters,
+            &hodor_oauth::api::PushedRequestPolicy::default(),
+        )
         .await
         .expect("storage")
         .expect("a valid request");

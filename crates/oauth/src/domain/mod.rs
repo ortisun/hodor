@@ -16,6 +16,7 @@ pub(crate) mod key;
 pub(crate) mod logout;
 pub(crate) mod openid;
 pub(crate) mod pairwise;
+pub(crate) mod pushed;
 pub(crate) mod refresh;
 pub(crate) mod registration;
 pub(crate) mod request_object;

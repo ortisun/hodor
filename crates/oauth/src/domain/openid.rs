@@ -599,7 +599,7 @@ pub(crate) fn signed_userinfo_claims(claims: Value, issuer: &str, client_id: &st
 /// 8414). It names only what is built; a tenant open to registration adds
 /// `create` through [`with_registration`].
 #[must_use]
-pub fn discovery_document(issuer: &str, acr_values: &[&str]) -> Value {
+pub fn discovery_document(issuer: &str, acr_values: &[&str], pushed_required: bool) -> Value {
     json!({
         "issuer": issuer,
         "authorization_endpoint": format!("{issuer}/oauth2/authorize"),
@@ -609,6 +609,7 @@ pub fn discovery_document(issuer: &str, acr_values: &[&str]) -> Value {
         "revocation_endpoint": format!("{issuer}/oauth2/revoke"),
         "introspection_endpoint": format!("{issuer}/oauth2/introspect"),
         "end_session_endpoint": format!("{issuer}/oauth2/logout"),
+        "pushed_authorization_request_endpoint": format!("{issuer}/oauth2/par"),
         "response_types_supported": ResponseType::ALL.map(ResponseType::as_str),
         "response_modes_supported": ResponseMode::ALL.map(ResponseMode::as_str),
         "grant_types_supported": crate::domain::token::SUPPORTED_GRANT_TYPES,
@@ -650,7 +651,10 @@ pub fn discovery_document(issuer: &str, acr_values: &[&str]) -> Value {
         "request_parameter_supported": true,
         "request_object_signing_alg_values_supported":
             RequestObjectAlgorithm::ALL.map(RequestObjectAlgorithm::as_str),
+        // `request_uri` at a client's address; Hodor's own references to
+        // pushed requests are named by the two members after it.
         "request_uri_parameter_supported": false,
+        "require_pushed_authorization_requests": pushed_required,
         "claims_parameter_supported": false,
         // Every client with a back-channel logout address is told when a
         // session it signed a person in with ends, and every logout token
@@ -670,7 +674,7 @@ mod registration_tests {
     #[test]
     fn create_is_named_by_a_tenant_open_to_registration_only() {
         let closed = with_registration(
-            discovery_document("https://hodor.example.com/t/acme", &[]),
+            discovery_document("https://hodor.example.com/t/acme", &[], false),
             false,
         );
         assert_eq!(

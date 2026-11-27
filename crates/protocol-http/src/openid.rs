@@ -81,12 +81,13 @@ async fn discovery(
     Extension(tenant): Extension<TenantContext>,
     Extension(TenantSlug(slug)): Extension<TenantSlug>,
 ) -> Response {
-    let (levels, registration_open) = match state.tenants.get(&tenant).await {
+    let (levels, registration_open, pushed_required) = match state.tenants.get(&tenant).await {
         Ok(found) => {
             let settings = &found.snapshot().settings;
             (
                 settings.authentication.assurance_levels.clone(),
                 settings.registration == RegistrationPolicy::Open,
+                settings.pushed_requests.required,
             )
         }
         Err(error) => return crate::problem::Problem::from(error).into_response(),
@@ -97,7 +98,7 @@ async fn discovery(
         .map(|level| level.acr.as_str())
         .collect();
     let mut document = with_registration(
-        discovery_document(&issuer(&state.public_url, &slug), &names),
+        discovery_document(&issuer(&state.public_url, &slug), &names, pushed_required),
         registration_open,
     );
     if let Some(header) = state.identity_header {

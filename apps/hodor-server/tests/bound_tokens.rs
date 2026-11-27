@@ -658,6 +658,89 @@ async fn a_public_client_s_tokens_and_refresh_tokens_are_bound_and_userinfo_chec
 }
 
 #[tokio::test]
+async fn a_pushed_request_of_a_bound_client_leads_to_tokens_bound_to_its_certificate() {
+    let world = behind_proxy("client-cert").await;
+    let (public, _) = world
+        .client(json!({
+            "name": "Shop app",
+            "type": "public",
+            "grant_types": ["authorization_code"],
+            "redirect_uris": [REDIRECT],
+            "allowed_scopes": ["openid", "read"],
+            "tls_client_certificate_bound_access_tokens": true,
+        }))
+        .await;
+    let public = (public, None);
+    let mine = certificate("app");
+    let mut browser = Browser::not_following(&world.server);
+    let (status, answer) = browser.sign_in("acme", "root@example.com", PASSWORD).await;
+    assert_eq!(status, StatusCode::OK, "{answer}");
+
+    // The client pushes its request over its own connection, with its
+    // certificate forwarded, and the browser brings the reference.
+    let challenge = s256_challenge(VERIFIER, &Sha256Digest);
+    let (status, pushed) = world
+        .oauth(
+            "par",
+            &public,
+            &[
+                ("response_type", "code"),
+                ("redirect_uri", REDIRECT),
+                ("scope", "openid read"),
+                ("resource", SHOP),
+                ("code_challenge", &challenge),
+                ("code_challenge_method", "S256"),
+            ],
+            &client_cert(&mine),
+        )
+        .await;
+    assert_eq!(status, StatusCode::CREATED, "{pushed}");
+    let query = form_urlencoded::Serializer::new(String::new())
+        .extend_pairs([
+            ("client_id", public.0.as_str()),
+            (
+                "request_uri",
+                pushed["request_uri"].as_str().expect("a reference"),
+            ),
+        ])
+        .finish();
+    let (status, location, body) = browser
+        .navigate(
+            Method::GET,
+            &format!("/t/acme/oauth2/authorize?{query}"),
+            None,
+        )
+        .await;
+    assert_eq!(status, StatusCode::FOUND, "{body}");
+    let location = location.expect("a redirect");
+    let (_, query) = location.split_once('?').expect("a query");
+    let answer: BTreeMap<String, String> = form_urlencoded::parse(query.as_bytes())
+        .into_owned()
+        .collect();
+    let code = answer.get("code").expect("a code").clone();
+
+    // Its code is redeemed only with the certificate, and its token is
+    // bound to it.
+    let redeem = [
+        ("grant_type", "authorization_code"),
+        ("code", code.as_str()),
+        ("redirect_uri", REDIRECT),
+        ("code_verifier", VERIFIER),
+    ];
+    let (status, refused) = world.oauth("token", &public, &redeem, &None).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{refused}");
+    let (status, tokens) = world
+        .oauth("token", &public, &redeem, &client_cert(&mine))
+        .await;
+    assert_eq!(status, StatusCode::OK, "{tokens}");
+    let access = tokens["access_token"].as_str().expect("a token");
+    assert_eq!(
+        claims_of(access)["cnf"],
+        json!({ "x5t#S256": thumbprint(&mine) })
+    );
+}
+
+#[tokio::test]
 async fn a_bound_token_gets_no_signed_userinfo_answer_without_its_certificate() {
     let world = behind_proxy("client-cert").await;
     let (public, _) = world

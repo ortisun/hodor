@@ -207,6 +207,56 @@ async fn signing_in_by_email_is_turned_on_and_off_one_method_at_a_time() {
 }
 
 #[tokio::test]
+async fn the_life_and_the_requirement_of_pushed_requests_are_set_within_their_bounds() {
+    let database = TestDatabase::start().await;
+    let created = cli(&database, &["create", "--slug", "acme", "--name", "Acme"]);
+    assert!(created.status.success(), "{}", stderr(&created));
+    let shown = cli(&database, &["pushed-requests", "--slug", "acme"]);
+    assert!(shown.status.success(), "{}", stderr(&shown));
+    assert_eq!(
+        stdout(&shown),
+        "acme pushed-requests seconds 60 required off"
+    );
+
+    let set = cli(
+        &database,
+        &["pushed-requests", "--slug", "acme", "--seconds", "600"],
+    );
+    assert!(set.status.success(), "{}", stderr(&set));
+    assert_eq!(
+        stdout(&set),
+        "acme pushed-requests seconds 600 required off"
+    );
+    let set = cli(
+        &database,
+        &["pushed-requests", "--slug", "acme", "--required", "on"],
+    );
+    assert_eq!(stdout(&set), "acme pushed-requests seconds 600 required on");
+    let (policy,): (Option<String>,) =
+        sqlx::query_as("SELECT (settings -> 'pushed_requests')::text FROM tenant.tenant")
+            .fetch_one(database.owner())
+            .await
+            .expect("the setting");
+    assert_eq!(
+        policy.as_deref(),
+        Some(r#"{"required": true, "lifetime_seconds": 600}"#)
+    );
+
+    for refused in ["9", "601"] {
+        let out = cli(
+            &database,
+            &["pushed-requests", "--slug", "acme", "--seconds", refused],
+        );
+        assert!(!out.status.success(), "{refused} was accepted");
+        assert!(
+            stderr(&out).contains("tenant.settings_invalid"),
+            "{}",
+            stderr(&out)
+        );
+    }
+}
+
+#[tokio::test]
 async fn the_scim_deprovisioning_policy_is_set_by_name() {
     let database = TestDatabase::start().await;
     let created = cli(&database, &["create", "--slug", "acme", "--name", "Acme"]);

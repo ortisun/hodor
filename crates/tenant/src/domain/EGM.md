@@ -31,10 +31,15 @@ about. The domain is pure; time is passed in. All modules are `pub(crate)` in
 
 ### `settings.rs`
 
-- `TenantSettings { password, session, lockout, registration, authentication, groups, provisioning }` with
+- `TenantSettings { password, session, lockout, registration, authentication, groups, provisioning, pushed_requests }` with
   `validate()`; `Default`, `Serialize`, `Deserialize`. `authentication`,
-  `groups` and `provisioning` are `#[serde(default)]`, so settings stored
-  before they existed still read.
+  `groups`, `provisioning` and `pushed_requests` are `#[serde(default)]`,
+  so settings stored before they existed still read.
+- `PushedRequestPolicy { lifetime_seconds: u16, required: bool }`, 60 and
+  `false` by default, the life 10 to 600 (`SHORTEST_LIFETIME_SECONDS`,
+  `LONGEST_LIFETIME_SECONDS`, else `tenant.settings_invalid`), with
+  `lifetime()` as `time::Duration`: how long a pushed authorization request
+  waits and whether every client must push.
 - `ProvisioningPolicy { deprovisioning: Deprovisioning }`, where
   `Deprovisioning` is `Deactivate` (the default) or `Delete`, stored as
   `deactivate` and `delete`: what SCIM deprovisioning does.

@@ -19,9 +19,10 @@ use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD;
 use hodor_kernel::{CorrelationId, Secret, TenantContext};
 use hodor_oauth::api::{
-    BasicCredentials, ForwardedIdentity, IssuedTokens, Issuer, TokenError, TokenQuery,
-    TokenRequest, TokenService,
+    BasicCredentials, ForwardedIdentity, IssuedTokens, Issuer, PushedAnswer, PushedRequest,
+    PushedRequestPolicy, TokenError, TokenQuery, TokenRequest, TokenService,
 };
+use hodor_tenant::api::{TenantService, TenantSettings};
 use serde::Serialize;
 
 /// What the token endpoint needs.
@@ -29,6 +30,8 @@ use serde::Serialize;
 pub struct TokenState {
     /// The use cases of the endpoint.
     pub tokens: TokenService,
+    /// The tenant's settings: how long a pushed request lives.
+    pub tenants: TenantService,
     /// The address people reach this installation at, without a path. The
     /// issuer of a tenant is this address followed by `/t/{slug}`.
     pub public_url: String,
@@ -40,11 +43,12 @@ impl std::fmt::Debug for TokenState {
     }
 }
 
-/// The routes of the token, revocation and introspection endpoints, to be
-/// mounted under a tenant at `/oauth2`.
+/// The routes of the token, revocation, introspection and pushed request
+/// endpoints, to be mounted under a tenant at `/oauth2`.
 pub fn token_routes(state: TokenState) -> Router {
     Router::new()
         .route("/token", post(token))
+        .route("/par", post(push))
         .route("/revoke", post(revoke))
         .route("/introspect", post(introspect))
         .with_state(state)
@@ -63,6 +67,21 @@ struct TokenAnswer<'a> {
     id_token: Option<&'a str>,
     #[serde(skip_serializing_if = "Option::is_none")]
     issued_token_type: Option<&'static str>,
+}
+
+#[derive(Serialize)]
+struct PushedRequestAnswer<'a> {
+    request_uri: &'a str,
+    expires_in: i64,
+}
+
+/// The tenant's pushed authorization request policy, as the OAuth context
+/// reads it.
+pub(crate) fn pushed_policy(settings: &TenantSettings) -> PushedRequestPolicy {
+    PushedRequestPolicy {
+        lifetime: settings.pushed_requests.lifetime(),
+        required: settings.pushed_requests.required,
+    }
 }
 
 #[derive(Serialize)]
@@ -276,6 +295,80 @@ async fn token(
             tracing::error!(%error, "the token endpoint could not answer");
             refused(
                 TokenError::server_error("storage or signing failed"),
+                used_basic,
+                &issuer,
+            )
+        }
+    }
+}
+
+fn pushed(answer: &PushedAnswer) -> Response {
+    not_cached(
+        (
+            StatusCode::CREATED,
+            Json(PushedRequestAnswer {
+                request_uri: answer.reference.expose(),
+                expires_in: answer.expires_in,
+            }),
+        )
+            .into_response(),
+    )
+}
+
+async fn push(
+    State(state): State<TokenState>,
+    Extension(tenant): Extension<TenantContext>,
+    Extension(TenantSlug(slug)): Extension<TenantSlug>,
+    forwarded: Option<Extension<ForwardedIdentity>>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Response {
+    let issuer = issuer_of(&state.public_url, &slug);
+    let token_endpoint = format!("{issuer}/oauth2/token");
+    let endpoint = format!("{issuer}/oauth2/par");
+    let FormRequest { basic, used_basic } = match read_form(&headers) {
+        Ok(form) => form,
+        Err((error, used_basic)) => return refused(error, used_basic, &issuer),
+    };
+    let mut request = match PushedRequest::parse(basic, form_urlencoded::parse(&body).into_owned())
+    {
+        Ok(request) => request,
+        Err(error) => return refused(error, used_basic, &issuer),
+    };
+    request.client = request
+        .client
+        .with_forwarded(forwarded.map(|Extension(found)| found));
+    let policy = match state.tenants.get(&tenant).await {
+        Ok(found) => pushed_policy(&found.snapshot().settings),
+        Err(error) => {
+            tracing::error!(%error, "the pushed request endpoint could not read the tenant");
+            return refused(
+                TokenError::server_error("the tenant could not be read"),
+                used_basic,
+                &issuer,
+            );
+        }
+    };
+    let answer = state
+        .tokens
+        .push(
+            &tenant,
+            Issuer {
+                issuer: &issuer,
+                token_endpoint: &token_endpoint,
+            },
+            &endpoint,
+            request,
+            &policy,
+        )
+        .await;
+    match answer {
+        Ok(Ok(answer)) => pushed(&answer),
+        Ok(Err(error)) => refused(error, used_basic, &issuer),
+        Err(error) => {
+            tracing::error!(%error, "the pushed request endpoint could not answer");
+            refused(
+                TokenError::server_error("storage failed"),
                 used_basic,
                 &issuer,
             )

@@ -10,6 +10,7 @@ pub(crate) mod introspection;
 pub(crate) mod logout;
 pub(crate) mod pairwise;
 pub(crate) mod ports;
+pub(crate) mod pushed;
 pub(crate) mod registration;
 pub(crate) mod resource_access;
 pub(crate) mod service;

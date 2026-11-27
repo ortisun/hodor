@@ -53,6 +53,14 @@ impl TokenError {
         }
     }
 
+    /// An error of the authorization endpoint, answered by the pushed
+    /// request endpoint as JSON: the `error` and description the
+    /// authorization endpoint would send to the redirect address.
+    #[must_use]
+    pub const fn refused(error: &'static str, description: &'static str) -> Self {
+        Self::new(error, description, description)
+    }
+
     /// The request is malformed.
     #[must_use]
     pub const fn invalid_request(reason: &'static str) -> Self {

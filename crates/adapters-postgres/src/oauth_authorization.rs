@@ -8,7 +8,7 @@ use hodor_kernel::{DomainError, OrganizationId, Timestamp, UnitOfWork, UserId};
 use hodor_oauth::api::{
     AuthorizationCode, AuthorizationCodeStore, AuthorizationRequest, AuthorizationRequestStore,
     ClientId, CodeHash, ConsentAnswer, ConsentWait, Grant, GrantId, GrantStatus, GrantStore,
-    PendingAuthorization, PendingAuthorizationId,
+    PendingAuthorization, PendingAuthorizationId, PushedAuthorization, ReferenceHash,
 };
 use hodor_session::api::SessionId;
 use sqlx::Row as _;
@@ -104,7 +104,7 @@ impl AuthorizationRequestStore for PgAuthorizationRequestStore {
             "SELECT id, secret_hash, request, received_at, expires_at, consent_user_id,
                     consent_session_id, consent_answer
              FROM oauth.authorization_request
-             WHERE tenant_id = $1 AND id = $2",
+             WHERE tenant_id = $1 AND id = $2 AND secret_hash IS NOT NULL",
         )
         .bind(tenant.as_uuid())
         .bind(id.as_uuid())
@@ -145,13 +145,15 @@ impl AuthorizationRequestStore for PgAuthorizationRequestStore {
         id: PendingAuthorizationId,
     ) -> Result<bool, DomainError> {
         let tenant = uow.tenant().tenant_id();
-        let removed =
-            sqlx::query("DELETE FROM oauth.authorization_request WHERE tenant_id = $1 AND id = $2")
-                .bind(tenant.as_uuid())
-                .bind(id.as_uuid())
-                .execute(connection(uow)?)
-                .await
-                .map_err(get)?;
+        let removed = sqlx::query(
+            "DELETE FROM oauth.authorization_request
+                 WHERE tenant_id = $1 AND id = $2 AND secret_hash IS NOT NULL",
+        )
+        .bind(tenant.as_uuid())
+        .bind(id.as_uuid())
+        .execute(connection(uow)?)
+        .await
+        .map_err(get)?;
         Ok(removed.rows_affected() == 1)
     }
 
@@ -174,6 +176,97 @@ impl AuthorizationRequestStore for PgAuthorizationRequestStore {
         .await
         .map_err(get)?;
         Ok(answered.rows_affected() == 1)
+    }
+
+    async fn push(
+        &self,
+        uow: &mut dyn UnitOfWork,
+        pushed: &PushedAuthorization,
+        keep: usize,
+    ) -> Result<(), DomainError> {
+        let tenant = uow.tenant().tenant_id();
+        let client = pushed.request.client_id;
+        let connection = connection(uow)?;
+        // The client's row is locked first, so that two pushes of one
+        // client at the same moment count each other's requests; it also
+        // says whether the client exists.
+        let found = sqlx::query(
+            "SELECT 1 FROM oauth.client WHERE tenant_id = $1 AND id = $2 FOR NO KEY UPDATE",
+        )
+        .bind(tenant.as_uuid())
+        .bind(client.as_uuid())
+        .fetch_optional(&mut *connection)
+        .await
+        .map_err(get)?;
+        if found.is_none() {
+            return Err(client_not_found());
+        }
+        let others = i64::try_from(keep.saturating_sub(1)).unwrap_or(i64::MAX);
+        sqlx::query(
+            "DELETE FROM oauth.authorization_request
+             WHERE tenant_id = $1 AND client_id = $2 AND reference_hash IS NOT NULL
+               AND id NOT IN (
+                   SELECT id FROM oauth.authorization_request
+                   WHERE tenant_id = $1 AND client_id = $2 AND reference_hash IS NOT NULL
+                   ORDER BY received_at DESC, id DESC
+                   LIMIT $3)",
+        )
+        .bind(tenant.as_uuid())
+        .bind(client.as_uuid())
+        .bind(others)
+        .execute(&mut *connection)
+        .await
+        .map_err(get)?;
+        sqlx::query(
+            "INSERT INTO oauth.authorization_request
+                 (tenant_id, id, reference_hash, client_id, request, received_at, expires_at)
+             VALUES ($1, $2, $3, $4, $5, $6, $7)",
+        )
+        .bind(tenant.as_uuid())
+        .bind(pushed.id.as_uuid())
+        .bind(pushed.reference_hash.as_bytes().as_slice())
+        .bind(client.as_uuid())
+        .bind(Json(&pushed.request))
+        .bind(pushed.received_at)
+        .bind(pushed.expires_at)
+        .execute(&mut *connection)
+        .await
+        .map_err(|e| refused(e, REQUEST_CLIENT_CONSTRAINT, client_not_found))?;
+        Ok(())
+    }
+
+    async fn take_pushed(
+        &self,
+        uow: &mut dyn UnitOfWork,
+        client: ClientId,
+        hash: &ReferenceHash,
+    ) -> Result<Option<PushedAuthorization>, DomainError> {
+        let tenant = uow.tenant().tenant_id();
+        // One conditional change finds it and removes it: of two takes at
+        // the same moment, the second waits for the first and finds
+        // nothing.
+        let row = sqlx::query(
+            "DELETE FROM oauth.authorization_request
+             WHERE tenant_id = $1 AND reference_hash = $2 AND client_id = $3
+             RETURNING id, reference_hash, request, received_at, expires_at",
+        )
+        .bind(tenant.as_uuid())
+        .bind(hash.as_bytes().as_slice())
+        .bind(client.as_uuid())
+        .fetch_optional(connection(uow)?)
+        .await
+        .map_err(get)?;
+        row.map(|row| {
+            let Json(request): Json<AuthorizationRequest> = row.try_get("request").map_err(get)?;
+            Ok(PushedAuthorization {
+                id: PendingAuthorizationId::from_uuid(row.try_get("id").map_err(get)?),
+                reference_hash: ReferenceHash::from_stored(hash_of(&row, "reference_hash")?),
+                request,
+                received_at: row.try_get("received_at").map_err(get)?,
+                expires_at: row.try_get("expires_at").map_err(get)?,
+            })
+        })
+        .transpose()
     }
 }
 

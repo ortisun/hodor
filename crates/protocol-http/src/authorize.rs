@@ -528,9 +528,13 @@ async fn authorize(
     client: ClientInfo,
     parameters: &AuthorizationParameters,
 ) -> Response {
+    let policy = match state.tenants.get(tenant).await {
+        Ok(found) => crate::token::pushed_policy(&found.snapshot().settings),
+        Err(error) => return Problem::from(error).into_response(),
+    };
     let request = match state
         .authorization
-        .check(tenant, &issuer(state, slug), parameters)
+        .check(tenant, &issuer(state, slug), parameters, &policy)
         .await
     {
         Ok(Ok(request)) => request,

@@ -146,7 +146,7 @@ Many rows are only useful for a while: a session that ended, a link that was use
 | `email_sign_ins` | The code or the link to sign in by email expired. A used one expires ten minutes after it was made, at the latest | 1 day | — |
 | `messages` | It was sent, failed or expired. Its contents were already erased | 30 days | — |
 | `webauthn_registrations` | A security key or passkey registration was never finished and expired | 0 | — |
-| `authorization_requests` | The request kept while the person signs in expired | 0 | — |
+| `authorization_requests` | The request kept while the person signs in expired, or a pushed request was never used within its life | 0 | — |
 | `authorization_codes` | The code expired | 1 day | — |
 | `revoked_grants` | The grant was revoked | 30 days | Its codes, refresh token families and records of access tokens |
 | `refresh_token_families` | The family expired or was revoked | 30 days | Its refresh tokens and records of access tokens |

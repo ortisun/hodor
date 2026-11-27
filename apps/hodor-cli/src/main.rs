@@ -1010,6 +1010,20 @@ enum TenantCommand {
         #[arg(long, value_enum)]
         link: Option<OnOffArg>,
     },
+    /// Set how long a request a client pushes waits for its browser, and
+    /// whether every client must push its requests. What is not given
+    /// stays as it was.
+    PushedRequests {
+        /// The tenant's slug.
+        #[arg(long)]
+        slug: String,
+        /// The life of a pushed request, in seconds: 10 to 600.
+        #[arg(long)]
+        seconds: Option<u16>,
+        /// Whether every client must push its requests.
+        #[arg(long, value_enum)]
+        required: Option<OnOffArg>,
+    },
     /// Set what deprovisioning a person through SCIM does: `DELETE` of a
     /// user or `active: false`. Either way their sessions and grants end.
     ScimDeprovisioning {
@@ -1172,6 +1186,34 @@ async fn run_tenant(
                 entry.slug,
                 on_off(policy.code),
                 on_off(policy.link)
+            ))
+        }
+        TenantCommand::PushedRequests {
+            slug,
+            seconds,
+            required,
+        } => {
+            let entry = existing(service, &slug).await?;
+            let tenant = TenantContext::assume(entry.tenant_id);
+            let mut settings = service.get(&tenant).await?.snapshot().settings.clone();
+            let policy = &mut settings.pushed_requests;
+            if let Some(seconds) = seconds {
+                policy.lifetime_seconds = seconds;
+            }
+            if let Some(required) = required {
+                policy.required = required.is_on();
+            }
+            let now = if seconds.is_some() || required.is_some() {
+                service.change_settings(&tenant, settings, caller()).await?
+            } else {
+                service.get(&tenant).await?
+            };
+            let policy = now.snapshot().settings.pushed_requests;
+            Ok(format!(
+                "{} pushed-requests seconds {} required {}",
+                entry.slug,
+                policy.lifetime_seconds,
+                on_off(policy.required)
             ))
         }
         TenantCommand::ScimDeprovisioning { slug, policy } => {

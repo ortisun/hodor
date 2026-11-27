@@ -487,7 +487,7 @@ async fn an_administrators_token_is_refused_by_every_operation_of_another_tenant
             tried += 1;
         }
     }
-    assert_eq!(tried, 161, "every documented operation was tried");
+    assert_eq!(tried, 163, "every documented operation was tried");
 
     // The token is good where it belongs, and nothing happened in Globex:
     // it has its two users, both active.
@@ -6834,4 +6834,180 @@ async fn one_tenants_registration_settings_and_initial_access_tokens_mean_nothin
         .await;
     assert_eq!(one["registrations"], 1);
     assert_eq!(one["status"], "used_up");
+}
+
+/// A first-party client of `tenant` with a secret, sent by `Basic`; its
+/// identifier and secret.
+async fn pushing_client(world: &World, tenant: &Tenant) -> (String, String) {
+    use hodor_adapters_postgres::{PgApplicationStore, PgClientStore, PgResourceServerStore};
+    use hodor_oauth::api::{
+        ApplicationPorts, ApplicationService, ApplicationSettings, ClientSettings, ClientType,
+        CreateClient, GrantType,
+    };
+    let applications = ApplicationService::new(ApplicationPorts {
+        units_of_work: Arc::new(world.database.app().clone()),
+        applications: Arc::new(PgApplicationStore),
+        clients: Arc::new(PgClientStore),
+        resource_servers: Arc::new(PgResourceServerStore),
+        digest: Arc::new(Sha256Digest),
+        random: Arc::new(OsRandom),
+        clock: Arc::new(SystemClock),
+    });
+    let application = applications
+        .create_application(
+            &tenant.context,
+            ApplicationSettings {
+                name: "Billing".to_owned(),
+                first_party: true,
+            },
+            Caller::system(),
+        )
+        .await
+        .expect("application");
+    let mut settings = ClientSettings::new(
+        "Billing web",
+        ClientType::Confidential,
+        vec![GrantType::AuthorizationCode],
+        vec![REDIRECT.to_owned()],
+    );
+    settings.allowed_scopes = vec!["openid".to_owned()];
+    let (client, secret) = applications
+        .create_client(
+            &tenant.context,
+            CreateClient {
+                application_id: application.id(),
+                client_type: ClientType::Confidential,
+                settings,
+                secret_lifetime: None,
+            },
+            Caller::system(),
+        )
+        .await
+        .expect("client");
+    (
+        client.id().to_string(),
+        secret.expect("a secret").expose().to_owned(),
+    )
+}
+
+/// Pushes a request of `client` at `tenant`: the status and the body.
+async fn push_at(
+    world: &World,
+    tenant: &Tenant,
+    client: &str,
+    secret: &str,
+) -> (StatusCode, serde_json::Value) {
+    use base64::Engine as _;
+    use base64::engine::general_purpose::STANDARD;
+    let challenge = hodor_oauth::api::s256_challenge(VERIFIER, &Sha256Digest);
+    let response = reqwest::Client::new()
+        .post(format!(
+            "{}/t/{}/oauth2/par",
+            world.server.base, tenant.slug
+        ))
+        .header("content-type", "application/x-www-form-urlencoded")
+        .header(
+            "authorization",
+            format!("Basic {}", STANDARD.encode(format!("{client}:{secret}"))),
+        )
+        .body(
+            form_urlencoded::Serializer::new(String::new())
+                .extend_pairs([
+                    ("response_type", "code"),
+                    ("redirect_uri", REDIRECT),
+                    ("scope", "openid"),
+                    ("state", "pushed"),
+                    ("code_challenge", challenge.as_str()),
+                    ("code_challenge_method", "S256"),
+                ])
+                .finish(),
+        )
+        .send()
+        .await
+        .expect("response");
+    let status = response.status();
+    (
+        status,
+        response.json().await.unwrap_or(serde_json::Value::Null),
+    )
+}
+
+/// Where the authorization endpoint of `tenant` sends a signed-in browser
+/// that brings `reference` for `client`: the status, and the redirect.
+async fn with_reference(
+    browser: &mut Browser,
+    tenant: &Tenant,
+    client: &str,
+    reference: &str,
+) -> (StatusCode, Option<String>) {
+    let query = form_urlencoded::Serializer::new(String::new())
+        .extend_pairs([
+            ("client_id", client),
+            ("request_uri", reference),
+            ("redirect_uri", REDIRECT),
+        ])
+        .finish();
+    let (status, location, _) = browser
+        .navigate(
+            Method::GET,
+            &format!("/t/{}/oauth2/authorize?{query}", tenant.slug),
+            None,
+        )
+        .await;
+    (status, location)
+}
+
+#[tokio::test]
+async fn a_reference_pushed_at_one_tenant_is_refused_by_another_and_used_once() {
+    let world = world_with(&[("HODOR_SECRET_KEYS", ROOT_KEY)]).await;
+    let (acme, globex) = (&world.acme, &world.globex);
+    let (acme_client, acme_secret) = pushing_client(&world, acme).await;
+    let (globex_client, _) = pushing_client(&world, globex).await;
+
+    // Acme's client cannot push at Globex: it is nobody there.
+    let (status, body) = push_at(&world, globex, &acme_client, &acme_secret).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED, "{body}");
+    assert_eq!(body["error"], "invalid_client");
+
+    let (status, body) = push_at(&world, acme, &acme_client, &acme_secret).await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    let reference = body["request_uri"]
+        .as_str()
+        .expect("a reference")
+        .to_owned();
+
+    // At Globex, Acme's client is unknown: Hodor's own page; and Globex's
+    // own client does not find Acme's reference.
+    let mut at_globex = Browser::not_following(&world.server);
+    let (_, signed_in) = at_globex.sign_in(globex.slug, EMAIL, PASSWORD).await;
+    assert_eq!(signed_in["status"], "completed", "{signed_in}");
+    let (status, location) = with_reference(&mut at_globex, globex, &acme_client, &reference).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(location, None);
+    let (status, location) =
+        with_reference(&mut at_globex, globex, &globex_client, &reference).await;
+    assert_eq!(status, StatusCode::FOUND);
+    let location = location.expect("a redirect");
+    assert!(
+        location.contains("error=invalid_request_uri") && !location.contains("code="),
+        "{location}"
+    );
+
+    // At Acme, the reference is the request, once.
+    let mut at_acme = Browser::not_following(&world.server);
+    let (_, signed_in) = at_acme.sign_in(acme.slug, EMAIL, PASSWORD).await;
+    assert_eq!(signed_in["status"], "completed", "{signed_in}");
+    let (status, location) = with_reference(&mut at_acme, acme, &acme_client, &reference).await;
+    assert_eq!(status, StatusCode::FOUND);
+    assert!(
+        location.as_deref().is_some_and(|to| to.contains("code=")),
+        "{location:?}"
+    );
+    let (_, location) = with_reference(&mut at_acme, acme, &acme_client, &reference).await;
+    assert!(
+        location
+            .as_deref()
+            .is_some_and(|to| to.contains("error=invalid_request_uri") && !to.contains("code=")),
+        "used twice: {location:?}"
+    );
 }

@@ -138,7 +138,7 @@ Slug lookup goes through `platform.tenant_directory`, a routing table outside ro
 | `authorization_code` | `code_hash`, `grant_id`, `redirect_uri`, `code_challenge`, `nonce`, `expires_at`, `consumed_at` | — |
 | `refresh_token_family` | `id`, `grant_id`, `generation`, `absolute_expires_at`, `revoked_at`, `revoke_reason` | — |
 | `refresh_token` | `token_hash`, `family_id`, `generation`, `issued_at`, `idle_expires_at`, `consumed_at`, `cnf_jkt` | Lookup by `(tenant_id, token_hash)` |
-| `pushed_request` | `request_uri_hash`, `client_id`, `params jsonb`, `expires_at` | — |
+| `pushed_request` | Built as rows of `authorization_request` with a `reference_hash` instead of a browser's `secret_hash` ([pushed authorization requests](contexts/oauth.md#pushed-authorization-requests), Decision 0045) | — |
 | `device_code` | `device_code_hash`, `user_code_hash`, `client_id`, `status`, `expires_at` | — |
 | `revoked_jti` | `jti`, `expires_at` | Deny-list for JWT access tokens; mirrored in Redis when present |
 

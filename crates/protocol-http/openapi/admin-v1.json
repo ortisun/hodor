@@ -4174,6 +4174,116 @@
         }
       }
     },
+    "/pushed-authorization-requests": {
+      "get": {
+        "operationId": "readPushedAuthorizationRequests",
+        "summary": "Read how long a pushed authorization request lives and whether every client must push its requests",
+        "x-hodor-permission": "applications:read",
+        "responses": {
+          "401": {
+            "description": "No access token, or one that is not good in this tenant. The same in every case.",
+            "headers": {
+              "WWW-Authenticate": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The token is good and its user may not do this.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "200": {
+            "description": "The policy in force, `60` and `false` when none was set.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PushedAuthorizationRequests"
+                }
+              }
+            }
+          }
+        }
+      },
+      "put": {
+        "operationId": "setPushedAuthorizationRequests",
+        "summary": "Set how long a pushed authorization request lives and whether every client must push its requests",
+        "x-hodor-permission": "applications:write",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PushedAuthorizationRequests"
+              }
+            }
+          }
+        },
+        "responses": {
+          "401": {
+            "description": "No access token, or one that is not good in this tenant. The same in every case.",
+            "headers": {
+              "WWW-Authenticate": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The token is good and its user may not do this.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "200": {
+            "description": "The policy now in force.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PushedAuthorizationRequests"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "A life outside 10 to 600 seconds (`tenant.settings_invalid`), or a body that is not this document (`request.body_invalid`).",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/assurance-levels": {
       "get": {
         "operationId": "readAssuranceLevels",
@@ -13801,6 +13911,7 @@
           "id_token_signed_response_alg",
           "userinfo_signed_response_alg",
           "request_object_signing_alg",
+          "require_pushed_authorization_requests",
           "backchannel_logout_uri",
           "backchannel_logout_session_required",
           "subject_type",
@@ -13923,6 +14034,10 @@
               null
             ],
             "description": "How the client signs its request objects (`request_object_signing_alg` of OpenID Connect Registration): ES256, RS256 or PS256 accepts only objects signed with that algorithm by one of its keys; none accepts only unsigned objects; null, the default, accepts any of the three."
+          },
+          "require_pushed_authorization_requests": {
+            "type": "boolean",
+            "description": "Whether every request of the client must be pushed to the pushed authorization request endpoint first; a request that was not pushed is refused. `false` unless given; a tenant may require it of every client."
           },
           "backchannel_logout_uri": {
             "type": [
@@ -14198,6 +14313,11 @@
             ],
             "description": "How the client signs its request objects (`request_object_signing_alg` of OpenID Connect Registration): ES256, RS256 or PS256 accepts only objects signed with that algorithm by one of its keys; none accepts only unsigned objects; null, the default, accepts any of the three."
           },
+          "require_pushed_authorization_requests": {
+            "type": "boolean",
+            "description": "Whether every request of the client must be pushed to the pushed authorization request endpoint first; a request that was not pushed is refused. `false` unless given; a tenant may require it of every client.",
+            "default": false
+          },
           "backchannel_logout_uri": {
             "type": "string",
             "maxLength": 2000,
@@ -14374,6 +14494,10 @@
               null
             ],
             "description": "How the client signs its request objects (`request_object_signing_alg` of OpenID Connect Registration): ES256, RS256 or PS256 accepts only objects signed with that algorithm by one of its keys; none accepts only unsigned objects; null, the default, accepts any of the three. `null` removes it."
+          },
+          "require_pushed_authorization_requests": {
+            "type": "boolean",
+            "description": "Whether every request of the client must be pushed to the pushed authorization request endpoint first; a request that was not pushed is refused. `false` unless given; a tenant may require it of every client."
           },
           "backchannel_logout_uri": {
             "type": [
@@ -16018,6 +16142,26 @@
           "link": {
             "type": "boolean",
             "description": "Whether a person may sign in with a link sent to their address, opened in the browser that asked for it."
+          }
+        }
+      },
+      "PushedAuthorizationRequests": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "lifetime_seconds",
+          "required"
+        ],
+        "properties": {
+          "lifetime_seconds": {
+            "type": "integer",
+            "minimum": 10,
+            "maximum": 600,
+            "description": "How long a pushed request waits for its browser, answered to the client as `expires_in`. 60 unless set."
+          },
+          "required": {
+            "type": "boolean",
+            "description": "Whether every client of the tenant must push its requests; a request that was not pushed is then refused. Discovery says it as `require_pushed_authorization_requests`."
           }
         }
       },

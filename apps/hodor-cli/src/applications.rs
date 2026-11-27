@@ -130,6 +130,10 @@ pub(crate) enum ClientCommand {
         /// unsigned objects. Any of the three unless given.
         #[arg(long)]
         request_object_signing_alg: Option<String>,
+        /// Has every request of it pushed to the pushed authorization
+        /// request endpoint first, and refuses any other.
+        #[arg(long)]
+        require_pushed_authorization_requests: bool,
         /// Where its logout tokens are sent when a session it signed a
         /// person in with ends. Checked as the server checks it: the name
         /// must lead to public addresses only.
@@ -492,6 +496,7 @@ pub(crate) async fn run_client(
             id_token_algorithm,
             userinfo_signed_response_alg,
             request_object_signing_alg,
+            require_pushed_authorization_requests,
             backchannel_logout_uri,
             backchannel_logout_session_required,
             subject_type,
@@ -531,6 +536,7 @@ pub(crate) async fn run_client(
             settings.post_logout_redirect_uris = post_logout_redirect_uris;
             settings.allowed_scopes = scopes;
             settings.require_pkce = !without_pkce;
+            settings.require_pushed_requests = require_pushed_authorization_requests;
             if let Some(algorithm) = id_token_algorithm {
                 settings.id_token_algorithm = IdTokenAlgorithm::parse(&algorithm)?;
             }

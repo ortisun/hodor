@@ -202,6 +202,7 @@ async fn a_signed_request_object_is_checked_and_kept_as_the_request() {
             &tenant,
             ISSUER,
             &request(client, &signed(&key, &claims(&world, client))),
+            &hodor_oauth::api::PushedRequestPolicy::default(),
         )
         .await
         .expect("storage")
@@ -237,6 +238,7 @@ async fn an_object_signed_by_another_client_s_key_is_refused() {
             &tenant,
             ISSUER,
             &request(client, &signed(&stranger_key, &claims(&world, client))),
+            &hodor_oauth::api::PushedRequestPolicy::default(),
         )
         .await
         .expect("storage");
@@ -264,6 +266,7 @@ async fn an_unsigned_object_is_read_only_from_a_client_that_chose_none() {
                 &tenant,
                 ISSUER,
                 &request(client, &unsigned(&claims(&world, client))),
+                &hodor_oauth::api::PushedRequestPolicy::default(),
             )
             .await
             .expect("storage");
@@ -280,6 +283,7 @@ async fn an_unsigned_object_is_read_only_from_a_client_that_chose_none() {
             &tenant,
             ISSUER,
             &request(signs_nothing, &unsigned(&claims(&world, signs_nothing))),
+            &hodor_oauth::api::PushedRequestPolicy::default(),
         )
         .await
         .expect("storage")
@@ -303,6 +307,7 @@ async fn an_object_of_another_tenant_s_client_is_refused() {
             &elsewhere,
             "https://hodor.example.com/t/other",
             &request(client, &object),
+            &hodor_oauth::api::PushedRequestPolicy::default(),
         )
         .await
         .expect("storage");
@@ -321,6 +326,7 @@ async fn an_object_of_another_tenant_s_client_is_refused() {
             &elsewhere,
             "https://hodor.example.com/t/other",
             &request(theirs, &object),
+            &hodor_oauth::api::PushedRequestPolicy::default(),
         )
         .await
         .expect("storage");

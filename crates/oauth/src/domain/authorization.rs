@@ -43,7 +43,7 @@ pub const PENDING_LIFETIME: Duration = Duration::minutes(10);
 /// The most `resource` values one request may name.
 pub const MAX_RESOURCES: usize = 10;
 /// The longest `state` or `nonce` accepted.
-const MAX_OPAQUE_LENGTH: usize = 1024;
+pub(crate) const MAX_OPAQUE_LENGTH: usize = 1024;
 /// The longest `login_hint`, `ui_locales` or `acr_values` accepted.
 const MAX_HINT_LENGTH: usize = 255;
 /// The largest `max_age` accepted: a year, in seconds.
@@ -93,7 +93,7 @@ impl AuthorizationParameters {
         }
     }
 
-    fn all(&self, name: &str) -> Vec<&str> {
+    pub(crate) fn all(&self, name: &str) -> Vec<&str> {
         self.pairs
             .iter()
             .filter(|(key, _)| key == name)
@@ -132,6 +132,16 @@ impl AuthorizationParameters {
                 Given::Absent | Given::Repeated => None,
             },
         }
+    }
+
+    /// The same parameters, naming `client` as `client_id`, whatever they
+    /// named before: the client that proved who it is when it pushed them.
+    #[must_use]
+    pub(crate) fn naming(mut self, client: ClientId) -> Self {
+        self.pairs.retain(|(name, _)| name != "client_id");
+        self.pairs
+            .push(("client_id".to_owned(), client.to_string()));
+        self
     }
 
     /// The `client_id`, if the request names one client and it is the
@@ -230,7 +240,7 @@ pub enum AuthorizationRefusal {
     Redirect(AuthorizationError),
 }
 
-fn is_printable(value: &str) -> bool {
+pub(crate) fn is_printable(value: &str) -> bool {
     value.bytes().all(|b| (0x20..=0x7e).contains(&b))
 }
 
@@ -262,7 +272,7 @@ pub(crate) const DISPLAYS: [&str; 3] = ["page", "popup", "touch"];
 
 /// The client and application a request names, if they may be answered
 /// at all: known in this tenant, enabled, and allowed the code.
-fn trusted_client<'c>(
+pub(crate) fn trusted_client<'c>(
     parameters: &AuthorizationParameters,
     client: Option<&'c Client>,
     application: Option<&'c Application>,
@@ -341,7 +351,9 @@ fn refused_object(
 /// names in this tenant, `application` that client's application, and
 /// `servers` the tenant's resource servers. A request object in `request`
 /// is checked first, with `objects`, and its parameters are then the
-/// request.
+/// request. With `pushed_only`, the client or its tenant requires pushed
+/// requests, and a request that was not pushed is refused once its
+/// redirect address is trusted.
 ///
 /// # Errors
 ///
@@ -353,9 +365,12 @@ pub fn check_request(
     application: Option<&Application>,
     servers: &[ResourceServer],
     objects: RequestObjectCheck<'_>,
+    pushed_only: bool,
 ) -> Result<AuthorizationRequest, AuthorizationRefusal> {
     let object = match parameters.given("request") {
-        Given::Absent => return check_parameters(parameters, client, application, servers),
+        Given::Absent => {
+            return check_parameters(parameters, client, application, servers, pushed_only);
+        }
         Given::Once(object) => Some(object),
         Given::Repeated => None,
     };
@@ -367,7 +382,13 @@ pub fn check_request(
         )),
     };
     match checked {
-        Ok(inside) => check_parameters(&inside, Some(client), Some(application), servers),
+        Ok(inside) => check_parameters(
+            &inside,
+            Some(client),
+            Some(application),
+            servers,
+            pushed_only,
+        ),
         Err(refusal) => Err(refused_object(parameters, object, client, refusal)),
     }
 }
@@ -379,6 +400,7 @@ fn check_parameters(
     client: Option<&Client>,
     application: Option<&Application>,
     servers: &[ResourceServer],
+    pushed_only: bool,
 ) -> Result<AuthorizationRequest, AuthorizationRefusal> {
     let (client, application) = trusted_client(parameters, client, application)?;
     let redirect_uri = match parameters.given("redirect_uri") {
@@ -416,13 +438,18 @@ fn check_parameters(
     };
     let invalid = |description: &'static str| refuse("invalid_request", description);
 
+    if pushed_only {
+        return Err(invalid("this client must push its authorization requests"));
+    }
     if parameters.any_repeated() {
         return Err(invalid("a parameter is given more than once"));
     }
+    // A reference is read before the request is checked, by the
+    // authorization endpoint; one here would name a request from inside
+    // another, as when it is pushed.
     if parameters.once("request_uri").is_some() {
-        return Err(refuse(
-            "request_uri_not_supported",
-            "references to a request object are not supported",
+        return Err(invalid(
+            "request_uri cannot be given with the request it would name",
         ));
     }
     let response_type = match parameters.once("response_type") {
