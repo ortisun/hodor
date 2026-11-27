@@ -1,10 +1,12 @@
-// Runs the Basic OpenID Provider, Config OpenID Provider and Back-Channel
-// OpenID Provider plans of the OpenID conformance suite against Hodor, then
-// the Basic and Back-Channel plans again with pairwise clients, in the stack
-// of compose.yaml, and fails unless every test ends as
-// docs/operations/conformance.md expects. The Form Post plan of the code
-// flow, and the Implicit and Hybrid plans, for the response types `id_token`
-// and `code id_token`, run when asked for with CONFORMANCE_PLANS.
+// Runs plans of the OpenID conformance suite against Hodor, in the stack of
+// compose.yaml, and fails unless every test ends as expected.json expects
+// for its plan, as docs/operations/conformance.md says. The plans are those
+// of plans.json, by their short names: the core set, the Basic OpenID
+// Provider, Config OpenID Provider and Back-Channel OpenID Provider plans and
+// the Basic and Back-Channel plans again with pairwise clients, unless
+// CONFORMANCE_PLANS names others, such as the Form Post plan of the code
+// flow or the Implicit and Hybrid plans for the response types `id_token`
+// and `code id_token`. Continuous integration runs one plan in each job.
 //
 // NOT FOR ANYTHING REAL: the person, the clients and their secrets are made
 // here for the run and written to the console.
@@ -20,18 +22,18 @@
 //
 // Environment: CONFORMANCE_ONLY (comma-separated test names, to run only
 // those), CONFORMANCE_REPORT (a file to write the results to as JSON),
-// CONFORMANCE_PLANS (comma-separated names of PLANS below, to run only
-// those; the plans of continuous integration unless given).
+// CONFORMANCE_PLANS (comma-separated short names of plans.json, to run only
+// those; the core set unless given).
 
 import { execFileSync } from "node:child_process";
-import { readFileSync, writeFileSync } from "node:fs";
+import { writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { chromium } from "playwright";
+import { allowedResults, readExpected, readPlans } from "./runs.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const COMPOSE_FILE = join(HERE, "compose.yaml");
-const EXPECTED = JSON.parse(readFileSync(join(HERE, "expected.json"), "utf8"));
 
 const SUITE = "https://localhost.emobix.co.uk:8443/";
 const HODOR = "https://hodor.localhost:8453";
@@ -54,16 +56,14 @@ const BACKCHANNEL_LOGOUT = `http://${RELAY}/test/a/${ALIAS}/backchannel_logout`;
 const SECTOR_DOCUMENT_HOST = "sector-document:8080";
 const SECTOR_IDENTIFIER_URI = `http://${SECTOR_DOCUMENT_HOST}/redirect_uris.json`;
 const ONLY = (process.env.CONFORMANCE_ONLY ?? "").split(",").filter((name) => name !== "");
-// The plans this script can run, by a short name. Continuous integration
-// runs the first five; the Form Post plan of the code flow and the Implicit
-// and Hybrid plans of the response types Hodor answers through the browser
-// run when named.
-const PLANS = [
-  "basic", "config", "backchannel", "basic-pairwise", "backchannel-pairwise",
-  "formpost-basic", "implicit-id-token", "hybrid-code-id-token",
-];
-const CONTINUOUS_INTEGRATION_PLANS = PLANS.slice(0, 5);
-const CHOSEN = (process.env.CONFORMANCE_PLANS ?? CONTINUOUS_INTEGRATION_PLANS.join(","))
+// The plans this script can run, by their short names in plans.json, each
+// with its runner in `main`; the core set runs unless others are named.
+// expected.json is read and checked against them before anything runs.
+const LISTED = readPlans();
+const PLANS = LISTED.map((plan) => plan.name);
+const CORE_PLANS = LISTED.filter((plan) => plan.core).map((plan) => plan.name);
+const EXPECTED = readExpected(PLANS);
+const CHOSEN = (process.env.CONFORMANCE_PLANS ?? CORE_PLANS.join(","))
   .split(",")
   .filter((name) => name !== "");
 for (const name of CHOSEN) {
@@ -467,9 +467,24 @@ async function main() {
         { server_metadata: "discovery", client_registration: "static_client" }, browser,
         "oidcc-hybrid-certification-test-plan (code id_token)", "code id_token"),
     };
+    // Every plan of plans.json has its runner here, and every runner its
+    // entry there, so that continuous integration never gives a job to a
+    // plan this script cannot run, nor leaves one out.
+    const unlisted = Object.keys(plans).filter((name) => !PLANS.includes(name));
+    const unrun = PLANS.filter((name) => !Object.hasOwn(plans, name));
+    if (unlisted.length > 0 || unrun.length > 0) {
+      throw new Error(
+        `plans.json and run.mjs disagree: not in plans.json: ${unlisted.join(", ") || "none"}; `
+          + `no runner: ${unrun.join(", ") || "none"}`,
+      );
+    }
     const results = [];
     for (const name of PLANS.filter((plan) => CHOSEN.includes(plan))) {
-      results.push(...(await plans[name]()));
+      for (const result of await plans[name]()) {
+        const outcome = result.status === "FINISHED" ? result.result : result.status;
+        const allowed = allowedResults(EXPECTED, result.name, name).includes(outcome);
+        results.push({ run: name, ...result, outcome, allowed });
+      }
     }
     if (process.env.CONFORMANCE_REPORT) {
       writeFileSync(process.env.CONFORMANCE_REPORT, JSON.stringify(results, null, 2));
@@ -478,16 +493,14 @@ async function main() {
     step("Results");
     const unexpected = [];
     for (const result of results) {
-      const outcome = result.status === "FINISHED" ? result.result : result.status;
-      const allowed = ["PASSED", ...Object.keys(EXPECTED[result.name] ?? {})];
-      const mark = allowed.includes(outcome) ? "ok" : "UNEXPECTED";
-      console.log(`${mark}\t${outcome}\t${result.plan}\t${result.name}`);
-      if (mark !== "ok") {
+      const mark = result.allowed ? "ok" : "UNEXPECTED";
+      console.log(`${mark}\t${result.outcome}\t${result.plan}\t${result.name}`);
+      if (!result.allowed) {
         unexpected.push(result);
       }
     }
     if (unexpected.length > 0) {
-      console.log(`\n${unexpected.length} tests did not end as docs/operations/conformance.md expects.`);
+      console.log(`\n${unexpected.length} tests did not end as expected.json expects for their plan.`);
       process.exitCode = 1;
     }
   } finally {
