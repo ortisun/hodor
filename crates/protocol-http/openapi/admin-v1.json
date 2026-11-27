@@ -351,6 +351,103 @@
         }
       }
     },
+    "/users/{user_id}/claims": {
+      "put": {
+        "operationId": "replaceUserClaims",
+        "summary": "Replace a person's standard claims",
+        "x-hodor-permission": "users:write",
+        "parameters": [
+          {
+            "name": "user_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/StandardClaims"
+              }
+            }
+          }
+        },
+        "responses": {
+          "401": {
+            "description": "No access token, or one that is not good in this tenant. The same in every case.",
+            "headers": {
+              "WWW-Authenticate": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The token is good and its user may not do this.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "200": {
+            "description": "The user, with the claims as they are kept.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/User"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such user.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The user is marked Deleted, or someone else changed it at the same moment.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "A claim breaks its rule (`identity.claim_invalid`), or the user is a service account or an agent (`identity.workload_claims_refused`).",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/users/{user_id}/sessions": {
       "get": {
         "operationId": "listUserSessions",
@@ -1879,6 +1976,393 @@
         }
       }
     },
+    "/trust-domains": {
+      "get": {
+        "operationId": "listTrustDomains",
+        "summary": "List the tenant's trust domains, with their bundles, in the order of their identifiers",
+        "x-hodor-permission": "keys:read",
+        "parameters": [
+          {
+            "name": "limit",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 200,
+              "default": 50
+            }
+          },
+          {
+            "name": "cursor",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            },
+            "description": "The `next_cursor` of the page before."
+          }
+        ],
+        "responses": {
+          "401": {
+            "description": "No access token, or one that is not good in this tenant. The same in every case.",
+            "headers": {
+              "WWW-Authenticate": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The token is good and its user may not do this.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "200": {
+            "description": "A page of trust domains.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "items"
+                  ],
+                  "properties": {
+                    "items": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/components/schemas/TrustDomain"
+                      }
+                    },
+                    "next_cursor": {
+                      "type": "string",
+                      "description": "Present when more results exist."
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "A value breaks its rule, or the body is not of the expected shape.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "operationId": "addTrustDomain",
+        "summary": "Add a trust domain: its bundle, its bundle endpoint, or the mesh",
+        "x-hodor-permission": "keys:write",
+        "description": "A bundle is read, and a bundle endpoint checked and fetched once, before anything is stored.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/NewTrustDomain"
+              }
+            }
+          }
+        },
+        "responses": {
+          "401": {
+            "description": "No access token, or one that is not good in this tenant. The same in every case.",
+            "headers": {
+              "WWW-Authenticate": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The token is good and its user may not do this.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "201": {
+            "description": "Added.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TrustDomain"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The tenant has a trust domain of that name, `keys.trust_domain_name_taken`, or 50 already, `keys.too_many_trust_domains`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "A value breaks its rule, or the body is not of the expected shape: `keys.trust_domain_name_invalid`, `keys.trust_domain_source_invalid`, `keys.trust_bundle_invalid`, `keys.bundle_endpoint_invalid`, `keys.bundle_endpoint_forbidden`, `keys.bundle_endpoint_unresolvable` or `keys.bundle_endpoint_unreachable`. Nothing is stored.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/trust-domains/{trust_domain_id}": {
+      "get": {
+        "operationId": "getTrustDomain",
+        "summary": "Read one trust domain",
+        "x-hodor-permission": "keys:read",
+        "parameters": [
+          {
+            "name": "trust_domain_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "401": {
+            "description": "No access token, or one that is not good in this tenant. The same in every case.",
+            "headers": {
+              "WWW-Authenticate": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The token is good and its user may not do this.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "200": {
+            "description": "The trust domain.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TrustDomain"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No trust domain of that identifier: `keys.trust_domain_not_found`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      },
+      "put": {
+        "operationId": "replaceTrustDomain",
+        "summary": "Replace a trust domain's source and bundle",
+        "x-hodor-permission": "keys:write",
+        "parameters": [
+          {
+            "name": "trust_domain_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "description": "Checked as when it is added. A refusal leaves the trust domain as it was, with the bundle it had.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TrustDomainSource"
+              }
+            }
+          }
+        },
+        "responses": {
+          "401": {
+            "description": "No access token, or one that is not good in this tenant. The same in every case.",
+            "headers": {
+              "WWW-Authenticate": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The token is good and its user may not do this.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "200": {
+            "description": "The trust domain.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TrustDomain"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No trust domain of that identifier: `keys.trust_domain_not_found`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "It changed while it was being replaced: `keys.trust_domain_changed`, or `keys.trust_domain_of_authority` for a trust domain the certificate authority added.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "A value breaks its rule, or the body is not of the expected shape: `keys.trust_domain_name_invalid`, `keys.trust_domain_source_invalid`, `keys.trust_bundle_invalid`, `keys.bundle_endpoint_invalid`, `keys.bundle_endpoint_forbidden`, `keys.bundle_endpoint_unresolvable` or `keys.bundle_endpoint_unreachable`. Nothing is stored.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "operationId": "removeTrustDomain",
+        "summary": "Remove a trust domain, with its bundle",
+        "x-hodor-permission": "keys:write",
+        "parameters": [
+          {
+            "name": "trust_domain_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "401": {
+            "description": "No access token, or one that is not good in this tenant. The same in every case.",
+            "headers": {
+              "WWW-Authenticate": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The token is good and its user may not do this.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "204": {
+            "description": "Removed."
+          },
+          "404": {
+            "description": "No trust domain of that identifier: `keys.trust_domain_not_found`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/applications": {
       "get": {
         "operationId": "listApplications",
@@ -2477,7 +2961,7 @@
             }
           },
           "409": {
-            "description": "The application already has 20 clients.",
+            "description": "The application already has 20 clients, or the SPIFFE identifier is bound to another client of the tenant.",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -2639,7 +3123,7 @@
             }
           },
           "409": {
-            "description": "Someone else changed the client at the same moment.",
+            "description": "Someone else changed the client at the same moment, or the SPIFFE identifier is bound to another client of the tenant.",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -3679,6 +4163,116 @@
           },
           "422": {
             "description": "A body that is not this document (`request.body_invalid`).",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/pushed-authorization-requests": {
+      "get": {
+        "operationId": "readPushedAuthorizationRequests",
+        "summary": "Read how long a pushed authorization request lives and whether every client must push its requests",
+        "x-hodor-permission": "applications:read",
+        "responses": {
+          "401": {
+            "description": "No access token, or one that is not good in this tenant. The same in every case.",
+            "headers": {
+              "WWW-Authenticate": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The token is good and its user may not do this.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "200": {
+            "description": "The policy in force, `60` and `false` when none was set.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PushedAuthorizationRequests"
+                }
+              }
+            }
+          }
+        }
+      },
+      "put": {
+        "operationId": "setPushedAuthorizationRequests",
+        "summary": "Set how long a pushed authorization request lives and whether every client must push its requests",
+        "x-hodor-permission": "applications:write",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PushedAuthorizationRequests"
+              }
+            }
+          }
+        },
+        "responses": {
+          "401": {
+            "description": "No access token, or one that is not good in this tenant. The same in every case.",
+            "headers": {
+              "WWW-Authenticate": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The token is good and its user may not do this.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "200": {
+            "description": "The policy now in force.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PushedAuthorizationRequests"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "A life outside 10 to 600 seconds (`tenant.settings_invalid`), or a body that is not this document (`request.body_invalid`).",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -11295,6 +11889,1002 @@
           }
         }
       }
+    },
+    "/certificate-authority": {
+      "get": {
+        "operationId": "getCertificateAuthority",
+        "summary": "Read the tenant's certificate authority",
+        "x-hodor-permission": "certificate-authority:read",
+        "description": "Nothing of its key is answered. Routed only when the installation sets `HODOR_CERTIFICATE_AUTHORITY` to `on` or `development`; otherwise this document does not name it.",
+        "responses": {
+          "401": {
+            "description": "No access token, or one that is not good in this tenant. The same in every case.",
+            "headers": {
+              "WWW-Authenticate": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The token is good and its user may not do this.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "200": {
+            "description": "The authority.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CertificateAuthority"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The tenant has no certificate authority: `keys.authority_not_found`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "operationId": "createCertificateAuthority",
+        "summary": "Create the tenant's certificate authority",
+        "x-hodor-permission": "certificate-authority:write",
+        "description": "A root is signed by its own key, made in a key provider that signs inside itself, and is active at once; its trust domains are added to the tenant's with the source `authority`. An intermediate answers a certificate signing request for the tenant's own root to sign. Routed only when the installation sets `HODOR_CERTIFICATE_AUTHORITY` to `on` or `development`; otherwise this document does not name it.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/NewCertificateAuthority"
+              }
+            }
+          }
+        },
+        "responses": {
+          "401": {
+            "description": "No access token, or one that is not good in this tenant. The same in every case.",
+            "headers": {
+              "WWW-Authenticate": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The token is good and its user may not do this.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "201": {
+            "description": "The authority.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CertificateAuthority"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "`keys.authority_exists`, `keys.authority_provider_unsuitable`, `keys.authority_trust_domain_taken` or `keys.too_many_trust_domains`. Nothing is stored.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "A value breaks its rule, or the body is not of the expected shape: `keys.authority_request_invalid` or `keys.authority_trust_domain_invalid`. Nothing is stored.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "operationId": "removeCertificateAuthority",
+        "summary": "Remove the tenant's certificate authority",
+        "x-hodor-permission": "certificate-authority:write",
+        "description": "The trust domains it added that still have the source `authority` are removed with it. Its key stays in the key provider. Routed only when the installation sets `HODOR_CERTIFICATE_AUTHORITY` to `on` or `development`; otherwise this document does not name it.",
+        "responses": {
+          "401": {
+            "description": "No access token, or one that is not good in this tenant. The same in every case.",
+            "headers": {
+              "WWW-Authenticate": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The token is good and its user may not do this.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "204": {
+            "description": "Removed."
+          },
+          "404": {
+            "description": "The tenant has no certificate authority: `keys.authority_not_found`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/certificate-authority:install": {
+      "post": {
+        "operationId": "installCertificateAuthorityCertificate",
+        "summary": "Install an intermediate's certificate",
+        "x-hodor-permission": "certificate-authority:write",
+        "description": "The certificate the tenant's own root signed for the authority's request. It must hold the authority's key, be an authority valid now, and carry name constraints within the authority's trust domains. The authority becomes active and its trust domains are added to the tenant's. Routed only when the installation sets `HODOR_CERTIFICATE_AUTHORITY` to `on` or `development`; otherwise this document does not name it.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CertificateAuthorityCertificate"
+              }
+            }
+          }
+        },
+        "responses": {
+          "401": {
+            "description": "No access token, or one that is not good in this tenant. The same in every case.",
+            "headers": {
+              "WWW-Authenticate": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The token is good and its user may not do this.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "200": {
+            "description": "The authority, now active.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CertificateAuthority"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The tenant has no certificate authority: `keys.authority_not_found`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "`keys.authority_not_awaiting_certificate`, `keys.authority_trust_domain_taken`, `keys.too_many_trust_domains` or `keys.authority_changed`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "`keys.authority_certificate_unsuitable`, with the reason as its detail, or a body that is not of the expected shape.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/certificate-authority/intermediates": {
+      "get": {
+        "operationId": "listIntermediates",
+        "summary": "List the intermediates the tenant's certificate authority signed, newest first",
+        "x-hodor-permission": "certificate-authority:read",
+        "description": "The intermediates of the tenant's authority, withdrawn ones included. Routed only when the installation sets `HODOR_CERTIFICATE_AUTHORITY` to `on` or `development`; otherwise this document does not name it.",
+        "parameters": [
+          {
+            "name": "limit",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 200,
+              "default": 50
+            }
+          },
+          {
+            "name": "cursor",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            },
+            "description": "The `next_cursor` of the page before."
+          }
+        ],
+        "responses": {
+          "401": {
+            "description": "No access token, or one that is not good in this tenant. The same in every case.",
+            "headers": {
+              "WWW-Authenticate": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The token is good and its user may not do this.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "200": {
+            "description": "A page of intermediates.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "items"
+                  ],
+                  "properties": {
+                    "items": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/components/schemas/Intermediate"
+                      }
+                    },
+                    "next_cursor": {
+                      "type": "string",
+                      "description": "Present when more results exist."
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The tenant has no certificate authority: `keys.authority_not_found`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "A value breaks its rule, or the body is not of the expected shape.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "operationId": "signIntermediate",
+        "summary": "Sign an intermediate of a mesh from its certificate signing request",
+        "x-hodor-permission": "certificate-authority:sign",
+        "description": "The request must prove its key, ask for an authority with no path length above zero, name nothing outside the authority's trust domains, ask for name constraints that only narrow and none on URIs, hold an ECDSA key on P-256 or P-384 or an RSA key of 3072 to 8192 bits never withdrawn, and live within the authority's bound. Hodor writes a path length of zero, `keyCertSign` and `cRLSign`, and the DNS and address constraints itself. Every refusal names its reason in `detail`. This operation alone also takes, as its bearer, an access token of the tenant's token endpoint issued to a client acting as a service account, for the audience `urn:hodor:certificate-authority` and with the scope `certificate-authority:sign`, as `hodor-cert-manager-issuer` presents; the service account must hold `certificate-authority:sign` through its roles. Routed only when the installation sets `HODOR_CERTIFICATE_AUTHORITY` to `on` or `development`; otherwise this document does not name it.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/NewIntermediate"
+              }
+            }
+          }
+        },
+        "responses": {
+          "401": {
+            "description": "No access token, or one that is not good in this tenant; an access token of the token endpoint that is not for `urn:hodor:certificate-authority` or not of a service account's client, or bound and presented without its certificate. The same in every case.",
+            "headers": {
+              "WWW-Authenticate": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The token is good and its user may not do this; or an access token of the token endpoint without the scope `certificate-authority:sign`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "201": {
+            "description": "The intermediate, with its certificate and the chain above it.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Intermediate"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The tenant has no certificate authority: `keys.authority_not_found`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The authority awaits its certificate (`keys.authority_not_active`), the request's key was withdrawn (`keys.intermediate_key_withdrawn`), or the authority changed meanwhile (`keys.authority_changed`).",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "The request breaks a rule: `keys.intermediate_request_invalid`, `keys.intermediate_not_an_authority`, `keys.intermediate_path_length_invalid`, `keys.intermediate_name_outside_trust_domains`, `keys.intermediate_constraints_widened`, `keys.intermediate_constraints_unsupported`, `keys.intermediate_key_unsuitable` or `keys.intermediate_lifetime_invalid`, with the reason in `detail`; or the body is not of the expected shape.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/certificate-authority/intermediates/{intermediate_id}": {
+      "get": {
+        "operationId": "getIntermediate",
+        "summary": "Read one intermediate",
+        "x-hodor-permission": "certificate-authority:read",
+        "description": "Routed only when the installation sets `HODOR_CERTIFICATE_AUTHORITY` to `on` or `development`; otherwise this document does not name it.",
+        "parameters": [
+          {
+            "name": "intermediate_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "401": {
+            "description": "No access token, or one that is not good in this tenant. The same in every case.",
+            "headers": {
+              "WWW-Authenticate": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The token is good and its user may not do this.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "200": {
+            "description": "The intermediate.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Intermediate"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No intermediate of that identifier: `keys.intermediate_not_found`; or no authority: `keys.authority_not_found`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/certificate-authority/intermediates/{intermediate_id}:withdraw": {
+      "post": {
+        "operationId": "withdrawIntermediate",
+        "summary": "Withdraw an intermediate, with every intermediate of the same key",
+        "x-hodor-permission": "certificate-authority:write",
+        "description": "Hodor refuses every certificate path through an intermediate of the key from the next request, and never signs the key again. The meshes keep it until it expires. Routed only when the installation sets `HODOR_CERTIFICATE_AUTHORITY` to `on` or `development`; otherwise this document does not name it.",
+        "parameters": [
+          {
+            "name": "intermediate_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/IntermediateWithdrawal"
+              }
+            }
+          }
+        },
+        "responses": {
+          "401": {
+            "description": "No access token, or one that is not good in this tenant. The same in every case.",
+            "headers": {
+              "WWW-Authenticate": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The token is good and its user may not do this.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "200": {
+            "description": "The intermediate, withdrawn.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Intermediate"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No intermediate of that identifier: `keys.intermediate_not_found`; or no authority: `keys.authority_not_found`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "It is withdrawn already (`keys.intermediate_withdrawn`), or it changed meanwhile (`keys.intermediate_changed`).",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "A reason of no characters or more than 200: `keys.intermediate_reason_invalid`; or the body is not of the expected shape.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/client-registration": {
+      "get": {
+        "operationId": "getClientRegistration",
+        "summary": "Read whether clients may register themselves, and under which settings and policy",
+        "x-hodor-permission": "applications:read",
+        "responses": {
+          "401": {
+            "description": "No access token, or one that is not good in this tenant. The same in every case.",
+            "headers": {
+              "WWW-Authenticate": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The token is good and its user may not do this.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "200": {
+            "description": "The settings in force; the defaults, off, when none were set.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ClientRegistration"
+                }
+              }
+            }
+          }
+        }
+      },
+      "put": {
+        "operationId": "setClientRegistration",
+        "summary": "Turn client registration on or off, and replace its settings and policy",
+        "x-hodor-permission": "applications:write",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ClientRegistrationSettings"
+              }
+            }
+          }
+        },
+        "responses": {
+          "401": {
+            "description": "No access token, or one that is not good in this tenant. The same in every case.",
+            "headers": {
+              "WWW-Authenticate": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The token is good and its user may not do this.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "200": {
+            "description": "The settings now in force.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ClientRegistration"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Someone else changed the settings at the same moment (`oauth.client_registration_modified_concurrently`).",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "The application is missing while registration is on, not one of the tenant's, or first party (`oauth.client_registration_application_invalid`); no way while registration is on (`oauth.client_registration_ways_invalid`); most clients outside 1 to 1000 (`oauth.client_registration_most_clients_invalid`); a limit of the policy that breaks its rule (`oauth.client_registration_policy_invalid`); or a body that is not this document (`request.body_invalid`).",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/client-registration/initial-access-tokens": {
+      "get": {
+        "operationId": "listInitialAccessTokens",
+        "summary": "List the tenant's initial access tokens, newest first, never the tokens themselves",
+        "x-hodor-permission": "applications:read",
+        "responses": {
+          "401": {
+            "description": "No access token, or one that is not good in this tenant. The same in every case.",
+            "headers": {
+              "WWW-Authenticate": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The token is good and its user may not do this.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "200": {
+            "description": "The tokens.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "items"
+                  ],
+                  "properties": {
+                    "items": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/components/schemas/InitialAccessToken"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "operationId": "createInitialAccessToken",
+        "summary": "Make an initial access token, shown once",
+        "x-hodor-permission": "applications:write",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/NewInitialAccessToken"
+              }
+            }
+          }
+        },
+        "responses": {
+          "401": {
+            "description": "No access token, or one that is not good in this tenant. The same in every case.",
+            "headers": {
+              "WWW-Authenticate": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The token is good and its user may not do this.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "201": {
+            "description": "The token, with `initial_access_token`, the token itself, once.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MadeInitialAccessToken"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Registration is off (`oauth.client_registration_off`), does not allow initial access tokens (`oauth.initial_access_tokens_not_allowed`), or the tenant already holds 100 active ones (`oauth.too_many_initial_access_tokens`).",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "A name, a lifetime or a number of registrations that breaks its rule (`oauth.initial_access_token_name_invalid`, `oauth.initial_access_token_lifetime_invalid`, `oauth.initial_access_token_registrations_invalid`), or a body that is not this document (`request.body_invalid`).",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/client-registration/initial-access-tokens/{token_id}": {
+      "get": {
+        "operationId": "getInitialAccessToken",
+        "summary": "Read one initial access token",
+        "x-hodor-permission": "applications:read",
+        "parameters": [
+          {
+            "name": "token_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "401": {
+            "description": "No access token, or one that is not good in this tenant. The same in every case.",
+            "headers": {
+              "WWW-Authenticate": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The token is good and its user may not do this.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "200": {
+            "description": "The token, never the token itself.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/InitialAccessToken"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such token in this tenant (`oauth.initial_access_token_not_found`).",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "operationId": "revokeInitialAccessToken",
+        "summary": "Revoke an initial access token at once",
+        "x-hodor-permission": "applications:write",
+        "parameters": [
+          {
+            "name": "token_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "401": {
+            "description": "No access token, or one that is not good in this tenant. The same in every case.",
+            "headers": {
+              "WWW-Authenticate": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The token is good and its user may not do this.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "204": {
+            "description": "The token is revoked."
+          },
+          "404": {
+            "description": "No such token in this tenant (`oauth.initial_access_token_not_found`).",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
     }
   },
   "components": {
@@ -11315,6 +12905,10 @@
           "email": {
             "type": "string",
             "format": "email"
+          },
+          "username": {
+            "type": "string",
+            "description": "A second login identifier: 3 to 64 letters, digits, `.`, `_` and `-`."
           },
           "display_name": {
             "type": "string",
@@ -11346,6 +12940,7 @@
           "kind",
           "status",
           "identifiers",
+          "claims",
           "created_at",
           "updated_at"
         ],
@@ -11395,6 +12990,9 @@
             "items": {
               "$ref": "#/components/schemas/Identifier"
             }
+          },
+          "claims": {
+            "$ref": "#/components/schemas/StandardClaims"
           },
           "created_at": {
             "type": "string",
@@ -11889,7 +13487,8 @@
           "filter",
           "subject_attribute",
           "email_attribute",
-          "name_attribute"
+          "name_attribute",
+          "claim_attributes"
         ],
         "properties": {
           "base": {
@@ -11906,13 +13505,27 @@
           },
           "name_attribute": {
             "type": "string"
+          },
+          "claim_attributes": {
+            "type": "object",
+            "description": "Which attribute gives which standard claim of a person the provider creates: `given_name`, `family_name`, `middle_name`, `nickname`, `profile`, `picture`, `website`, `gender`, `birthdate`, `zoneinfo`, `phone_number` and `address.formatted`, `address.street_address`, `address.locality`, `address.region`, `address.postal_code`, `address.country`.",
+            "additionalProperties": {
+              "type": "string"
+            },
+            "maxProperties": 17,
+            "examples": [
+              {
+                "given_name": "givenName",
+                "family_name": "sn"
+              }
+            ]
           }
         }
       },
       "DirectoryInput": {
         "type": "object",
         "additionalProperties": false,
-        "description": "What is left out is `entryUUID`, `mail` and `cn` for the attribute names, or, in a change, what it was.",
+        "description": "What is left out is `entryUUID`, `mail` and `cn` for the attribute names, or, in a change, what it was. `claim_attributes` is `{}` when left out of a new provider; a change that gives it replaces it whole.",
         "properties": {
           "base": {
             "type": "string"
@@ -11928,6 +13541,20 @@
           },
           "name_attribute": {
             "type": "string"
+          },
+          "claim_attributes": {
+            "type": "object",
+            "description": "Which attribute gives which standard claim of a person the provider creates: `given_name`, `family_name`, `middle_name`, `nickname`, `profile`, `picture`, `website`, `gender`, `birthdate`, `zoneinfo`, `phone_number` and `address.formatted`, `address.street_address`, `address.locality`, `address.region`, `address.postal_code`, `address.country`.",
+            "additionalProperties": {
+              "type": "string"
+            },
+            "maxProperties": 17,
+            "examples": [
+              {
+                "given_name": "givenName",
+                "family_name": "sn"
+              }
+            ]
           }
         }
       },
@@ -11937,7 +13564,8 @@
           "single_sign_on_address",
           "certificate",
           "email_attribute",
-          "name_attribute"
+          "name_attribute",
+          "claim_attributes"
         ],
         "properties": {
           "single_sign_on_address": {
@@ -11953,13 +13581,27 @@
           },
           "name_attribute": {
             "type": "string"
+          },
+          "claim_attributes": {
+            "type": "object",
+            "description": "Which attribute gives which standard claim of a person the provider creates: `given_name`, `family_name`, `middle_name`, `nickname`, `profile`, `picture`, `website`, `gender`, `birthdate`, `zoneinfo`, `phone_number` and `address.formatted`, `address.street_address`, `address.locality`, `address.region`, `address.postal_code`, `address.country`.",
+            "additionalProperties": {
+              "type": "string"
+            },
+            "maxProperties": 17,
+            "examples": [
+              {
+                "given_name": "givenName",
+                "family_name": "sn"
+              }
+            ]
           }
         }
       },
       "SamlInput": {
         "type": "object",
         "additionalProperties": false,
-        "description": "What is left out is `email` and `name` for the attribute names, or, in a change, what it was. A new provider needs the single sign-on address and the certificate.",
+        "description": "What is left out is `email` and `name` for the attribute names, or, in a change, what it was. A new provider needs the single sign-on address and the certificate. `claim_attributes` is `{}` when left out of a new provider; a change that gives it replaces it whole.",
         "properties": {
           "single_sign_on_address": {
             "type": "string",
@@ -11973,6 +13615,20 @@
           },
           "name_attribute": {
             "type": "string"
+          },
+          "claim_attributes": {
+            "type": "object",
+            "description": "Which attribute gives which standard claim of a person the provider creates: `given_name`, `family_name`, `middle_name`, `nickname`, `profile`, `picture`, `website`, `gender`, `birthdate`, `zoneinfo`, `phone_number` and `address.formatted`, `address.street_address`, `address.locality`, `address.region`, `address.postal_code`, `address.country`.",
+            "additionalProperties": {
+              "type": "string"
+            },
+            "maxProperties": 17,
+            "examples": [
+              {
+                "given_name": "givenName",
+                "family_name": "sn"
+              }
+            ]
           }
         }
       },
@@ -12012,6 +13668,7 @@
               "ES256",
               "RS256",
               "PS256",
+              "EdDSA",
               "A256GCM"
             ]
           },
@@ -12084,7 +13741,8 @@
             "enum": [
               "ES256",
               "RS256",
-              "PS256"
+              "PS256",
+              "EdDSA"
             ],
             "default": "ES256"
           }
@@ -12251,10 +13909,18 @@
           "allowed_scopes",
           "require_pkce",
           "id_token_signed_response_alg",
+          "userinfo_signed_response_alg",
+          "request_object_signing_alg",
+          "require_pushed_authorization_requests",
+          "request_uris",
           "backchannel_logout_uri",
           "backchannel_logout_session_required",
           "subject_type",
           "sector_identifier_uri",
+          "jwks_uri",
+          "default_max_age",
+          "default_acr_values",
+          "require_auth_time",
           "token_policy",
           "secrets",
           "keys",
@@ -12262,7 +13928,10 @@
           "created_at",
           "updated_at",
           "principal",
-          "exchange_rules"
+          "exchange_rules",
+          "spiffe_id",
+          "linkerd_identity",
+          "tls_client_certificate_bound_access_tokens"
         ],
         "properties": {
           "id": {
@@ -12290,6 +13959,10 @@
               "client_secret_basic",
               "client_secret_post",
               "private_key_jwt",
+              "spiffe_jwt",
+              "tls_client_auth",
+              "spiffe_x509",
+              "linkerd_identity",
               "none"
             ]
           },
@@ -12330,9 +14003,52 @@
             "type": "string",
             "enum": [
               "ES256",
-              "RS256"
+              "RS256",
+              "PS256",
+              "EdDSA"
             ],
-            "description": "How the client's ID tokens are signed. ES256 unless given."
+            "description": "How the client's ID tokens are signed (`id_token_signed_response_alg` of OpenID Connect Registration). ES256 unless given; any other name is refused with oauth.client_id_token_algorithm_invalid."
+          },
+          "userinfo_signed_response_alg": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "enum": [
+              "ES256",
+              "RS256",
+              "PS256",
+              "EdDSA",
+              null
+            ],
+            "description": "How the client's UserInfo answers are signed (`userinfo_signed_response_alg` of OpenID Connect Registration): with one of the four, UserInfo answers a JSON Web Token signed with it, as application/jwt; with null, the default, it answers JSON. Any other name, none among them, is refused with oauth.client_userinfo_algorithm_invalid."
+          },
+          "request_object_signing_alg": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "enum": [
+              "ES256",
+              "RS256",
+              "PS256",
+              "none",
+              null
+            ],
+            "description": "How the client signs its request objects (`request_object_signing_alg` of OpenID Connect Registration): ES256, RS256 or PS256 accepts only objects signed with that algorithm by one of its keys; none accepts only unsigned objects; null, the default, accepts any of the three."
+          },
+          "require_pushed_authorization_requests": {
+            "type": "boolean",
+            "description": "Whether every request of the client must be pushed to the pushed authorization request endpoint first; a request that was not pushed is refused. `false` unless given; a tenant may require it of every client."
+          },
+          "request_uris": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "maxLength": 2000
+            },
+            "maxItems": 10,
+            "description": "Where the client keeps request objects that Hodor fetches when a request's `request_uri` starts with one of them (`request_uris` of OpenID Connect Registration): at most 10, only for a client with `authorization_code`, each an HTTPS address of at most 2000 characters with a path, at least `/`, and without a fragment, refused if it leads to a private network."
           },
           "backchannel_logout_uri": {
             "type": [
@@ -12361,6 +14077,37 @@
             ],
             "maxLength": 2000,
             "description": "For a pairwise client only: an HTTPS address of at most 2000 characters, fetched when it is set, that must answer a JSON array holding every redirect address of the client. Its host is the client's sector. Refused if it leads to a private network."
+          },
+          "jwks_uri": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "maxLength": 2000,
+            "description": "For a client using `private_key_jwt` only: an HTTPS address of at most 2000 characters where the client publishes its keys as a JSON Web Key Set, in place of `keys`. Fetched when an assertion or a request object of the client is checked, never when it is set, through the guarded outbound client with no redirect followed; what it answers is kept for an hour at most and fetched again for an unknown `kid` at most once a minute, and is never shown. Refused if it leads to a private network, or given to a client that has keys."
+          },
+          "default_max_age": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "minimum": 0,
+            "maximum": 31536000,
+            "description": "The `max_age`, in seconds, of a request of the client that names none: OpenID Connect Registration's `default_max_age`. Only for a client with `authorization_code`."
+          },
+          "default_acr_values": {
+            "type": "array",
+            "maxItems": 10,
+            "items": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128
+            },
+            "description": "The `acr_values` of a request of the client that names none, in the order given: OpenID Connect Registration's `default_acr_values`. At most 10 names without spaces, 255 characters together; names that are not levels of the tenant are ignored at the authorization endpoint. Only for a client with `authorization_code`."
+          },
+          "require_auth_time": {
+            "type": "boolean",
+            "description": "Whether the client needs `auth_time` in its ID tokens: OpenID Connect Registration's `require_auth_time`. Every ID token carries it. `true` only for a client with `authorization_code`."
           },
           "token_policy": {
             "$ref": "#/components/schemas/TokenPolicy"
@@ -12445,6 +14192,26 @@
               "$ref": "#/components/schemas/ExchangeRule"
             },
             "description": "What an agent's client with the token exchange grant may exchange for which audience; empty otherwise."
+          },
+          "spiffe_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "maxLength": 2048,
+            "description": "The one SPIFFE identifier of a client using `spiffe_jwt`, whose JWT-SVIDs prove who it is, or `spiffe_x509`, whose X509-SVID a trusted proxy forwards; a client using `tls_client_auth` has it or `linkerd_identity`; `null` for any other method."
+          },
+          "linkerd_identity": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "maxLength": 253,
+            "description": "The Linkerd identity of a client using `linkerd_identity`, such as `web.shop.serviceaccount.identity.linkerd.cluster.local`, which Linkerd's proxy forwards; a client using `tls_client_auth` has it or `spiffe_id`, and any other method neither. The client's principal must then be a service account. Unique in the tenant."
+          },
+          "tls_client_certificate_bound_access_tokens": {
+            "type": "boolean",
+            "description": "Whether every access token of the client is bound to the certificate the proxy in front of Hodor forwards with its request (`cnf` with `x5t#S256`, RFC 8705), and for a public client its refresh tokens too. `false` unless set; never with `linkerd_identity`."
           }
         }
       },
@@ -12491,6 +14258,10 @@
               "client_secret_basic",
               "client_secret_post",
               "private_key_jwt",
+              "spiffe_jwt",
+              "tls_client_auth",
+              "spiffe_x509",
+              "linkerd_identity",
               "none"
             ]
           },
@@ -12531,9 +14302,50 @@
             "type": "string",
             "enum": [
               "ES256",
-              "RS256"
+              "RS256",
+              "PS256",
+              "EdDSA"
             ],
-            "description": "How the client's ID tokens are signed. ES256 unless given."
+            "description": "How the client's ID tokens are signed (`id_token_signed_response_alg` of OpenID Connect Registration). ES256 unless given; any other name is refused with oauth.client_id_token_algorithm_invalid."
+          },
+          "userinfo_signed_response_alg": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "enum": [
+              "ES256",
+              "RS256",
+              "PS256",
+              "EdDSA",
+              null
+            ],
+            "description": "How the client's UserInfo answers are signed (`userinfo_signed_response_alg` of OpenID Connect Registration): with one of the four, UserInfo answers a JSON Web Token signed with it, as application/jwt; with null, the default, it answers JSON. Any other name, none among them, is refused with oauth.client_userinfo_algorithm_invalid."
+          },
+          "request_object_signing_alg": {
+            "type": "string",
+            "enum": [
+              "ES256",
+              "RS256",
+              "PS256",
+              "none"
+            ],
+            "description": "How the client signs its request objects (`request_object_signing_alg` of OpenID Connect Registration): ES256, RS256 or PS256 accepts only objects signed with that algorithm by one of its keys; none accepts only unsigned objects; null, the default, accepts any of the three."
+          },
+          "require_pushed_authorization_requests": {
+            "type": "boolean",
+            "description": "Whether every request of the client must be pushed to the pushed authorization request endpoint first; a request that was not pushed is refused. `false` unless given; a tenant may require it of every client.",
+            "default": false
+          },
+          "request_uris": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "maxLength": 2000
+            },
+            "maxItems": 10,
+            "description": "Where the client keeps request objects that Hodor fetches when a request's `request_uri` starts with one of them (`request_uris` of OpenID Connect Registration): at most 10, only for a client with `authorization_code`, each an HTTPS address of at most 2000 characters with a path, at least `/`, and without a fragment, refused if it leads to a private network.",
+            "default": []
           },
           "backchannel_logout_uri": {
             "type": "string",
@@ -12559,6 +14371,34 @@
             "maxLength": 2000,
             "description": "For a pairwise client only: an HTTPS address of at most 2000 characters, fetched when it is set, that must answer a JSON array holding every redirect address of the client. Its host is the client's sector. Refused if it leads to a private network."
           },
+          "jwks_uri": {
+            "type": "string",
+            "maxLength": 2000,
+            "description": "For a client using `private_key_jwt` only: an HTTPS address of at most 2000 characters where the client publishes its keys as a JSON Web Key Set, in place of `keys`. Fetched when an assertion or a request object of the client is checked, never when it is set, through the guarded outbound client with no redirect followed; what it answers is kept for an hour at most and fetched again for an unknown `kid` at most once a minute, and is never shown. Refused if it leads to a private network, or given to a client that has keys."
+          },
+          "default_max_age": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "minimum": 0,
+            "maximum": 31536000,
+            "description": "The `max_age`, in seconds, of a request of the client that names none: OpenID Connect Registration's `default_max_age`. Only for a client with `authorization_code`. `null` unless given."
+          },
+          "default_acr_values": {
+            "type": "array",
+            "maxItems": 10,
+            "items": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128
+            },
+            "description": "The `acr_values` of a request of the client that names none, in the order given: OpenID Connect Registration's `default_acr_values`. At most 10 names without spaces, 255 characters together; names that are not levels of the tenant are ignored at the authorization endpoint. Only for a client with `authorization_code`."
+          },
+          "require_auth_time": {
+            "type": "boolean",
+            "description": "Whether the client needs `auth_time` in its ID tokens: OpenID Connect Registration's `require_auth_time`. Every ID token carries it. `true` only for a client with `authorization_code`."
+          },
           "token_policy": {
             "$ref": "#/components/schemas/TokenPolicyInput"
           },
@@ -12579,6 +14419,20 @@
               "$ref": "#/components/schemas/ExchangeRule"
             },
             "description": "What an agent's client with the token exchange grant may exchange for which audience; empty otherwise."
+          },
+          "spiffe_id": {
+            "type": "string",
+            "maxLength": 2048,
+            "description": "Required with `spiffe_jwt` and `spiffe_x509`, allowed with `tls_client_auth` instead of `linkerd_identity`, and refused with any other method: the one SPIFFE identifier, `spiffe://<trust domain>/<path>`, whose JWT-SVIDs or forwarded certificates prove who the client is. Exact; `/*` is refused. The principal must be a service account. Unique in the tenant."
+          },
+          "linkerd_identity": {
+            "type": "string",
+            "maxLength": 253,
+            "description": "The Linkerd identity of a client using `linkerd_identity`, such as `web.shop.serviceaccount.identity.linkerd.cluster.local`, which Linkerd's proxy forwards; a client using `tls_client_auth` has it or `spiffe_id`, and any other method neither. The client's principal must then be a service account. Unique in the tenant."
+          },
+          "tls_client_certificate_bound_access_tokens": {
+            "type": "boolean",
+            "description": "`true` asks for every access token of the client, and for a public client its refresh tokens, to be bound to the certificate the proxy in front of Hodor forwards with its request; the client is then refused a token when its request comes with none. `false` unless given. Refused with `linkerd_identity`: `oauth.client_certificate_bound_access_tokens_invalid`."
           }
         }
       },
@@ -12597,6 +14451,10 @@
               "client_secret_basic",
               "client_secret_post",
               "private_key_jwt",
+              "spiffe_jwt",
+              "tls_client_auth",
+              "spiffe_x509",
+              "linkerd_identity",
               "none"
             ]
           },
@@ -12637,9 +14495,52 @@
             "type": "string",
             "enum": [
               "ES256",
-              "RS256"
+              "RS256",
+              "PS256",
+              "EdDSA"
             ],
-            "description": "How the client's ID tokens are signed. ES256 unless given."
+            "description": "How the client's ID tokens are signed (`id_token_signed_response_alg` of OpenID Connect Registration). ES256 unless given; any other name is refused with oauth.client_id_token_algorithm_invalid."
+          },
+          "userinfo_signed_response_alg": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "enum": [
+              "ES256",
+              "RS256",
+              "PS256",
+              "EdDSA",
+              null
+            ],
+            "description": "How the client's UserInfo answers are signed (`userinfo_signed_response_alg` of OpenID Connect Registration): with one of the four, UserInfo answers a JSON Web Token signed with it, as application/jwt; with null, the default, it answers JSON. Any other name, none among them, is refused with oauth.client_userinfo_algorithm_invalid. `null` removes it."
+          },
+          "request_object_signing_alg": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "enum": [
+              "ES256",
+              "RS256",
+              "PS256",
+              "none",
+              null
+            ],
+            "description": "How the client signs its request objects (`request_object_signing_alg` of OpenID Connect Registration): ES256, RS256 or PS256 accepts only objects signed with that algorithm by one of its keys; none accepts only unsigned objects; null, the default, accepts any of the three. `null` removes it."
+          },
+          "require_pushed_authorization_requests": {
+            "type": "boolean",
+            "description": "Whether every request of the client must be pushed to the pushed authorization request endpoint first; a request that was not pushed is refused. `false` unless given; a tenant may require it of every client."
+          },
+          "request_uris": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "maxLength": 2000
+            },
+            "maxItems": 10,
+            "description": "Where the client keeps request objects that Hodor fetches when a request's `request_uri` starts with one of them (`request_uris` of OpenID Connect Registration): at most 10, only for a client with `authorization_code`, each an HTTPS address of at most 2000 characters with a path, at least `/`, and without a fragment, refused if it leads to a private network. Replaces the list."
           },
           "backchannel_logout_uri": {
             "type": [
@@ -12669,6 +14570,37 @@
             "maxLength": 2000,
             "description": "For a pairwise client only: an HTTPS address of at most 2000 characters, fetched when it is set, that must answer a JSON array holding every redirect address of the client. Its host is the client's sector. Refused if it leads to a private network. `null` removes it."
           },
+          "jwks_uri": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "maxLength": 2000,
+            "description": "For a client using `private_key_jwt` only: an HTTPS address of at most 2000 characters where the client publishes its keys as a JSON Web Key Set, in place of `keys`. Fetched when an assertion or a request object of the client is checked, never when it is set, through the guarded outbound client with no redirect followed; what it answers is kept for an hour at most and fetched again for an unknown `kid` at most once a minute, and is never shown. Refused if it leads to a private network, or given to a client that has keys. `null` removes it, and so does a change to another method."
+          },
+          "default_max_age": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "minimum": 0,
+            "maximum": 31536000,
+            "description": "The `max_age`, in seconds, of a request of the client that names none: OpenID Connect Registration's `default_max_age`. Only for a client with `authorization_code`. `null` removes it."
+          },
+          "default_acr_values": {
+            "type": "array",
+            "maxItems": 10,
+            "items": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128
+            },
+            "description": "The `acr_values` of a request of the client that names none, in the order given: OpenID Connect Registration's `default_acr_values`. At most 10 names without spaces, 255 characters together; names that are not levels of the tenant are ignored at the authorization endpoint. Only for a client with `authorization_code`."
+          },
+          "require_auth_time": {
+            "type": "boolean",
+            "description": "Whether the client needs `auth_time` in its ID tokens: OpenID Connect Registration's `require_auth_time`. Every ID token carries it. `true` only for a client with `authorization_code`."
+          },
           "token_policy": {
             "$ref": "#/components/schemas/TokenPolicyInput"
           },
@@ -12687,6 +14619,26 @@
               "$ref": "#/components/schemas/ExchangeRule"
             },
             "description": "What an agent's client with the token exchange grant may exchange for which audience; empty otherwise. Replaces the list."
+          },
+          "spiffe_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "maxLength": 2048,
+            "description": "Binds a client using `spiffe_jwt`, `spiffe_x509` or `tls_client_auth` to one SPIFFE identifier; `null` removes it; giving it removes `linkerd_identity`. Moving to a method that does not take it removes it."
+          },
+          "linkerd_identity": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "maxLength": 253,
+            "description": "The Linkerd identity of a client using `linkerd_identity`, such as `web.shop.serviceaccount.identity.linkerd.cluster.local`, which Linkerd's proxy forwards; a client using `tls_client_auth` has it or `spiffe_id`, and any other method neither. The client's principal must then be a service account. Unique in the tenant. `null` removes it; giving it removes `spiffe_id`."
+          },
+          "tls_client_certificate_bound_access_tokens": {
+            "type": "boolean",
+            "description": "Whether every access token of the client, and for a public client its refresh tokens, is bound to the certificate its request comes with. Refused with `linkerd_identity`: `oauth.client_certificate_bound_access_tokens_invalid`."
           }
         }
       },
@@ -14244,6 +16196,26 @@
           }
         }
       },
+      "PushedAuthorizationRequests": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "lifetime_seconds",
+          "required"
+        ],
+        "properties": {
+          "lifetime_seconds": {
+            "type": "integer",
+            "minimum": 10,
+            "maximum": 600,
+            "description": "How long a pushed request waits for its browser, answered to the client as `expires_in`. 60 unless set."
+          },
+          "required": {
+            "type": "boolean",
+            "description": "Whether every client of the tenant must push its requests; a request that was not pushed is then refused. Discovery says it as `require_pushed_authorization_requests`."
+          }
+        }
+      },
       "Workload": {
         "type": "object",
         "required": [
@@ -14864,6 +16836,1115 @@
           "updated_at": {
             "type": "string",
             "format": "date-time"
+          }
+        }
+      },
+      "TrustBundle": {
+        "type": "object",
+        "description": "A SPIFFE bundle: a JSON Web Key Set with `use` `x509-svid` or `jwt-svid` on each key. In an answer, only the elements Hodor kept, with their members in order.",
+        "required": [
+          "keys"
+        ],
+        "properties": {
+          "keys": {
+            "type": "array",
+            "maxItems": 100,
+            "items": {
+              "type": "object"
+            }
+          },
+          "spiffe_sequence": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "spiffe_refresh_hint": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "Seconds."
+          }
+        }
+      },
+      "TrustDomainSource": {
+        "type": "object",
+        "required": [
+          "source"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "source": {
+            "type": "string",
+            "enum": [
+              "uploaded",
+              "bundle_endpoint",
+              "mesh"
+            ],
+            "description": "`uploaded`: the bundle given here. `bundle_endpoint`: fetched from `bundle_endpoint_url` now and by the worker after. `mesh`: checked by the mesh in front of Hodor, with no bundle."
+          },
+          "bundle": {
+            "$ref": "#/components/schemas/TrustBundle",
+            "description": "With `uploaded` only."
+          },
+          "bundle_endpoint_url": {
+            "type": "string",
+            "maxLength": 1000,
+            "description": "With `bundle_endpoint` only: the address of its SPIFFE bundle endpoint, HTTPS."
+          }
+        }
+      },
+      "NewTrustDomain": {
+        "type": "object",
+        "required": [
+          "name",
+          "source"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "name": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 255,
+            "pattern": "^[a-z0-9._-]+$",
+            "description": "The trust domain's name, as in `spiffe://<name>/\u2026`. Unique in the tenant; it never changes."
+          },
+          "source": {
+            "type": "string",
+            "enum": [
+              "uploaded",
+              "bundle_endpoint",
+              "mesh"
+            ],
+            "description": "`uploaded`: the bundle given here. `bundle_endpoint`: fetched from `bundle_endpoint_url` now and by the worker after. `mesh`: checked by the mesh in front of Hodor, with no bundle."
+          },
+          "bundle": {
+            "$ref": "#/components/schemas/TrustBundle",
+            "description": "With `uploaded` only."
+          },
+          "bundle_endpoint_url": {
+            "type": "string",
+            "maxLength": 1000,
+            "description": "With `bundle_endpoint` only: the address of its SPIFFE bundle endpoint, HTTPS."
+          }
+        }
+      },
+      "TrustDomain": {
+        "type": "object",
+        "required": [
+          "id",
+          "name",
+          "source",
+          "created_at",
+          "updated_at"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "name": {
+            "type": "string"
+          },
+          "source": {
+            "type": "string",
+            "enum": [
+              "uploaded",
+              "bundle_endpoint",
+              "mesh",
+              "authority"
+            ],
+            "description": "`authority` for a trust domain the tenant's certificate authority added: it cannot be replaced, only removed."
+          },
+          "bundle_endpoint_url": {
+            "type": "string",
+            "description": "For `bundle_endpoint` only."
+          },
+          "bundle": {
+            "$ref": "#/components/schemas/TrustBundle",
+            "description": "The bundle in force; absent for `mesh`."
+          },
+          "bundle_changed_at": {
+            "type": "string",
+            "format": "date-time",
+            "description": "When the bundle in force was given or fetched as new; absent for `mesh`."
+          },
+          "refresh": {
+            "type": "object",
+            "description": "For `bundle_endpoint` only.",
+            "required": [
+              "next_at",
+              "failing_since",
+              "last_error"
+            ],
+            "properties": {
+              "fetched_at": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "format": "date-time",
+                "description": "The last fetch that read."
+              },
+              "next_at": {
+                "type": "string",
+                "format": "date-time",
+                "description": "When the worker fetches it next."
+              },
+              "failing_since": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "format": "date-time",
+                "description": "While fetching fails: since when. The bundle in force is the last one that read."
+              },
+              "last_error": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "description": "While fetching fails: the code of the last reason."
+              }
+            }
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "updated_at": {
+            "type": "string",
+            "format": "date-time"
+          }
+        }
+      },
+      "NewCertificateAuthority": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "kind",
+          "trust_domains"
+        ],
+        "properties": {
+          "kind": {
+            "type": "string",
+            "enum": [
+              "root",
+              "intermediate"
+            ]
+          },
+          "trust_domains": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 10,
+            "items": {
+              "type": "string",
+              "description": "A DNS name: labels of lowercase letters, digits and `-`."
+            }
+          },
+          "common_name": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64,
+            "description": "`Hodor certificate authority` unless given."
+          },
+          "lifetime_days": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 3650,
+            "description": "A root's only: 1826 unless given."
+          },
+          "intermediate_lifetime_days": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 365,
+            "description": "The longest an intermediate it signs may live: 30 unless given."
+          },
+          "uri_constraints": {
+            "type": "boolean",
+            "description": "`false`: its name constraints leave URIs unconstrained, for meshes whose verifiers refuse every URI under an authority that constrains them, such as Linkerd's proxy. `true` unless given."
+          },
+          "additional_dns_names": {
+            "type": "array",
+            "maxItems": 10,
+            "items": {
+              "type": "string",
+              "description": "A DNS name: labels of lowercase letters, digits and `-`."
+            },
+            "description": "DNS names its name constraints permit besides its trust domains, with the names under them, such as `istio-system.svc`, where Istio's control plane serves under the mesh's intermediate. None unless given."
+          }
+        }
+      },
+      "CertificateAuthorityCertificate": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "certificate"
+        ],
+        "properties": {
+          "certificate": {
+            "type": "string",
+            "description": "PEM."
+          },
+          "chain": {
+            "type": "array",
+            "maxItems": 5,
+            "items": {
+              "type": "string",
+              "description": "PEM."
+            },
+            "description": "The certificates above it, nearest first. Kept and answered as given."
+          }
+        }
+      },
+      "CertificateAuthority": {
+        "type": "object",
+        "required": [
+          "id",
+          "kind",
+          "state",
+          "trust_domains",
+          "common_name",
+          "intermediate_lifetime_days",
+          "for_development",
+          "uri_constraints",
+          "additional_dns_names",
+          "key",
+          "name_constraints",
+          "chain",
+          "created_at",
+          "updated_at"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "kind": {
+            "type": "string",
+            "enum": [
+              "root",
+              "intermediate"
+            ]
+          },
+          "state": {
+            "type": "string",
+            "enum": [
+              "awaiting_certificate",
+              "active"
+            ]
+          },
+          "trust_domains": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "common_name": {
+            "type": "string"
+          },
+          "lifetime_days": {
+            "type": "integer",
+            "description": "A root's only."
+          },
+          "intermediate_lifetime_days": {
+            "type": "integer"
+          },
+          "for_development": {
+            "type": "boolean",
+            "description": "Made on an installation set to `development`, whose key provider may keep the key where Hodor can read it."
+          },
+          "uri_constraints": {
+            "type": "boolean",
+            "description": "Whether its name constraints hold its trust domains as URI hosts. When `false`, `name_constraints.permitted_uris` is empty."
+          },
+          "additional_dns_names": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "The DNS names its name constraints permit besides its trust domains, after them in `name_constraints.permitted_dns_names`."
+          },
+          "key": {
+            "type": "object",
+            "required": [
+              "id",
+              "provider",
+              "algorithm"
+            ],
+            "properties": {
+              "id": {
+                "type": "string",
+                "format": "uuid"
+              },
+              "provider": {
+                "type": "string"
+              },
+              "algorithm": {
+                "type": "string",
+                "enum": [
+                  "ES256"
+                ]
+              }
+            }
+          },
+          "name_constraints": {
+            "type": "object",
+            "required": [
+              "permitted_uris",
+              "permitted_dns_names",
+              "excluded_ip_ranges"
+            ],
+            "properties": {
+              "permitted_uris": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                },
+                "description": "Hosts a URI below it must have."
+              },
+              "permitted_dns_names": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "excluded_ip_ranges": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "certificate_signing_request": {
+            "type": "string",
+            "description": "PEM; for an intermediate awaiting its certificate."
+          },
+          "certificate": {
+            "type": "string",
+            "description": "PEM; once active."
+          },
+          "serial_number": {
+            "type": "string",
+            "description": "Hexadecimal; once active."
+          },
+          "not_before": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "not_after": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "certificate_sha256": {
+            "type": "string"
+          },
+          "chain": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "PEM certificates above an intermediate, as given."
+          },
+          "bundle_endpoint": {
+            "type": "string",
+            "description": "Where its bundle is published; once active."
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "activated_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "updated_at": {
+            "type": "string",
+            "format": "date-time"
+          }
+        }
+      },
+      "Intermediate": {
+        "type": "object",
+        "required": [
+          "id",
+          "authority_id",
+          "state",
+          "serial_number",
+          "subject",
+          "uris",
+          "dns_names",
+          "name_constraints",
+          "not_before",
+          "not_after",
+          "certificate",
+          "chain",
+          "certificate_sha256",
+          "public_key_sha256",
+          "request_sha256",
+          "signed_at",
+          "withdrawn_at",
+          "withdrawal_reason"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "authority_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "state": {
+            "type": "string",
+            "enum": [
+              "active",
+              "withdrawn"
+            ]
+          },
+          "serial_number": {
+            "type": "string",
+            "description": "Lowercase hexadecimal."
+          },
+          "subject": {
+            "type": "string",
+            "description": "Its subject, as the request named it, written for people to read."
+          },
+          "uris": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "dns_names": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "name_constraints": {
+            "type": "object",
+            "required": [
+              "permitted_dns_names",
+              "excluded_dns_names",
+              "excluded_ip_ranges"
+            ],
+            "properties": {
+              "permitted_dns_names": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "excluded_dns_names": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "excluded_ip_ranges": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "not_before": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "not_after": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "certificate": {
+            "type": "string",
+            "description": "PEM."
+          },
+          "chain": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "description": "PEM."
+            },
+            "description": "The certificates above it, nearest first: the authority's, then those above an intermediate authority."
+          },
+          "certificate_sha256": {
+            "type": "string"
+          },
+          "public_key_sha256": {
+            "type": "string",
+            "description": "The SHA-256 of its subject public key info: what withdrawal refuses."
+          },
+          "request_sha256": {
+            "type": "string",
+            "description": "The SHA-256 of the request it was signed from, in DER."
+          },
+          "signed_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "withdrawn_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          },
+          "withdrawal_reason": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      },
+      "NewIntermediate": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "certificate_signing_request"
+        ],
+        "properties": {
+          "certificate_signing_request": {
+            "type": "string",
+            "maxLength": 16384,
+            "description": "A PKCS#10 request in PEM, signed by the key it is for."
+          },
+          "lifetime_days": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 365,
+            "description": "At most the authority's bound on intermediates, which it is unless given, and ending no later than the authority."
+          }
+        }
+      },
+      "IntermediateWithdrawal": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "reason"
+        ],
+        "properties": {
+          "reason": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 200
+          }
+        }
+      },
+      "PostalAddress": {
+        "type": "object",
+        "additionalProperties": false,
+        "description": "The parts of a postal address. One left out, `null` or empty is no part.",
+        "properties": {
+          "formatted": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "maxLength": 300,
+            "description": "May hold line breaks."
+          },
+          "street_address": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "maxLength": 200,
+            "description": "May hold line breaks."
+          },
+          "locality": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "maxLength": 100
+          },
+          "region": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "maxLength": 100
+          },
+          "postal_code": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "maxLength": 20
+          },
+          "country": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "maxLength": 100
+          }
+        }
+      },
+      "StandardClaims": {
+        "type": "object",
+        "additionalProperties": false,
+        "description": "A person's standard claims of OpenID Connect, as docs/architecture/contexts/identity.md says. In an answer only those with a value, and `phone_number_verified` always; in a request one left out, `null` or empty is removed.",
+        "properties": {
+          "given_name": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "maxLength": 200
+          },
+          "family_name": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "maxLength": 200
+          },
+          "middle_name": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "maxLength": 200
+          },
+          "nickname": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "maxLength": 200
+          },
+          "profile": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "maxLength": 1024,
+            "description": "An absolute `https` or `http` address."
+          },
+          "picture": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "maxLength": 1024,
+            "description": "An absolute `https` or `http` address. Never fetched by Hodor."
+          },
+          "website": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "maxLength": 1024,
+            "description": "An absolute `https` or `http` address."
+          },
+          "gender": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "maxLength": 50
+          },
+          "birthdate": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "examples": [
+              "1990-04-12",
+              "0000-04-12",
+              "1990"
+            ]
+          },
+          "zoneinfo": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "maxLength": 64,
+            "examples": [
+              "America/Sao_Paulo"
+            ]
+          },
+          "phone_number": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "E.164, with an optional `;ext=` extension. Spaces, hyphens, dots and parentheses are taken out.",
+            "examples": [
+              "+5511912345678"
+            ]
+          },
+          "phone_number_verified": {
+            "type": "boolean"
+          },
+          "address": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/PostalAddress"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        }
+      },
+      "ClientRegistrationPolicy": {
+        "type": "object",
+        "required": [
+          "grant_types",
+          "response_types",
+          "scopes",
+          "token_endpoint_auth_methods",
+          "subject_types",
+          "hosts"
+        ],
+        "properties": {
+          "grant_types": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "enum": [
+                "authorization_code",
+                "refresh_token"
+              ]
+            },
+            "description": "The grants a registration may name; `authorization_code` unless given."
+          },
+          "response_types": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "enum": [
+                "code"
+              ]
+            },
+            "description": "The response types a registration may name, among those Hodor answers; `code` unless given."
+          },
+          "scopes": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "The scopes a registration may ask for, 1 to 50; `openid`, `profile` and `email` unless given."
+          },
+          "token_endpoint_auth_methods": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "enum": [
+                "client_secret_basic",
+                "client_secret_post",
+                "private_key_jwt",
+                "none"
+              ]
+            },
+            "description": "The authentication methods a registration may name; `client_secret_basic` and `private_key_jwt` unless given."
+          },
+          "subject_types": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "enum": [
+                "public",
+                "pairwise"
+              ]
+            },
+            "description": "The subject types a registration may name; `public` unless given."
+          },
+          "hosts": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": "string"
+            },
+            "description": "`null` for any host, or 1 to 50 hosts that every address of a registration must name; `null` unless given."
+          }
+        }
+      },
+      "ClientRegistrationPolicyInput": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "grant_types": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "enum": [
+                "authorization_code",
+                "refresh_token"
+              ]
+            },
+            "description": "The grants a registration may name; `authorization_code` unless given."
+          },
+          "response_types": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "enum": [
+                "code"
+              ]
+            },
+            "description": "The response types a registration may name, among those Hodor answers; `code` unless given."
+          },
+          "scopes": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "The scopes a registration may ask for, 1 to 50; `openid`, `profile` and `email` unless given."
+          },
+          "token_endpoint_auth_methods": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "enum": [
+                "client_secret_basic",
+                "client_secret_post",
+                "private_key_jwt",
+                "none"
+              ]
+            },
+            "description": "The authentication methods a registration may name; `client_secret_basic` and `private_key_jwt` unless given."
+          },
+          "subject_types": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "enum": [
+                "public",
+                "pairwise"
+              ]
+            },
+            "description": "The subject types a registration may name; `public` unless given."
+          },
+          "hosts": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": "string"
+            },
+            "description": "`null` for any host, or 1 to 50 hosts that every address of a registration must name; `null` unless given."
+          }
+        },
+        "description": "Any member left out takes its default."
+      },
+      "ClientRegistration": {
+        "type": "object",
+        "required": [
+          "enabled",
+          "application_id",
+          "ways",
+          "max_clients",
+          "policy",
+          "updated_at"
+        ],
+        "properties": {
+          "enabled": {
+            "type": "boolean"
+          },
+          "application_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uuid",
+            "description": "The application every registered client belongs to."
+          },
+          "ways": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "enum": [
+                "initial_access_token",
+                "software_statement",
+                "open"
+              ]
+            },
+            "description": "The ways a registration may be allowed; `initial_access_token` unless given."
+          },
+          "max_clients": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 1000,
+            "description": "How many clients the application of registered clients may hold."
+          },
+          "policy": {
+            "$ref": "#/components/schemas/ClientRegistrationPolicy"
+          },
+          "updated_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time",
+            "description": "When the settings were last replaced; `null` when they never were."
+          }
+        }
+      },
+      "ClientRegistrationSettings": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "enabled"
+        ],
+        "properties": {
+          "enabled": {
+            "type": "boolean"
+          },
+          "application_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uuid",
+            "description": "Required while `enabled` is true."
+          },
+          "ways": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "enum": [
+                "initial_access_token",
+                "software_statement",
+                "open"
+              ]
+            },
+            "description": "The ways a registration may be allowed; `initial_access_token` unless given."
+          },
+          "max_clients": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 1000,
+            "description": "100 unless given."
+          },
+          "policy": {
+            "$ref": "#/components/schemas/ClientRegistrationPolicyInput"
+          }
+        }
+      },
+      "InitialAccessToken": {
+        "type": "object",
+        "required": [
+          "id",
+          "name",
+          "hint",
+          "status",
+          "max_registrations",
+          "registrations",
+          "created_at",
+          "expires_at",
+          "last_used_at",
+          "revoked_at"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "name": {
+            "type": "string"
+          },
+          "hint": {
+            "type": "string",
+            "description": "The last four characters of the token, after an ellipsis."
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "active",
+              "expired",
+              "used_up",
+              "revoked"
+            ]
+          },
+          "max_registrations": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 1000,
+            "description": "How many registrations it allows."
+          },
+          "registrations": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "How many registrations it has allowed."
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "expires_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "last_used_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time",
+            "description": "When it last allowed a registration."
+          },
+          "revoked_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          }
+        }
+      },
+      "MadeInitialAccessToken": {
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/InitialAccessToken"
+          },
+          {
+            "type": "object",
+            "required": [
+              "initial_access_token"
+            ],
+            "properties": {
+              "initial_access_token": {
+                "type": "string",
+                "description": "The token itself, `hodor_iat_` and 64 hexadecimal characters. Shown once."
+              }
+            }
+          }
+        ]
+      },
+      "NewInitialAccessToken": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "name"
+        ],
+        "properties": {
+          "name": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 100,
+            "description": "For administrators: whom it was handed to."
+          },
+          "lifetime_hours": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 2160,
+            "description": "168 unless given."
+          },
+          "max_registrations": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 1000,
+            "description": "1 unless given."
           }
         }
       }

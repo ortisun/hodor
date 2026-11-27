@@ -344,6 +344,11 @@ const NOT_SEALED_SECRETS: &[(&str, &str, &str)] = &[
     ),
     ("credential.api_key", "key_hash", "a hash of a random key"),
     (
+        "oauth.initial_access_token",
+        "token_hash",
+        "the SHA-256 of a random initial access token, never the token",
+    ),
+    (
         "authentication.attempt_counter",
         "subject_key",
         "a hash of an identifier or an address",
@@ -413,6 +418,37 @@ const NOT_SEALED_SECRETS: &[(&str, &str, &str)] = &[
     ("keys.key_version", "public_rsa_exponent", "a public key"),
     ("keys.key_version", "public_p256_x", "a public key"),
     ("keys.key_version", "public_p256_y", "a public key"),
+    ("keys.key_version", "public_ed25519", "a public key"),
+    (
+        "keys.certificate_authority",
+        "key_material",
+        "what the key provider handed back for the authority's key, as for a key version",
+    ),
+    (
+        "keys.certificate_authority",
+        "public_p256_x",
+        "a public key",
+    ),
+    (
+        "keys.certificate_authority",
+        "public_p256_y",
+        "a public key",
+    ),
+    (
+        "keys.certificate_authority",
+        "certificate_signing_request",
+        "a request holding a public key, made to be sent to the tenant's root",
+    ),
+    (
+        "keys.certificate_authority",
+        "certificate",
+        "a certificate, published in the authority's bundle",
+    ),
+    (
+        "keys.intermediate",
+        "certificate",
+        "an intermediate's certificate, handed to its mesh, which publishes it",
+    ),
     (
         "credential.webauthn_credential",
         "credential_id",
@@ -437,6 +473,11 @@ const NOT_SEALED_SECRETS: &[(&str, &str, &str)] = &[
         "oauth.authorization_request",
         "secret_hash",
         "a hash of the secret the browser holds",
+    ),
+    (
+        "oauth.authorization_request",
+        "reference_hash",
+        "the SHA-256 of a pushed request's reference, never the reference",
     ),
     (
         "credential.recovery_code",
@@ -467,6 +508,11 @@ const NOT_SEALED_SECRETS: &[(&str, &str, &str)] = &[
         "identity.organization_invitation",
         "token_hash",
         "the SHA-256 of an invitation's secret, never the secret",
+    ),
+    (
+        "oauth.refresh_token_family",
+        "certificate_thumbprint",
+        "the SHA-256 of the certificate a family is bound to, which is public",
     ),
 ];
 

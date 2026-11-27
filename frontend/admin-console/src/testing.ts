@@ -268,3 +268,56 @@ export const WORKLOADS = ["users:read", "workloads:read", "workloads:write"];
 
 /** What an administrator of webhooks holds. */
 export const WEBHOOKS = ["webhooks:read", "webhooks:write"];
+
+export const PROD = "0193f3a0-0000-7000-8000-000000000061";
+export const CLUSTER = "0193f3a0-0000-7000-8000-000000000062";
+export const STAGING = "0193f3a0-0000-7000-8000-000000000063";
+
+/** A bundle of one authority for X509-SVIDs and one key for JWT-SVIDs, as the server keeps it. */
+export function bundleBody(more: Record<string, unknown> = {}) {
+  return {
+    spiffe_sequence: 12,
+    spiffe_refresh_hint: 300,
+    keys: [
+      { use: "x509-svid", kty: "EC", crv: "P-256", x: "x-of-the-authority", y: "y-of-the-authority", x5c: ["MIIB"] },
+      { use: "jwt-svid", kty: "EC", crv: "P-256", kid: "jwt-1", x: "x-of-the-key", y: "y-of-the-key" },
+    ],
+    ...more,
+  };
+}
+
+/** A trust domain fetched from its bundle endpoint, as the console interface writes one. */
+export function trustDomainBody(more: Record<string, unknown> = {}) {
+  return {
+    id: PROD,
+    name: "prod.example.com",
+    source: "bundle_endpoint",
+    bundle_endpoint_url: "https://spire.example.com/bundle",
+    bundle: bundleBody(),
+    bundle_changed_at: "2026-11-25T14:03:11Z",
+    refresh: {
+      fetched_at: "2026-11-25T15:03:11Z",
+      next_at: "2026-11-25T15:08:11Z",
+      failing_since: null,
+      last_error: null,
+    },
+    created_at: "2026-11-25T14:03:11Z",
+    updated_at: "2026-11-25T14:03:11Z",
+    ...more,
+  };
+}
+
+/** A trust domain the mesh checks, with no bundle, as the console interface writes one. */
+export function meshTrustDomainBody(more: Record<string, unknown> = {}) {
+  return {
+    id: CLUSTER,
+    name: "cluster.local",
+    source: "mesh",
+    created_at: "2026-11-25T14:03:11Z",
+    updated_at: "2026-11-25T14:03:11Z",
+    ...more,
+  };
+}
+
+/** What an administrator of trust domains holds. */
+export const KEYS = ["keys:read", "keys:write"];

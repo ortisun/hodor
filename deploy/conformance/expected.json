@@ -1,19 +1,4 @@
 {
-  "oidcc-userinfo-post-body": {
-    "WARNING": "UserInfo reads the access token from the Authorization header only, as the oauth context specifies. RFC 6750 lets a resource server also take it in a form body (section 2.2, MAY); Hodor does not, and the suite counts that as a warning, not a failure."
-  },
-  "oidcc-scope-profile": {
-    "WARNING": "The suite wants every standard claim of `profile`. Hodor keeps a person's name and language and gives those with `updated_at`; it has no given or family name, nickname, picture, website, gender, birth date or time zone, and OpenID Connect Core returns only the claims a provider has (section 5.4)."
-  },
-  "oidcc-scope-address": {
-    "SKIPPED": "Hodor keeps no postal address: the scope `address` is not offered, and discovery does not name it."
-  },
-  "oidcc-scope-phone": {
-    "SKIPPED": "Hodor keeps no telephone number: the scope `phone` is not offered, and discovery does not name it."
-  },
-  "oidcc-scope-all": {
-    "SKIPPED": "It asks for every standard scope at once, `address` and `phone` among them, which Hodor does not offer."
-  },
   "oidcc-prompt-login": {
     "REVIEW": "The suite keeps a screenshot of the second sign-in page, which `prompt=login` must show, for a person to look at. The test passes otherwise."
   },
@@ -22,14 +7,5 @@
   },
   "oidcc-ensure-registered-redirect-uri": {
     "REVIEW": "Hodor shows its own error page and never sends the browser to an address that is not registered; the suite keeps a screenshot of that page for a person to look at."
-  },
-  "oidcc-ensure-request-object-with-redirect-uri": {
-    "REVIEW": "Hodor refuses request objects and shows its own error page; the suite keeps a screenshot of that page for a person to look at."
-  },
-  "oidcc-unsigned-request-object-supported-correctly-or-rejected-as-unsupported": {
-    "SKIPPED": "Hodor answers `request_not_supported` to a request object, which the specification allows; the suite then has nothing to test."
-  },
-  "oidcc-claims-essential": {
-    "WARNING": "It asks for `name` through the `claims` parameter only. Hodor does not read that parameter, and discovery says so (`claims_parameter_supported` is false), so UserInfo gives the claims of the scopes, here only `sub`; supporting the parameter is optional (OpenID Connect Core, section 5.5)."
   }
 }

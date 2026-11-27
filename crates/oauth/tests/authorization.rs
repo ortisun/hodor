@@ -8,7 +8,8 @@ use hodor_oauth::api::{
     ApplicationPorts, ApplicationService, ApplicationSettings, AuthorizationCodePorts,
     AuthorizationCodeService, AuthorizationParameters, AuthorizationRefusal, ClientSettings,
     ClientType, CodePresentation, CreateClient, CreateResourceServer, GrantStatus, GrantStore,
-    GrantType, ResourceServerSettings, ScopeDefinition, SignedInPerson, s256_challenge,
+    GrantType, ResourceServerSettings, ResponseMode, ScopeDefinition, SignedInPerson,
+    s256_challenge,
 };
 use hodor_oauth::testing::{
     AuthorizationStorePorts, DistinctRandom, InMemoryAuthorizationCodes,
@@ -48,6 +49,7 @@ fn world() -> World {
         grants: Arc::new(grants.clone()),
         codes: Arc::new(codes),
         memberships: Arc::new(MembershipsOf::default()),
+        verifier: Arc::new(hodor_oauth::testing::FakeVerifier),
         digest: Arc::new(FakeDigest),
         random: Arc::new(DistinctRandom),
         clock: clock.clone(),
@@ -127,20 +129,23 @@ async fn registered(world: &World, tenant: &TenantContext) -> String {
     client.id().to_string()
 }
 
+fn pairs(client_id: &str) -> Vec<(String, String)> {
+    [
+        ("response_type", "code"),
+        ("client_id", client_id),
+        ("redirect_uri", REDIRECT),
+        ("scope", "openid read"),
+        ("state", "xyz"),
+        ("code_challenge", &s256_challenge(VERIFIER, &FakeDigest)),
+        ("code_challenge_method", "S256"),
+    ]
+    .iter()
+    .map(|(k, v)| ((*k).to_owned(), (*v).to_owned()))
+    .collect()
+}
+
 fn parameters(client_id: &str) -> AuthorizationParameters {
-    AuthorizationParameters::from_pairs(
-        [
-            ("response_type", "code"),
-            ("client_id", client_id),
-            ("redirect_uri", REDIRECT),
-            ("scope", "openid read"),
-            ("state", "xyz"),
-            ("code_challenge", &s256_challenge(VERIFIER, &FakeDigest)),
-            ("code_challenge_method", "S256"),
-        ]
-        .iter()
-        .map(|(k, v)| ((*k).to_owned(), (*v).to_owned())),
-    )
+    AuthorizationParameters::from_pairs(pairs(client_id))
 }
 
 fn person(world: &World) -> SignedInPerson {
@@ -178,7 +183,12 @@ async fn a_request_waits_for_its_browser_and_is_resumed_once() {
     let client_id = registered(&world, &tenant).await;
     let request = world
         .service
-        .check(&tenant, &parameters(&client_id))
+        .check(
+            &tenant,
+            "https://hodor.example.com/t/acme",
+            &parameters(&client_id),
+            &hodor_oauth::api::PushedRequestPolicy::default(),
+        )
         .await
         .expect("storage")
         .expect("accepted");
@@ -239,6 +249,58 @@ async fn a_request_waits_for_its_browser_and_is_resumed_once() {
 }
 
 #[tokio::test]
+async fn a_request_keeps_its_response_mode_while_it_waits() {
+    let world = world();
+    let tenant = TenantContext::assume(TenantId::generate());
+    let client_id = registered(&world, &tenant).await;
+    let mut pairs: Vec<(String, String)> = vec![("response_mode".into(), "form_post".into())];
+    pairs.extend(self::pairs(&client_id));
+    let request = world
+        .service
+        .check(
+            &tenant,
+            "https://hodor.example.com/t/acme",
+            &AuthorizationParameters::from_pairs(pairs),
+            &hodor_oauth::api::PushedRequestPolicy::default(),
+        )
+        .await
+        .expect("storage")
+        .expect("accepted");
+    assert_eq!(request.response_mode, ResponseMode::FormPost);
+    let (id, secret) = world.service.hold(&tenant, request).await.expect("held");
+    let resumed = world
+        .service
+        .resume(&tenant, id, secret.expose())
+        .await
+        .expect("resume")
+        .expect("resumed");
+    assert_eq!(resumed.request.response_mode, ResponseMode::FormPost);
+
+    // A mode Hodor does not offer is refused at the redirect address, in
+    // the mode of the type, and nothing is kept.
+    let mut pairs: Vec<(String, String)> = vec![("response_mode".into(), "fragment".into())];
+    pairs.extend(self::pairs(&client_id));
+    match world
+        .service
+        .check(
+            &tenant,
+            "https://hodor.example.com/t/acme",
+            &AuthorizationParameters::from_pairs(pairs),
+            &hodor_oauth::api::PushedRequestPolicy::default(),
+        )
+        .await
+        .expect("storage")
+    {
+        Err(AuthorizationRefusal::Redirect(error)) => {
+            assert_eq!(error.error, "invalid_request");
+            assert_eq!(error.mode, ResponseMode::Query);
+            assert_eq!(error.redirect_uri, REDIRECT);
+        }
+        other => panic!("{other:?}"),
+    }
+}
+
+#[tokio::test]
 async fn a_client_of_another_tenant_is_unknown() {
     let world = world();
     let tenant = TenantContext::assume(TenantId::generate());
@@ -247,7 +309,12 @@ async fn a_client_of_another_tenant_is_unknown() {
     assert_eq!(
         world
             .service
-            .check(&elsewhere, &parameters(&client_id))
+            .check(
+                &elsewhere,
+                "https://hodor.example.com/t/acme",
+                &parameters(&client_id),
+                &hodor_oauth::api::PushedRequestPolicy::default(),
+            )
             .await
             .expect("storage"),
         Err(AuthorizationRefusal::NotRedirectable(
@@ -263,7 +330,12 @@ async fn a_code_is_redeemed_once_and_a_second_redemption_revokes_the_grant() {
     let client_id = registered(&world, &tenant).await;
     let request = world
         .service
-        .check(&tenant, &parameters(&client_id))
+        .check(
+            &tenant,
+            "https://hodor.example.com/t/acme",
+            &parameters(&client_id),
+            &hodor_oauth::api::PushedRequestPolicy::default(),
+        )
         .await
         .expect("storage")
         .expect("accepted");
@@ -346,7 +418,12 @@ async fn a_code_lives_sixty_seconds() {
     let client_id = registered(&world, &tenant).await;
     let request = world
         .service
-        .check(&tenant, &parameters(&client_id))
+        .check(
+            &tenant,
+            "https://hodor.example.com/t/acme",
+            &parameters(&client_id),
+            &hodor_oauth::api::PushedRequestPolicy::default(),
+        )
         .await
         .expect("storage")
         .expect("accepted");

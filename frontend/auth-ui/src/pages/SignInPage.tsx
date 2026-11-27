@@ -441,9 +441,10 @@ export function SignInPage({
 
   /**
    * Asks for a code or a link to be sent to the address typed. The answer
-   * is the same whoever the address belongs to. Sent once more when the
-   * sign-in was changed at the same moment by the page's own request for
-   * the passkey challenge, which is stopped first.
+   * is the same whoever the address belongs to. Asked once: asking keeps
+   * nothing in the sign-in, so the page's own request for the passkey
+   * challenge, stopped first, never makes the server refuse it, and asking
+   * again would send a second message.
    */
   async function askByEmail(method: "code" | "link") {
     const address = identifier.trim();
@@ -460,14 +461,7 @@ export function SignInPage({
     setFailure(null);
     setExpired(false);
     try {
-      try {
-        await client.askByEmail(method, address, text.locale);
-      } catch (thrown) {
-        if (asFailure(thrown).code !== "authentication.transaction_modified_concurrently") {
-          throw thrown;
-        }
-        await client.askByEmail(method, address, text.locale);
-      }
+      await client.askByEmail(method, address, text.locale);
       setCode("");
       setByEmail({ method, address });
       // The rejection of an earlier code is not about this one.

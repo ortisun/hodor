@@ -80,11 +80,21 @@ pub enum Permission {
     AccessEntriesRead,
     /// Granting and removing entries of access control lists.
     AccessEntriesWrite,
+    /// Seeing the tenant's certificate authority: its certificate, its
+    /// request and its name constraints.
+    CertificateAuthorityRead,
+    /// Creating the tenant's certificate authority, installing its
+    /// certificate and removing it, and withdrawing the intermediates it
+    /// signed.
+    CertificateAuthorityWrite,
+    /// Signing the intermediates of the tenant's meshes with its
+    /// certificate authority, and nothing else.
+    CertificateAuthoritySign,
 }
 
 impl Permission {
     /// Every permission.
-    pub const ALL: [Self; 33] = [
+    pub const ALL: [Self; 36] = [
         Self::UsersRead,
         Self::UsersWrite,
         Self::SessionsRead,
@@ -118,6 +128,9 @@ impl Permission {
         Self::WebhooksWrite,
         Self::AccessEntriesRead,
         Self::AccessEntriesWrite,
+        Self::CertificateAuthorityRead,
+        Self::CertificateAuthorityWrite,
+        Self::CertificateAuthoritySign,
     ];
 
     /// The permission written as `resource:action`.
@@ -157,6 +170,9 @@ impl Permission {
             Self::WebhooksWrite => "webhooks:write",
             Self::AccessEntriesRead => "access-entries:read",
             Self::AccessEntriesWrite => "access-entries:write",
+            Self::CertificateAuthorityRead => "certificate-authority:read",
+            Self::CertificateAuthorityWrite => "certificate-authority:write",
+            Self::CertificateAuthoritySign => "certificate-authority:sign",
         }
     }
 
@@ -221,11 +237,18 @@ pub enum Role {
     TenantAdministrator,
     /// People who must be able to see everything and change nothing.
     TenantAuditor,
+    /// The workload that signs the intermediates of the tenant's meshes,
+    /// and does nothing else.
+    CertificateSigner,
 }
 
 impl Role {
     /// Every role.
-    pub const ALL: [Self; 2] = [Self::TenantAdministrator, Self::TenantAuditor];
+    pub const ALL: [Self; 3] = [
+        Self::TenantAdministrator,
+        Self::TenantAuditor,
+        Self::CertificateSigner,
+    ];
 
     /// The name the role is stored and reported under.
     #[must_use]
@@ -233,6 +256,7 @@ impl Role {
         match self {
             Self::TenantAdministrator => "tenant_administrator",
             Self::TenantAuditor => "tenant_auditor",
+            Self::CertificateSigner => "certificate_signer",
         }
     }
 
@@ -273,7 +297,9 @@ impl Role {
                 Permission::WorkloadsRead,
                 Permission::WebhooksRead,
                 Permission::AccessEntriesRead,
+                Permission::CertificateAuthorityRead,
             ],
+            Self::CertificateSigner => &[Permission::CertificateAuthoritySign],
         }
     }
 
@@ -335,13 +361,19 @@ mod tests {
     use super::*;
 
     #[test]
-    fn an_administrator_may_do_everything_and_an_auditor_may_only_read() {
+    fn an_administrator_may_do_everything_an_auditor_only_read_and_a_signer_only_sign() {
         for permission in Permission::ALL {
             assert!(Role::TenantAdministrator.allows(permission));
             let reads = permission.as_str().ends_with(":read");
             assert_eq!(
                 Role::TenantAuditor.allows(permission),
                 reads,
+                "{}",
+                permission.as_str()
+            );
+            assert_eq!(
+                Role::CertificateSigner.allows(permission),
+                permission == Permission::CertificateAuthoritySign,
                 "{}",
                 permission.as_str()
             );

@@ -120,6 +120,18 @@ export function describe(failure: Failure, text: Messages): string {
       return text.deliveryNotSetAside;
     case "webhooks.not_configured":
       return text.webhooksNotConfigured;
+    case "keys.trust_domain_not_found":
+      return text.trustDomainNotFound;
+    case "keys.trust_domain_name_taken":
+      return text.trustDomainNameTaken;
+    case "keys.too_many_trust_domains":
+      return text.tooManyTrustDomains;
+    case "keys.trust_domain_changed":
+      return text.changedConcurrently;
+    case "oauth.client_spiffe_id_taken":
+      return text.spiffeIdTaken;
+    case "oauth.client_linkerd_identity_taken":
+      return text.linkerdIdentityTaken;
     default:
       if (failure.code !== null && text.valueInvalid[failure.code] !== undefined) {
         return text.valueInvalid[failure.code] ?? text.somethingWrong;

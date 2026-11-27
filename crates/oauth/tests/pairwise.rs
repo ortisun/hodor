@@ -32,7 +32,7 @@ use hodor_oauth::testing::{
     run_pairwise_secret_contract,
 };
 use hodor_session::api::SessionId;
-use serde_json::Value;
+use serde_json::{Value, json};
 use std::sync::Arc;
 use time::Duration;
 
@@ -112,6 +112,7 @@ fn world() -> World {
         grants: Arc::new(grants.clone()),
         codes: Arc::new(code_store),
         memberships: Arc::new(MembershipsOf::default()),
+        verifier: Arc::new(hodor_oauth::testing::FakeVerifier),
         digest: Arc::new(FakeDigest),
         random: Arc::new(DistinctRandom),
         clock: clock.clone(),
@@ -359,7 +360,12 @@ async fn signed_in(
     );
     let request = world
         .codes
-        .check(tenant, &parameters)
+        .check(
+            tenant,
+            "https://hodor.example.com/t/acme",
+            &parameters,
+            &hodor_oauth::api::PushedRequestPolicy::default(),
+        )
         .await
         .expect("storage")
         .expect("a valid request");
@@ -1045,4 +1051,91 @@ async fn the_in_memory_store_of_pairwise_secrets_passes_the_contract() {
         secrets: &secrets,
     })
     .await;
+}
+
+/// A request of `client` that asks through `claims` for the `sub` `value`.
+async fn asking_for_sub(
+    world: &World,
+    tenant: &TenantContext,
+    client: &Credentials,
+    value: &str,
+) -> hodor_oauth::api::AuthorizationRequest {
+    let challenge = s256_challenge(VERIFIER, &FakeDigest);
+    let id = client.id.to_string();
+    let claims = json!({"id_token": {"sub": {"value": value}}}).to_string();
+    let pairs = [
+        ("response_type", "code"),
+        ("client_id", id.as_str()),
+        ("redirect_uri", client.redirect.as_str()),
+        ("scope", "openid"),
+        ("code_challenge", challenge.as_str()),
+        ("code_challenge_method", "S256"),
+        ("claims", claims.as_str()),
+    ];
+    let parameters = AuthorizationParameters::from_pairs(
+        pairs
+            .iter()
+            .map(|(k, v)| ((*k).to_owned(), (*v).to_owned())),
+    );
+    world
+        .codes
+        .check(
+            tenant,
+            "https://hodor.example.com/t/acme",
+            &parameters,
+            &hodor_oauth::api::PushedRequestPolicy::default(),
+        )
+        .await
+        .expect("storage")
+        .expect("a valid request")
+}
+
+#[tokio::test]
+async fn a_sub_asked_through_claims_is_compared_with_the_person_as_a_pairwise_client_knows_them() {
+    let world = world();
+    let tenant = tenant(&world).await;
+    let payroll = client(&world, &tenant, SubjectType::Pairwise, &[PAYROLL]).await;
+    let ana = person(&world);
+    let bruno = person(&world);
+    let known_as = id_token(&tokens_for(&world, &tenant.context, &payroll, &ana).await)["sub"]
+        .as_str()
+        .expect("a sub")
+        .to_owned();
+    let codes = world
+        .codes
+        .clone()
+        .with_pairwise_subjects(world.pairwise.clone());
+
+    let request = asking_for_sub(&world, &tenant.context, &payroll, &known_as).await;
+    assert!(
+        !codes
+            .names_another(&tenant.context, &request, ana.user_id)
+            .await
+            .expect("compared"),
+        "Ana, by her pairwise identifier"
+    );
+    assert!(
+        codes
+            .names_another(&tenant.context, &request, bruno.user_id)
+            .await
+            .expect("compared"),
+        "Bruno is someone else"
+    );
+    // Her user identifier is not how this client knows her.
+    let by_user = asking_for_sub(&world, &tenant.context, &payroll, &ana.user_id.to_string()).await;
+    assert!(
+        codes
+            .names_another(&tenant.context, &by_user, ana.user_id)
+            .await
+            .expect("compared")
+    );
+    // Without pairwise subjects, a pairwise client's `sub` cannot be
+    // compared, and nothing is answered.
+    assert!(
+        world
+            .codes
+            .names_another(&tenant.context, &request, ana.user_id)
+            .await
+            .is_err()
+    );
 }

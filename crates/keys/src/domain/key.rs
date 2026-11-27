@@ -57,8 +57,11 @@ pub enum KeyAlgorithm {
     Es256,
     /// RSA with PKCS#1 version 1.5 padding and SHA-256, for interoperability.
     Rs256,
-    /// RSA with PSS padding and SHA-256, for interoperability.
+    /// RSA with PSS padding and SHA-256, for interoperability. A key of
+    /// its own, never the key of `Rs256`.
     Ps256,
+    /// EdDSA on the Ed25519 curve (RFC 8037).
+    EdDsa,
     /// AES-256-GCM, for data keys.
     A256Gcm,
 }
@@ -68,7 +71,13 @@ impl KeyAlgorithm {
     pub const DEFAULT_SIGNING: Self = Self::Es256;
 
     /// Every algorithm offered, in a fixed order.
-    pub const ALL: [Self; 4] = [Self::Es256, Self::Rs256, Self::Ps256, Self::A256Gcm];
+    pub const ALL: [Self; 5] = [
+        Self::Es256,
+        Self::Rs256,
+        Self::Ps256,
+        Self::EdDsa,
+        Self::A256Gcm,
+    ];
 
     /// The name used in storage, in events and in published keys.
     #[must_use]
@@ -77,6 +86,7 @@ impl KeyAlgorithm {
             Self::Es256 => "ES256",
             Self::Rs256 => "RS256",
             Self::Ps256 => "PS256",
+            Self::EdDsa => "EdDSA",
             Self::A256Gcm => "A256GCM",
         }
     }
@@ -104,7 +114,7 @@ impl KeyAlgorithm {
     #[must_use]
     pub const fn key_use(self) -> KeyUse {
         match self {
-            Self::Es256 | Self::Rs256 | Self::Ps256 => KeyUse::Signing,
+            Self::Es256 | Self::Rs256 | Self::Ps256 | Self::EdDsa => KeyUse::Signing,
             Self::A256Gcm => KeyUse::Data,
         }
     }
@@ -116,7 +126,33 @@ impl KeyAlgorithm {
             Self::Es256 => Some(SignatureAlgorithm::Es256),
             Self::Rs256 => Some(SignatureAlgorithm::Rs256),
             Self::Ps256 => Some(SignatureAlgorithm::Ps256),
+            Self::EdDsa => Some(SignatureAlgorithm::EdDsa),
             Self::A256Gcm => None,
+        }
+    }
+}
+
+/// How a signature is written. An RSA or an EdDSA signature is the same
+/// bytes either way; an ECDSA signature is not.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum SignatureEncoding {
+    /// As JSON Web Signatures write it (RFC 7518, section 3.4): an ECDSA
+    /// signature is its two numbers, 32 bytes each for P-256, one after
+    /// the other. What tokens carry.
+    Jose,
+    /// As X.509 certificates write it (RFC 3279, section 2.2.3): an ECDSA
+    /// signature is an ASN.1 sequence of its two integers, in DER. What
+    /// certificates carry.
+    Der,
+}
+
+impl SignatureEncoding {
+    /// The name used in logs: `jose` or `der`.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Jose => "jose",
+            Self::Der => "der",
         }
     }
 }
@@ -479,6 +515,7 @@ mod tests {
                 modulus: vec![1; 256],
                 exponent: vec![1, 0, 1],
             }),
+            KeyAlgorithm::EdDsa => Some(PublicKey::Ed25519 { x: vec![3; 32] }),
             KeyAlgorithm::A256Gcm => None,
         };
         KeyVersion::create(
@@ -498,7 +535,8 @@ mod tests {
             assert_eq!(KeyAlgorithm::from_name(algorithm.as_str()), Some(algorithm));
             assert_eq!(KeyAlgorithm::from_stored(algorithm.as_str()), Ok(algorithm));
         }
-        for name in ["none", "HS256", "es256", ""] {
+        assert_eq!(KeyAlgorithm::from_name("EdDSA"), Some(KeyAlgorithm::EdDsa));
+        for name in ["none", "HS256", "es256", "Ed25519", "EDDSA", ""] {
             assert_eq!(KeyAlgorithm::from_name(name), None);
         }
     }
@@ -508,6 +546,11 @@ mod tests {
         assert_eq!(KeyAlgorithm::Es256.key_use(), KeyUse::Signing);
         assert_eq!(KeyAlgorithm::Rs256.key_use(), KeyUse::Signing);
         assert_eq!(KeyAlgorithm::Ps256.key_use(), KeyUse::Signing);
+        assert_eq!(KeyAlgorithm::EdDsa.key_use(), KeyUse::Signing);
+        assert_eq!(
+            KeyAlgorithm::EdDsa.signature(),
+            Some(SignatureAlgorithm::EdDsa)
+        );
         assert_eq!(KeyAlgorithm::A256Gcm.key_use(), KeyUse::Data);
         assert!(
             KeyAlgorithm::ALL
@@ -574,9 +617,14 @@ mod tests {
             modulus: vec![1; 256],
             exponent: vec![1, 0, 1],
         };
+        let ed25519 = PublicKey::Ed25519 { x: vec![3; 32] };
         let cases = [
             (KeyAlgorithm::Es256, generated(Some(rsa.clone()))),
             (KeyAlgorithm::Rs256, generated(Some(p256()))),
+            (KeyAlgorithm::EdDsa, generated(Some(p256()))),
+            (KeyAlgorithm::EdDsa, generated(None)),
+            (KeyAlgorithm::Es256, generated(Some(ed25519.clone()))),
+            (KeyAlgorithm::Ps256, generated(Some(ed25519))),
             (KeyAlgorithm::Es256, generated(None)),
             (KeyAlgorithm::A256Gcm, generated(Some(p256()))),
             (

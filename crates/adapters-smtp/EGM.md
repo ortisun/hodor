@@ -17,7 +17,7 @@ From `Cargo.toml`:
 
 - Hodor crates: `hodor-kernel`, `hodor-notification`.
 - Runtime: `async-trait`, `lettre`.
-- Development only: `reqwest`, `serde_json`, `testcontainers`, `tokio`.
+- Development only: `hodor-test-containers` (starts the mail server of `tests/delivery.rs`), `reqwest`, `serde_json`, `testcontainers`, `tokio`.
 
 ## Verification
 

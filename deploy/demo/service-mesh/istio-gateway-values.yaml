@@ -1,0 +1,15 @@
+# Istio's ingress gateway for the demonstration of Milestone 11, from the chart `gateway`, installed as the
+# release istio-ingressgateway in istio-system: its pods run as the service account istio-ingressgateway,
+# so its identity is spiffe://cluster.local/ns/istio-system/sa/istio-ingressgateway, which Hodor's chart
+# names in gatewayIdentities. Its Service is reached inside the cluster only.
+#
+#   python3 deploy/demo/service_mesh.py installs it; see docs/operations/quick-start.md.
+
+service:
+  type: ClusterIP
+autoscaling:
+  enabled: false
+resources:
+  requests:
+    cpu: 10m
+    memory: 64Mi

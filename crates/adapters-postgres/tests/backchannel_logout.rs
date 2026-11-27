@@ -118,6 +118,7 @@ async fn signed_in(
                 scopes: vec!["openid".to_owned()],
                 audiences: Vec::new(),
                 organization: None,
+                claims: hodor_oauth::api::GrantClaims::default(),
                 status: GrantStatus::Active,
                 created_at: SystemClock.now(),
                 revoked_at: None,

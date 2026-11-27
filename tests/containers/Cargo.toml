@@ -1,0 +1,16 @@
+[package]
+name = "hodor-test-containers"
+description = "Starts the containers of the integration tests with their ports published on 127.0.0.1, and waits until Docker says which."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+repository.workspace = true
+license.workspace = true
+
+[dependencies]
+testcontainers.workspace = true
+tokio.workspace = true
+
+[lints]
+workspace = true

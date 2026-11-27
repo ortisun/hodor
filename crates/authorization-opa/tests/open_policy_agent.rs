@@ -4,6 +4,11 @@
 //! loads a policy this way or through the Policy API: instances pull
 //! signed bundles from Hodor (Issue-78). The instance requires a bearer
 //! token, as an installation's must.
+//!
+//! Each test starts its own instance and reaches it through a gate of its
+//! own (`Gate`), never through the port Docker forwards directly: a test
+//! takes an instance away by closing its gate, not by stopping the
+//! container.
 
 use hodor_adapters_crypto::Sha256Digest;
 use hodor_adapters_http::{OutboundPolicy, ServiceHttpClient};
@@ -17,14 +22,17 @@ use hodor_authorization::testing::{
 };
 use hodor_authorization_opa::api::{ENGINE, Instances, OpenPolicyAgentEngine, decision_path};
 use hodor_kernel::uow::testing::InMemoryUnitOfWorkFactory;
-use hodor_kernel::{Caller, Secret, SystemClock, TenantContext, TenantId};
+use hodor_kernel::{
+    Caller, HttpClient as _, HttpRequest, Secret, SystemClock, TenantContext, TenantId,
+};
 use serde_json::json;
 use std::collections::BTreeSet;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use testcontainers::core::{IntoContainerPort as _, WaitFor};
-use testcontainers::runners::AsyncRunner as _;
 use testcontainers::{ContainerAsync, GenericImage, ImageExt as _};
+use tokio::net::{TcpListener, TcpStream};
+use tokio::sync::watch;
 
 /// Pinned, like every image a test starts.
 const IMAGE: (&str, &str) = ("openpolicyagent/opa", "1.10.1");
@@ -94,7 +102,91 @@ decision := {{"allow": count({{1 | some x in numbers.range(1, 3000); some y in n
 
 struct Instance {
     container: ContainerAsync<GenericImage>,
+    /// The gate's address, which the engine is given.
     origin: String,
+    gate: Gate,
+}
+
+impl Instance {
+    /// Takes the instance away: from now on its address answers nothing
+    /// and closes every connection at once.
+    fn take_away(&self) {
+        self.gate.close();
+    }
+}
+
+/// A relay on the machine running the tests, between the engine and the
+/// port Docker forwards to the container, which a test can close.
+///
+/// Stopping the container does not make the instance unreachable at once.
+/// For a while after `docker stop` returns, and longer while other
+/// containers start, stop or pause, Docker Desktop may still accept
+/// connections on the stopped container's port and leave them unanswered:
+/// the engine then sees its time limit run out, `policy_engine_timed_out`,
+/// instead of `policy_engine_unreachable`. A closed gate closes the
+/// connections it relays and every connection it accepts afterwards,
+/// whatever Docker does.
+struct Gate {
+    open: watch::Sender<bool>,
+}
+
+impl Gate {
+    /// Opens a gate to `port` and answers with the gate's own port.
+    async fn to(port: u16) -> (Self, u16) {
+        let listener = TcpListener::bind("127.0.0.1:0").await.expect("gate");
+        let own = listener.local_addr().expect("gate address").port();
+        let (open, watching) = watch::channel(true);
+        tokio::spawn(async move {
+            while let Ok((mut client, _)) = listener.accept().await {
+                let mut watching = watching.clone();
+                if !*watching.borrow() {
+                    // Dropping the connection closes it.
+                    continue;
+                }
+                tokio::spawn(async move {
+                    let Ok(mut instance) =
+                        TcpStream::connect((hodor_test_containers::HOST, port)).await
+                    else {
+                        return;
+                    };
+                    tokio::select! {
+                        _ = tokio::io::copy_bidirectional(&mut client, &mut instance) => {}
+                        _ = watching.wait_for(|open| !open) => {}
+                    }
+                });
+            }
+        });
+        (Self { open }, own)
+    }
+
+    fn close(&self) {
+        self.open.send_replace(false);
+    }
+}
+
+/// Waits until the instance answers a request with its token.
+///
+/// Open Policy Agent writes "Initializing server" before it listens, and
+/// Docker accepts connections on the forwarded port before anything in
+/// the container does, so a first request sent as soon as the message is
+/// out may be cut off or left unanswered.
+async fn answering(origin: &str) {
+    let http =
+        ServiceHttpClient::new(&[origin.to_owned()], OutboundPolicy::default()).expect("client");
+    let deadline = Instant::now() + Duration::from_secs(60);
+    loop {
+        let health = HttpRequest::get(format!("{origin}/health"))
+            .header("authorization", format!("Bearer {TOKEN}"))
+            .within(Duration::from_secs(1));
+        if matches!(http.send(health).await, Ok(response) if response.status == 200) {
+            return;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "Open Policy Agent did not answer within a minute"
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
 }
 
 async fn start(tenant: &TenantContext) -> Instance {
@@ -103,29 +195,38 @@ async fn start(tenant: &TenantContext) -> Instance {
     let mut documents = policies(tenant);
     let broken_at = documents.find("\npackage ").expect("two packages");
     let broken = documents.split_off(broken_at);
-    let container = GenericImage::new(name, tag)
-        .with_exposed_port(8181.tcp())
-        .with_wait_for(WaitFor::message_on_either_std("Initializing server"))
-        .with_copy_to("/policies/authz.rego", AUTHORIZATION.as_bytes().to_vec())
-        .with_copy_to("/policies/documents.rego", documents.into_bytes())
-        .with_copy_to("/policies/broken.rego", broken.into_bytes())
-        .with_copy_to("/policies/slow.rego", slow_policy(tenant).into_bytes())
-        .with_cmd([
-            "run",
-            "--server",
-            "--addr=0.0.0.0:8181",
-            "--authentication=token",
-            "--authorization=basic",
-            "--log-level=info",
-            "/policies",
-        ])
-        .start()
-        .await
-        .expect("Open Policy Agent starts; is Docker running?");
-    let port = container.get_host_port_ipv4(8181).await.expect("port");
+    let started = hodor_test_containers::start(
+        "Open Policy Agent",
+        || {
+            GenericImage::new(name, tag)
+                .with_exposed_port(8181.tcp())
+                .with_wait_for(WaitFor::message_on_either_std("Initializing server"))
+                .with_copy_to("/policies/authz.rego", AUTHORIZATION.as_bytes().to_vec())
+                .with_copy_to("/policies/documents.rego", documents.clone().into_bytes())
+                .with_copy_to("/policies/broken.rego", broken.clone().into_bytes())
+                .with_copy_to("/policies/slow.rego", slow_policy(tenant).into_bytes())
+                .with_cmd([
+                    "run",
+                    "--server",
+                    "--addr=0.0.0.0:8181",
+                    "--authentication=token",
+                    "--authorization=basic",
+                    "--log-level=info",
+                    "/policies",
+                ])
+        },
+        &[8181.tcp()],
+    )
+    .await;
+    let port = started.port(8181);
+    let container = started.into_container();
+    let (gate, own) = Gate::to(port).await;
+    let origin = format!("http://127.0.0.1:{own}");
+    answering(&origin).await;
     Instance {
         container,
-        origin: format!("http://127.0.0.1:{port}"),
+        origin,
+        gate,
     }
 }
 
@@ -215,7 +316,7 @@ async fn the_policy_allows_and_denies_and_every_failure_is_indeterminate() {
 
     let mut slow = input(SLOW, "read", "ana");
     slow.time_limit = Duration::from_millis(50);
-    let started = std::time::Instant::now();
+    let started = Instant::now();
     assert_eq!(
         effect_and_reason(&engine, &tenant, &slow).await,
         (Effect::Indeterminate, "policy_engine_timed_out".to_owned())
@@ -229,7 +330,7 @@ async fn the_policy_allows_and_denies_and_every_failure_is_indeterminate() {
         "the instance refuses a caller without its token"
     );
 
-    instance.container.stop().await.expect("stop");
+    instance.take_away();
     assert_eq!(
         effect_and_reason(&engine, &tenant, &input(DOCUMENTS, "read", "ana")).await,
         (
@@ -315,7 +416,7 @@ async fn a_failing_instance_fails_closed_unless_the_action_fails_open() {
     assert!(decision.permits());
     assert_eq!(decision.engine.as_ref().map(EngineId::as_str), Some(ENGINE));
 
-    instance.container.stop().await.expect("stop");
+    instance.take_away();
     let decision = service.evaluate(&tenant, &read).await;
     assert!(!decision.permits());
     assert_eq!(decision.effect, Effect::Indeterminate);
@@ -354,7 +455,7 @@ async fn the_circuit_opens_on_a_stopped_instance_and_closes_when_it_is_back() {
             (Effect::Indeterminate, "policy_engine_timed_out".to_owned())
         );
     }
-    let started = std::time::Instant::now();
+    let started = Instant::now();
     assert_eq!(
         effect_and_reason(&engine, &tenant, &short).await,
         (

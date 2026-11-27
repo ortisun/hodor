@@ -4,7 +4,7 @@
 
 The hosted pages a person sees: sign-in, asking for a registration or
 recovery link, finishing a registration or a password reset, the account
-page, and the page an identity provider sends the person back to. Each page
+page, the profile page where a person gives their standard claims, and the page an identity provider sends the person back to. Each page
 is a React component given `PageProps`. It talks to the server only through
 the `Client` of `../client.ts`, moves between pages only through `go` and
 `leave`, and builds its screens from [parts](../parts/EGM.md) and words from
@@ -44,7 +44,9 @@ address.
     `text.emailMeACode` or `text.emailMeALink` asks
     `client.askByEmail(method, identifier, text.locale)` (nothing typed shows
     `text.typeAddressFirst` and sends nothing; the passkey offer is stopped
-    first, and a `transaction_modified_concurrently` is asked once more);
+    first, and the request is sent once: asking keeps nothing in the
+    sign-in, so the server never refuses it for the passkey request, and a
+    second request would send a second message);
     then, while the step stays `identifier`, a code form
     (`text.emailCodeLabel`, `autocomplete="one-time-code"`) that calls
     `client.submitEmailCode`, or the notice `text.emailLinkSent`, each with a
@@ -98,11 +100,13 @@ address.
   - It shows the notices `registered`, `password-changed`, `signed-out`
     (success) and `provider-refused`, `provider-cancelled` (danger), and links
     to `recover` and `register`.
-- `AskPage.tsx:AskPage({ ...PageProps, purpose })` - `purpose`
+- `AskPage.tsx:AskPage({ ...PageProps, purpose, forApplication? })` - `purpose`
   `"registration" | "recovery"`; one email field that calls
   `client.askToRegister(email, text.locale)` or `client.askToRecover(email,
   text.locale)`, then shows `checkMailboxTitle` with "ask again" and a link
-  back to sign-in.
+  back to sign-in. With `forApplication` (an application's `prompt=create`,
+  Issue-125) a registration page also shows `registerForApplication`, and
+  both its links to sign in carry `?continue=authorization`.
 - `FinishPage.tsx:FinishPage({ ...PageProps, purpose, token })` - with no
   token, or after `authentication.verification_token_invalid`, shows
   `linkInvalidTitle` and a link to ask for a new one. Otherwise it shows a
@@ -116,9 +120,26 @@ address.
   formatted with `Intl.DateTimeFormat` in `text.locale`), the applications
   the person let in from `client.consents()`, each with a "withdraw" `Action`
   that calls `client.withdrawConsent(clientId)` and says so
-  (`consentWithdrawn`), a link to the
-  security page, and a sign-out `Action` that calls
+  (`consentWithdrawn`), links to the
+  profile page (`text.profileLink`) and the security page, and a sign-out `Action` that calls
   `client.signOut()` and `go("sign-in", "signed-out")`.
+- `ProfilePage.tsx:ProfilePage(PageProps)` - the person's display name and
+  standard claims. `client.session()` (none means `go("sign-in")`), then
+  `client.profile()`. One form: the display name (`autocomplete="name"`),
+  then the claims of `CLAIM_FIELDS` in five `fieldset`s with a `legend`
+  (`GROUPS`: names, about the person, pages and picture, telephone, postal
+  address), each field labelled `text.claimLabel(field)`, with the hint
+  `text.claimHint(field)` where there is one and the `autocomplete` value of
+  `AUTOCOMPLETE`; every field but the three names is `verbatim`. Below a
+  telephone number it says `text.phoneVerified` or `text.phoneNotVerified`;
+  the person never sets that. Saving calls
+  `client.saveProfile(displayName, claims)`, shows what the server kept and
+  `text.profileSaved`. `identity.claim_invalid` marks the field whose claim
+  the problem's `detail` names in its first word (`refusedField`) with
+  `text.claimInvalid(label)`; `identity.display_name_invalid` marks the
+  display name; a 401 means `go("sign-in")`; any other failure is
+  described. A link goes back to the account page. Nothing on the page is
+  required.
 - `ConsentPage.tsx:ConsentPage(PageProps)` - `client.session()`: none means
   `go("sign-in")`; then `client.consentQuestion()`: none is the "nothing to
   answer" frame with a link to the account page. Otherwise the heading
@@ -177,7 +198,9 @@ address.
 - Every action ignores a second click while `busy`. Effects ignore answers
   that arrive after the component is gone (the `current` flag).
 - Failures are shown only through `describe` or `fieldProblem`, never as the
-  server's text.
+  server's text. `ProfilePage` reads only the first word of a `detail`, the
+  name of the refused claim, to choose the field it marks; it never shows
+  the detail.
 
 ## Side Effects
 

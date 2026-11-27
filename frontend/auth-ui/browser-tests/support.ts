@@ -88,7 +88,9 @@ export function newAddress(): string {
 
 /**
  * A tenant of its own, open to registration, for a test that changes a
- * policy every other test of the run would feel. The operator makes it
+ * policy every other test of the run would feel, or that would spend the
+ * shared tenant's count of requests from one address, which the run is
+ * written to stay under. The operator makes it
  * with the command-line tool and then runs each of `settings`, the
  * arguments of `hodor-cli tenant` after the slug, such as
  * `["second-factor", "--policy", "required"]`. Answers its slug.

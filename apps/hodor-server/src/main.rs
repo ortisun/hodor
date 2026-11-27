@@ -7,23 +7,25 @@
 use clap::{Parser, ValueEnum};
 use hodor_adapters_crypto::{
     Argon2Parameters, Argon2idHasher, AwsLcHmacSha1, AwsLcHmacSha256, AwsLcVerifier, HashingLimits,
-    LocalKeyProvider, OsRandom, SecretKeys, Sha256Digest,
+    LocalKeyProvider, OsRandom, SecretKeys, Sha256Digest, X509CertificateCheck, X509Certificates,
 };
 use hodor_adapters_http::{GuardedHttpClient, OutboundPolicy, ServiceHttpClient};
+use hodor_adapters_kms::KeyProviderSettings;
 use hodor_adapters_ldap::LdapDirectoryClient;
 use hodor_adapters_postgres::{
     Database, PgAccessListStore, PgAccessTokenRecordStore, PgAccessTokenStore, PgApiKeyStore,
-    PgApplicationStore, PgAttemptStore, PgAuditLog, PgAuthorizationCodeStore,
+    PgApplicationStore, PgAttemptStore, PgAuditLog, PgAuthorityStore, PgAuthorizationCodeStore,
     PgAuthorizationRequestStore, PgBundleStore, PgClaimMapperStore, PgClientAssertionStore,
-    PgClientStore, PgConsentStore, PgDecisionLogStore, PgDeliveryStore, PgDeprovisioningPolicy,
-    PgEmailSignInStore, PgEndpointStore, PgEngineBindingStore, PgGrantStore, PgGroupPolicy,
-    PgGroupRepository, PgInstanceStatusStore, PgInstanceStore, PgInvitationRepository, PgKeyStore,
-    PgLinkStore, PgMessageQueue, PgNativeRoleStore, PgOrganizationRepository,
+    PgClientRegistrationStore, PgClientStore, PgConsentStore, PgDecisionLogStore, PgDeliveryStore,
+    PgDeprovisioningPolicy, PgEmailSignInStore, PgEndpointStore, PgEngineBindingStore,
+    PgGrantStore, PgGroupPolicy, PgGroupRepository, PgInitialAccessTokenStore,
+    PgInstanceStatusStore, PgInstanceStore, PgIntermediateStore, PgInvitationRepository,
+    PgKeyStore, PgLinkStore, PgMessageQueue, PgNativeRoleStore, PgOrganizationRepository,
     PgPairwiseSecretStore, PgPasswordStore, PgPendingAuthorizationStore, PgPolicyVersionStore,
     PgProviderStore, PgProvisionedGroupRepository, PgProvisionedUserRepository, PgPublicationStore,
     PgRecoveryCodeStore, PgRefreshTokenStore, PgResourceServerStore, PgRoleAssignmentStore,
     PgSealingStateStore, PgSessionStore, PgSimulationStore, PgTenantDirectory, PgTenantRepository,
-    PgTotpStore, PgTransactionStore, PgUploadedDecisionStore, PgUserRepository,
+    PgTotpStore, PgTransactionStore, PgTrustDomainStore, PgUploadedDecisionStore, PgUserRepository,
     PgVerificationTokenStore, PgWebAuthnStore, PgWorkloadRepository,
 };
 use hodor_audit::api::AuditService;
@@ -51,26 +53,29 @@ use hodor_federation::api::{
     LockoutPolicy, OpenIdClient, SamlClient,
 };
 use hodor_identity::api::{GroupService, IdentityService, OrganizationService, WorkloadService};
-use hodor_kernel::{DomainError, Secret, SecretBox, SystemClock, TenantContext};
-use hodor_keys::api::{KeyService, RotationPolicy, TenantSecretBox};
+use hodor_kernel::{DomainError, HttpClient, Secret, SecretBox, SystemClock, TenantContext};
+use hodor_keys::api::{
+    AuthorityPorts, AuthorityService, AuthoritySetting, KeyProviders, KeyService, RotationPolicy,
+    TenantSecretBox, TrustDomainPorts, TrustDomainService,
+};
 use hodor_notification::api::Notifier;
 use hodor_oauth::api::{
     AccessTokenRegister, ApplicationPorts, ApplicationService, AuthorizationCodePorts,
-    AuthorizationCodeService, ClaimMapperPorts, ClaimMapperService, ClaimMapping, ConsentPorts,
-    ConsentService, LogoutPorts, LogoutService, PairwisePorts, PairwiseSubjects,
-    ResourceAccessPorts, ResourceAccessService, TokenPorts, TokenService, UserInfoPorts,
-    UserInfoService, WorkloadTokens,
+    AuthorizationCodeService, ClaimMapperPorts, ClaimMapperService, ClaimMapping, ClientKeySets,
+    ClientRegistrationPorts, ClientRegistrationService, ConsentPorts, ConsentService, LogoutPorts,
+    LogoutService, PairwisePorts, PairwiseSubjects, ResourceAccessPorts, ResourceAccessService,
+    TokenPorts, TokenService, UserInfoPorts, UserInfoService, WorkloadIdentity, WorkloadTokens,
 };
 use hodor_observability::{LogFormat, Telemetry};
 use hodor_protocol_http::{
     AdminState, ApiKeyAccess, AuthorizationApiState, AuthorizationState, ConsentState,
-    ConsoleState, DiscoveryState, ForwardedHeader, Health, InteractionState, InvitationState,
-    Limits, LogoutState, Pages, ReadinessCheck, ResolvedTenant, ScimState, TenantResolver,
-    TenantStatus as HttpTenantStatus, TokenState, TrustedProxies, UserInfoState, admin_routes,
-    authorization_api_routes, authorization_routes, consent_routes, console_routes,
-    discovery_routes, interaction_routes, invitation_routes, key_set_routes, logout_routes,
-    ops_router, parse_ranges, policy_agent_routes, public_router_behind, scim_routes, serve,
-    token_routes, userinfo_routes,
+    ConsoleState, DiscoveryState, ForwardedHeader, Health, IdentityHeader, InteractionState,
+    InvitationState, Limits, LogoutState, Pages, ReadinessCheck, ResolvedTenant, ScimState,
+    TenantResolver, TenantStatus as HttpTenantStatus, TokenState, TrustedProxies, UserInfoState,
+    admin_routes, authority_bundle_routes, authorization_api_routes, authorization_routes,
+    consent_routes, console_routes, discovery_routes, interaction_routes, invitation_routes,
+    key_set_routes, logout_routes, ops_router, parse_gateways, parse_ranges, policy_agent_routes,
+    public_router_behind, scim_routes, serve, token_routes, userinfo_routes,
 };
 use hodor_provisioning::api::{ProvisioningPorts, ProvisioningService};
 use hodor_session::api::SessionService;
@@ -163,6 +168,12 @@ struct Config {
     #[arg(long, env = "HODOR_SECRET_KEYS", hide_env_values = true)]
     secret_keys: Option<String>,
 
+    /// The certificate authority of the tenants: `off` (the default),
+    /// `on`, or `development`, which also accepts the local key provider.
+    /// `on` and `development` need `HODOR_SECRET_KEYS`.
+    #[arg(long, env = "HODOR_CERTIFICATE_AUTHORITY")]
+    certificate_authority: Option<String>,
+
     /// How long a refresh token one generation old is answered again with
     /// the same next token, in seconds: 0 to 60. 0 turns retries off.
     #[arg(long, env = "HODOR_REFRESH_RETRY_SECONDS", default_value_t = 10)]
@@ -214,13 +225,27 @@ struct Config {
     trusted_proxies: String,
 
     /// The header trusted proxies write the client address into:
-    /// `x-forwarded-for` or `forwarded`.
+    /// `x-forwarded-for` or `forwarded`; or `none`, to read no forwarded
+    /// address.
     #[arg(
         long,
         env = "HODOR_FORWARDED_HEADER",
         default_value = "x-forwarded-for"
     )]
     forwarded_header: String,
+
+    /// The header trusted proxies write the caller's identity into:
+    /// `client-cert`, `x-forwarded-client-cert` or `l5d-client-id`. Empty:
+    /// no identity is read.
+    #[arg(long, env = "HODOR_CLIENT_IDENTITY_HEADER", default_value = "")]
+    client_identity_header: String,
+
+    /// The identities of the ingress gateways of a service mesh, SPIFFE
+    /// identifiers or Linkerd identities separated by commas. Set: the
+    /// forwarded address is read only from a request whose caller is one of
+    /// them. Empty: it is read from every trusted proxy.
+    #[arg(long, env = "HODOR_GATEWAY_IDENTITIES", default_value = "")]
+    gateway_identities: String,
 
     /// The LDAP directories identity providers may name, as `host:port`
     /// separated by commas. Empty: no directory can be used.
@@ -336,8 +361,36 @@ async fn run(config: Config) -> Result<(), Box<dyn Error>> {
     let engines = authorization_engines(&config, &database)?;
 
     let keys = keys(&config, &database)?;
+    // Checked now, so that a setting that cannot be used stops the server
+    // at startup.
+    let authority = authority(&config, &database)?;
     let (interaction, invitations) = interaction(&config, &database)?;
-    let authorization = authorization(&config, &database, interaction.authentication.clone());
+    let mut authorization = authorization(&config, &database, interaction.authentication.clone())?;
+    // One set of clients' keys at their addresses for the server, shared by
+    // the authorization and the token endpoints.
+    let client_keys = client_key_sets(&config)?;
+    authorization.authorization = authorization
+        .authorization
+        .with_client_key_sets(client_keys.clone());
+    // An `id_token_hint` is checked against the tenants' keys. The hint of a
+    // pairwise client, and a `sub` it asks for through `claims`, are compared
+    // with the person signed in by their pairwise identifier, through the
+    // pairwise secrets. Without keys there is no ID token, and a hint is
+    // refused.
+    if let Some(keys) = &keys {
+        authorization.authorization = authorization
+            .authorization
+            .with_id_token_hints(keys.clone());
+    }
+    if let Some(setting) = &config.secret_keys {
+        authorization.authorization =
+            authorization
+                .authorization
+                .with_pairwise_subjects(pairwise_subjects(
+                    &database,
+                    secret_box(setting, &database)?,
+                ));
+    }
     // SCIM ends a deprovisioned person's sessions and grants with these.
     let revoker = access_revoker(&database);
     let mut oauth2 = authorization_routes(authorization.clone());
@@ -348,6 +401,7 @@ async fn run(config: Config) -> Result<(), Box<dyn Error>> {
             keys.clone(),
             authorization.authorization,
             secret_box(setting, &database)?,
+            client_keys,
         )?));
         oauth2 = oauth2.merge(userinfo_routes(userinfo(&config, &database, keys.clone())));
         oauth2 = oauth2.merge(logout_routes(logout(
@@ -411,6 +465,7 @@ async fn run(config: Config) -> Result<(), Box<dyn Error>> {
                 .merge(discovery_routes(DiscoveryState {
                     public_url: config.public_url.clone(),
                     tenants: tenant_service(&database),
+                    identity_header: proxies.identity_header(),
                 }));
         }
         None => tracing::warn!(
@@ -430,6 +485,16 @@ async fn run(config: Config) -> Result<(), Box<dyn Error>> {
         Arc::new(OsRandom),
         Arc::new(SystemClock),
     )));
+    match authority {
+        Some(authority) => {
+            tracing::info!(
+                for_development = authority.for_development(),
+                "the certificate authority of the tenants is on"
+            );
+            tenant_routes = tenant_routes.merge(authority_bundle_routes(authority));
+        }
+        None => tracing::info!("HODOR_CERTIFICATE_AUTHORITY is off: no tenant has an authority"),
+    }
     match &config.pages_directory {
         Some(directory) => {
             let pages = Pages::load(directory)?;
@@ -740,17 +805,27 @@ fn consents(database: &Database) -> ConsentService {
     })
 }
 
-/// Builds everything the authorization endpoint needs.
+/// Builds everything the authorization endpoint needs. Request objects at
+/// a client's address are checked and fetched by the guarded outbound
+/// client, with the development exception of this installation, and no
+/// more than 16 kibibytes are read of one.
 fn authorization(
     config: &Config,
     database: &Database,
     authentication: AuthenticationService,
-) -> AuthorizationState {
+) -> Result<AuthorizationState, DomainError> {
     let units = Arc::new(database.clone());
     let clock = Arc::new(SystemClock);
     let digest = Arc::new(Sha256Digest);
     let random = Arc::new(OsRandom);
-    AuthorizationState {
+    let guarded = || {
+        GuardedHttpClient::new(OutboundPolicy {
+            development_hosts: development_hosts(config),
+            max_response_bytes: hodor_oauth::api::MAX_REQUEST_OBJECT_BYTES + 1,
+            ..OutboundPolicy::default()
+        })
+    };
+    Ok(AuthorizationState {
         authorization: AuthorizationCodeService::new(AuthorizationCodePorts {
             units_of_work: units.clone(),
             applications: Arc::new(PgApplicationStore),
@@ -760,16 +835,18 @@ fn authorization(
             grants: Arc::new(PgGrantStore),
             memberships: Arc::new(ServerMemberships::over(database, clock.clone())),
             codes: Arc::new(PgAuthorizationCodeStore),
+            verifier: Arc::new(AwsLcVerifier),
             digest: digest.clone(),
             random: random.clone(),
             clock: clock.clone(),
-        }),
+        })
+        .with_request_object_addresses(Arc::new(guarded()?), Arc::new(guarded()?)),
         consents: consents(database),
         sessions: SessionService::new(units, Arc::new(PgSessionStore), digest, random, clock),
         authentication,
         tenants: tenant_service(database),
         public_url: config.public_url.clone(),
-    }
+    })
 }
 
 /// Builds everything the token endpoint needs. Tokens are signed with the
@@ -781,6 +858,7 @@ fn token(
     keys: KeyService,
     codes: AuthorizationCodeService,
     secrets: Arc<dyn SecretBox>,
+    client_keys: ClientKeySets,
 ) -> Result<TokenState, DomainError> {
     let units = Arc::new(database.clone());
     let clock = Arc::new(SystemClock);
@@ -809,11 +887,32 @@ fn token(
         clock,
     })
     .with_retry_window(time::Duration::seconds(config.refresh_retry_seconds))?
-    .with_pairwise_subjects(pairwise);
+    .with_pairwise_subjects(pairwise)
+    // JWT-SVIDs, and the certificates and identities trusted proxies
+    // forward, are checked against the tenants' trust domains.
+    .with_trust_domains(trust_domains(config, database)?)
+    .with_certificate_check(Arc::new(X509CertificateCheck))
+    // Client assertions are checked against the keys at a client's
+    // address too.
+    .with_client_key_sets(client_keys);
     Ok(TokenState {
         tokens,
+        tenants: tenant_service(database),
         public_url: config.public_url.clone(),
     })
+}
+
+/// The keys of clients at their addresses, fetched by the guarded outbound
+/// client with this installation's development exception, no more than
+/// 64 kibibytes of a set read, and kept in this server's memory
+/// (Decision 0079).
+fn client_key_sets(config: &Config) -> Result<ClientKeySets, DomainError> {
+    let http = GuardedHttpClient::new(OutboundPolicy {
+        development_hosts: development_hosts(config),
+        max_response_bytes: hodor_oauth::api::MAX_KEY_SET_BYTES,
+        ..OutboundPolicy::default()
+    })?;
+    Ok(ClientKeySets::new(Arc::new(http), Arc::new(SystemClock)))
 }
 
 /// Names people to pairwise clients, with the tenants' pairwise secrets
@@ -835,6 +934,8 @@ fn userinfo(config: &Config, database: &Database, keys: KeyService) -> UserInfoS
     let clock = Arc::new(SystemClock);
     UserInfoState {
         userinfo: UserInfoService::new(UserInfoPorts {
+            units_of_work: Arc::new(database.clone()),
+            clients: Arc::new(PgClientStore),
             keys,
             verifier: Arc::new(AwsLcVerifier),
             identity: IdentityService::new(
@@ -853,6 +954,7 @@ fn userinfo(config: &Config, database: &Database, keys: KeyService) -> UserInfoS
             ),
             memberships: Arc::new(ServerMemberships::over(database, clock.clone())),
             mapping: claim_mapping(database, clock.clone()),
+            digest: Arc::new(Sha256Digest),
             clock,
         }),
         public_url: config.public_url.clone(),
@@ -902,6 +1004,7 @@ fn authorization_api(
             Arc::new(PgRoleAssignmentStore),
             Arc::new(PgEngineBindingStore),
             Arc::new(subjects::ServerSubjects {
+                units_of_work: units(),
                 identity: IdentityService::new(units(), Arc::new(PgUserRepository), clock.clone())
                     .with_groups(Arc::new(PgGroupRepository))
                     .with_organizations(Arc::new(PgOrganizationRepository)),
@@ -949,6 +1052,7 @@ fn resource_access(
             Arc::new(standing(database)),
         ),
         applications,
+        digest: Arc::new(Sha256Digest),
         clock: Arc::new(SystemClock),
     })
 }
@@ -1104,9 +1208,9 @@ fn authorization_engines(
     Ok(registry)
 }
 
-/// The directories that may be connected to: empty unless set.
 /// The proxies whose forwarded header is read. A range that cannot be read,
-/// or one that holds every address, stops the server from starting.
+/// or one that holds every address, stops the server from starting; so do
+/// ingress gateways that could never be recognized.
 fn trusted_proxies(config: &Config) -> Result<TrustedProxies, Box<dyn Error>> {
     let ranges = parse_ranges(&config.trusted_proxies)
         .map_err(|invalid| format!("HODOR_TRUSTED_PROXIES: {invalid}"))?;
@@ -1114,19 +1218,73 @@ fn trusted_proxies(config: &Config) -> Result<TrustedProxies, Box<dyn Error>> {
         .forwarded_header
         .parse()
         .map_err(|invalid| format!("HODOR_FORWARDED_HEADER: {invalid}"))?;
+    let identity = match config.client_identity_header.trim() {
+        "" => None,
+        named => Some(
+            named
+                .parse::<IdentityHeader>()
+                .map_err(|invalid| format!("HODOR_CLIENT_IDENTITY_HEADER: {invalid}"))?,
+        ),
+    };
+    let named: Vec<String> = ranges.iter().map(ToString::to_string).collect();
     if ranges.is_empty() {
         tracing::info!("no proxy is trusted: the client address is the connection's");
+    } else if header == ForwardedHeader::None {
+        tracing::info!(
+            ranges = %named.join(","),
+            "no forwarded address is read: the client address is the connection's"
+        );
     } else {
-        let named: Vec<String> = ranges.iter().map(ToString::to_string).collect();
         tracing::info!(
             ranges = %named.join(","),
             header = %config.forwarded_header.to_ascii_lowercase(),
             "the client address is read from the forwarded header of trusted proxies"
         );
     }
-    Ok(TrustedProxies::new(ranges, header))
+    match identity {
+        None => tracing::info!("no header of the caller's identity is read"),
+        Some(identity) if ranges.is_empty() => tracing::warn!(
+            header = identity.as_str(),
+            "HODOR_CLIENT_IDENTITY_HEADER is named, but no proxy is trusted: it is never read"
+        ),
+        Some(identity) => tracing::info!(
+            ranges = %named.join(","),
+            header = identity.as_str(),
+            "the caller's identity is read from the header of trusted proxies"
+        ),
+    }
+    let gateways = parse_gateways(&config.gateway_identities)
+        .map_err(|invalid| format!("HODOR_GATEWAY_IDENTITIES: {invalid}"))?;
+    if !gateways.is_empty() {
+        let never = if ranges.is_empty() {
+            Some("no proxy is trusted, in HODOR_TRUSTED_PROXIES")
+        } else if identity.is_none() {
+            Some("no header of the caller's identity is named, in HODOR_CLIENT_IDENTITY_HEADER")
+        } else if header == ForwardedHeader::None {
+            Some("HODOR_FORWARDED_HEADER is none, so no forwarded address is ever read")
+        } else {
+            None
+        };
+        if let Some(never) = never {
+            return Err(format!(
+                "HODOR_GATEWAY_IDENTITIES names ingress gateways that could never be recognized: \
+                 {never}"
+            )
+            .into());
+        }
+        let named: Vec<&str> = gateways.iter().map(WorkloadIdentity::as_str).collect();
+        tracing::info!(
+            gateways = %named.join(","),
+            "the forwarded address is read only from a request whose caller is one of these \
+             ingress gateways"
+        );
+    }
+    Ok(TrustedProxies::new(ranges, header)
+        .with_identity_header(identity)
+        .with_gateways(gateways, Arc::new(X509CertificateCheck)))
 }
 
+/// The directories that may be connected to: empty unless set.
 fn directory_hosts(config: &Config) -> Vec<String> {
     config
         .directory_hosts
@@ -1263,9 +1421,82 @@ fn keys(config: &Config, database: &Database) -> Result<Option<KeyService>, Doma
     Ok(Some(KeyService::new(
         Arc::new(database.clone()),
         Arc::new(PgKeyStore),
-        Arc::new(LocalKeyProvider::new(root)),
+        Arc::new(key_providers(root)?),
         Arc::new(SystemClock),
     )))
+}
+
+/// The certificate authority of the tenants, when
+/// `HODOR_CERTIFICATE_AUTHORITY` turns it on: its key is made by the
+/// provider that makes the keys of authorities, OpenBao whenever it is
+/// configured (`docs/architecture/contexts/keys.md`, "The certificate
+/// authority of a tenant").
+fn authority(
+    config: &Config,
+    database: &Database,
+) -> Result<Option<AuthorityService>, DomainError> {
+    let setting = AuthoritySetting::parse(config.certificate_authority.as_deref())?;
+    if setting == AuthoritySetting::Off {
+        return Ok(None);
+    }
+    let Some(secret_keys) = &config.secret_keys else {
+        return Err(DomainError::invalid(
+            "keys.authority_setting_invalid",
+            "HODOR_CERTIFICATE_AUTHORITY needs HODOR_SECRET_KEYS: the authority lives in the keys \
+             context",
+        ));
+    };
+    let root = Arc::new(SecretKeys::parse(&Secret::from(secret_keys.clone()))?);
+    let providers = key_providers(root)?;
+    Ok(Some(AuthorityService::new(
+        AuthorityPorts {
+            units_of_work: Arc::new(database.clone()),
+            store: Arc::new(PgAuthorityStore),
+            trust_domains: Arc::new(PgTrustDomainStore),
+            intermediates: Arc::new(PgIntermediateStore),
+            maker: providers.authorities(),
+            signer: Arc::new(providers),
+            certificates: Arc::new(X509Certificates),
+            digest: Arc::new(Sha256Digest),
+            clock: Arc::new(SystemClock),
+        },
+        setting == AuthoritySetting::Development,
+    )))
+}
+
+/// The key provider of the keys context: the local one, wrapping keys
+/// under `root`, and OpenBao when `HODOR_OPENBAO_ADDRESS` is set, reached
+/// through a client that calls its address alone. New signing keys are
+/// made where `HODOR_KEY_PROVIDER` says, and every version is used by the
+/// provider that made it (`docs/operations/keys-in-openbao.md`).
+fn key_providers(root: Arc<SecretKeys>) -> Result<KeyProviders, DomainError> {
+    let settings = KeyProviderSettings::from_lookup(|name| std::env::var(name).ok())?;
+    let providers = settings.providers(Arc::new(LocalKeyProvider::new(root)), |openbao| {
+        let origins = [openbao.address.clone()];
+        let policy = OutboundPolicy {
+            timeout: openbao.time_limit,
+            connect_timeout: openbao.time_limit.min(std::time::Duration::from_secs(5)),
+            ..OutboundPolicy::default()
+        };
+        let client = match &openbao.certificate_authorities {
+            Some(path) => {
+                let authorities = std::fs::read(path).map_err(|error| {
+                    DomainError::invalid(
+                        "keys.provider_settings_invalid",
+                        "the settings of the key provider are not valid",
+                    )
+                    .with_detail(format!(
+                        "HODOR_OPENBAO_CA_FILE cannot be read: {}",
+                        error.kind()
+                    ))
+                })?;
+                ServiceHttpClient::trusting_only(&origins, policy, &authorities)?
+            }
+            None => ServiceHttpClient::new(&origins, policy)?,
+        };
+        Ok(Arc::new(client) as Arc<dyn HttpClient>)
+    })?;
+    Ok(providers)
 }
 
 /// Where secrets at rest are sealed: under the tenant's data keys, with
@@ -1352,6 +1583,7 @@ fn access_revoker(database: &Database) -> deprovisioning::ServerAccessRevoker {
             grants: Arc::new(PgGrantStore),
             codes: Arc::new(PgAuthorizationCodeStore),
             memberships: Arc::new(ServerMemberships::over(database, clock.clone())),
+            verifier: Arc::new(AwsLcVerifier),
             digest: Arc::new(Sha256Digest),
             random: Arc::new(OsRandom),
             clock: clock.clone(),
@@ -1420,11 +1652,34 @@ fn administration(
         ..OutboundPolicy::default()
     })?));
     let applications_for_subjects = applications.clone();
+    let authority = authority(config, database)?;
+    let keys = keys(config, database)?;
+    // The signing of intermediates takes an access token for the
+    // authority's audience, checked against the tenant's keys.
+    let certificate_signing = match (&authority, &keys) {
+        (Some(_), Some(keys)) => Some(resource_access(
+            database,
+            keys.clone(),
+            applications.clone(),
+        )),
+        _ => None,
+    };
     Ok(AdminState {
+        authority,
+        certificate_signing,
         claim_mappers: ClaimMapperService::new(ClaimMapperPorts {
             units_of_work: units(),
             clients: Arc::new(PgClientStore),
             mappers: Arc::new(PgClaimMapperStore),
+            clock: clock.clone(),
+        }),
+        client_registration: ClientRegistrationService::new(ClientRegistrationPorts {
+            units_of_work: units(),
+            registrations: Arc::new(PgClientRegistrationStore),
+            tokens: Arc::new(PgInitialAccessTokenStore),
+            applications: Arc::new(PgApplicationStore),
+            digest: digest.clone(),
+            random: random.clone(),
             clock: clock.clone(),
         }),
         tokens: AccessTokenService::new(
@@ -1462,8 +1717,9 @@ fn administration(
         // The server reads the audit log; the worker writes it.
         audit: AuditService::new(units(), Arc::new(PgAuditLog), digest, clock.clone()),
         federation,
-        keys: keys(config, database)?,
+        keys,
         key_rotation: key_rotation(config)?,
+        trust_domains: trust_domains(config, database)?,
         applications,
         tenants: tenant_service(database),
         factors: {
@@ -1502,6 +1758,7 @@ fn administration(
             Arc::new(PgRoleAssignmentStore),
             Arc::new(PgEngineBindingStore),
             Arc::new(subjects::ServerSubjects {
+                units_of_work: units(),
                 identity: IdentityService::new(units(), Arc::new(PgUserRepository), clock.clone())
                     .with_groups(Arc::new(PgGroupRepository))
                     .with_organizations(Arc::new(PgOrganizationRepository)),
@@ -1560,6 +1817,32 @@ fn administration(
         invitations,
         webhooks: webhooks(config, database)?,
     })
+}
+
+/// The trust domains an administrator manages. Bundle endpoints are checked
+/// and fetched by the guarded outbound client, with the development
+/// exception of this installation; nothing of a bundle is secret, so no
+/// keys are needed. The withdrawn keys of the intermediates the tenants'
+/// authorities signed are read with them.
+fn trust_domains(config: &Config, database: &Database) -> Result<TrustDomainService, DomainError> {
+    let guarded = || {
+        GuardedHttpClient::new(OutboundPolicy {
+            development_hosts: development_hosts(config),
+            max_response_bytes: hodor_keys::api::MAX_BUNDLE_BYTES + 1,
+            ..OutboundPolicy::default()
+        })
+    };
+    Ok(TrustDomainService::new(TrustDomainPorts {
+        units_of_work: Arc::new(database.clone()),
+        store: Arc::new(PgTrustDomainStore),
+        destinations: Arc::new(guarded()?),
+        http: Arc::new(guarded()?),
+        digest: Arc::new(Sha256Digest),
+        clock: Arc::new(SystemClock),
+    })
+    // Every check of a certificate path reads the withdrawn keys of the
+    // tenant's intermediates, whether or not the authority is on now.
+    .with_intermediates(Arc::new(PgIntermediateStore)))
 }
 
 /// The webhooks an administrator manages, when there are keys to seal

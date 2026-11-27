@@ -1,3 +1,4 @@
+{{- if include "hodor.installsHodor" . }}
 apiVersion: v1
 kind: Service
 metadata:
@@ -18,3 +19,5 @@ spec:
     - name: http
       port: {{ .Values.service.port }}
       targetPort: http
+
+{{- end }}

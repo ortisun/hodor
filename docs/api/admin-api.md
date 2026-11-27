@@ -28,6 +28,8 @@ A request is answered only if all of these hold, checked in this order:
 
 What a key does is in the audit log with its holder as the actor.
 
+An access token of Hodor's token endpoint is neither of these, and is not good here: a [certificate-bound one](../architecture/contexts/oauth.md#certificate-bound-access-tokens) is refused with `401` whether or not its certificate comes with it ([Decision 0057](../decisions/0057-certificate-bound-access-tokens.md)). The one exception is [signing an intermediate](#intermediates), which also takes an access token of a service account's client for the audience `urn:hodor:certificate-authority`, as [who may sign](../architecture/contexts/keys.md#who-may-sign) specifies ([Decision 0074](../decisions/0074-hodor-cert-manager-issuer.md)).
+
 The check comes before anything else. A request that is refused learns nothing about what it asked for: not whether a user exists, not whether a body was valid.
 
 There are no cookies on this interface, so there is nothing for another site to forge and no CSRF token. The [admin console](../architecture/admin-console.md) reaches the same routes through the [console interface](console-interface.md), which recognizes a person by their session.
@@ -67,6 +69,7 @@ It needs `HODOR_DATABASE_URL`, like the tenant commands.
 | `GET /users` | `users:read` | List users |
 | `GET /users/{user_id}` | `users:read` | Read one user |
 | `POST /users/{user_id}:suspend` | `users:write` | Suspend a user |
+| `PUT /users/{user_id}/claims` | `users:write` | Replace a person's standard claims |
 | `GET /users/{user_id}/sessions` | `sessions:read` | List a user's active sessions |
 | `GET /users/{user_id}/factors` | `credentials:read` | List a user's second factors and how many recovery codes are left |
 | `DELETE /users/{user_id}/factors/authenticator-application` | `credentials:write` | Remove a user's authenticator application |
@@ -86,6 +89,19 @@ It needs `HODOR_DATABASE_URL`, like the tenant commands.
 | `GET /keys/{key_set}` | `keys:read` | List the versions of a key set: `sig` or `data` |
 | `POST /keys/{key_set}:rotate` | `keys:write` | Activate a new signing version at once |
 | `POST /keys/{key_set}/versions/{version_id}:revoke` | `keys:write` | Revoke a version, with a reason |
+| `GET /trust-domains` | `keys:read` | List the tenant's trust domains, with their bundles |
+| `POST /trust-domains` | `keys:write` | Add a trust domain: its bundle, its bundle endpoint, or the mesh |
+| `GET /trust-domains/{trust_domain_id}` | `keys:read` | Read one trust domain |
+| `PUT /trust-domains/{trust_domain_id}` | `keys:write` | Replace its source and bundle |
+| `DELETE /trust-domains/{trust_domain_id}` | `keys:write` | Remove it |
+| `GET /certificate-authority` | `certificate-authority:read` | Read the tenant's certificate authority. Routed only when the installation turns the authority on |
+| `POST /certificate-authority` | `certificate-authority:write` | Create it: a root, or an intermediate awaiting its certificate |
+| `POST /certificate-authority:install` | `certificate-authority:write` | Install an intermediate's certificate, signed by the tenant's own root |
+| `DELETE /certificate-authority` | `certificate-authority:write` | Remove it, with the trust domains it added |
+| `POST /certificate-authority/intermediates` | `certificate-authority:sign` | Sign an intermediate of a mesh from its certificate signing request |
+| `GET /certificate-authority/intermediates` | `certificate-authority:read` | List the intermediates the authority signed |
+| `GET /certificate-authority/intermediates/{intermediate_id}` | `certificate-authority:read` | Read one |
+| `POST /certificate-authority/intermediates/{intermediate_id}:withdraw` | `certificate-authority:write` | Withdraw it, with every intermediate of the same key: Hodor stops trusting it at once |
 | `GET /applications` | `applications:read` | List the tenant's applications |
 | `POST /applications` | `applications:write` | Register an application |
 | `GET /applications/{application_id}` | `applications:read` | Read one application |
@@ -107,6 +123,12 @@ It needs `HODOR_DATABASE_URL`, like the tenant commands.
 | `GET /clients/{client_id}/claim-mappers/{claim_mapper_id}` | `applications:read` | Read one claim mapper |
 | `PUT /clients/{client_id}/claim-mappers/{claim_mapper_id}` | `applications:write` | Replace a claim mapper |
 | `DELETE /clients/{client_id}/claim-mappers/{claim_mapper_id}` | `applications:write` | Delete a claim mapper |
+| `GET /client-registration` | `applications:read` | Read whether clients may register themselves, and under which settings and policy |
+| `PUT /client-registration` | `applications:write` | Turn client registration on or off, and replace its settings and policy |
+| `GET /client-registration/initial-access-tokens` | `applications:read` | List the tenant's initial access tokens, never the tokens themselves |
+| `POST /client-registration/initial-access-tokens` | `applications:write` | Make an initial access token, shown once |
+| `GET /client-registration/initial-access-tokens/{token_id}` | `applications:read` | Read one initial access token |
+| `DELETE /client-registration/initial-access-tokens/{token_id}` | `applications:write` | Revoke an initial access token at once |
 | `GET /resource-servers` | `applications:read` | List the tenant's resource servers |
 | `POST /resource-servers` | `applications:write` | Register the resource server of an application |
 | `GET /resource-servers/{resource_server_id}` | `applications:read` | Read one resource server |
@@ -115,6 +137,8 @@ It needs `HODOR_DATABASE_URL`, like the tenant commands.
 | `PUT /scim-deprovisioning` | `users:write` | Set it |
 | `GET /email-sign-in` | `users:read` | Read whether people of the tenant may sign in with a code or a link by email |
 | `PUT /email-sign-in` | `users:write` | Set it |
+| `GET /pushed-authorization-requests` | `applications:read` | Read how long a pushed authorization request lives and whether every client must push its requests |
+| `PUT /pushed-authorization-requests` | `applications:write` | Set it |
 | `GET /assurance-levels` | `assurance-levels:read` | Read the tenant's assurance levels |
 | `PUT /assurance-levels` | `assurance-levels:write` | Replace the tenant's assurance levels |
 | `GET /decision-log` | `decisions:read` | Read the settings of the record of decisions |
@@ -218,24 +242,61 @@ It needs `HODOR_DATABASE_URL`, like the tenant commands.
   "identifiers": [
     { "id": "0193f1c3-…", "kind": "email", "value": "ana@example.com", "verified": true, "primary": true }
   ],
+  "claims": {
+    "given_name": "Ana",
+    "family_name": "Silva",
+    "zoneinfo": "America/Sao_Paulo",
+    "phone_number": "+5511912345678",
+    "phone_number_verified": false,
+    "address": { "locality": "São Paulo", "country": "BR" }
+  },
   "created_at": "2026-11-20T14:03:11Z",
   "updated_at": "2026-11-20T14:03:11Z"
 }
 ```
+
+`claims` holds the person's [standard claims](../architecture/contexts/identity.md#standard-claims) that have a value, and `phone_number_verified` always; `address` only the parts there are. A service account or an agent has `{}`.
 
 ### Creating a user
 
 `POST /users` with:
 
 ```json
-{ "email": "ana@example.com", "display_name": "Ana Silva", "locale": "pt-BR" }
+{ "email": "ana@example.com", "username": "ana.silva", "display_name": "Ana Silva", "locale": "pt-BR" }
 ```
 
-`display_name` and `locale` are optional. The answer is `201` with the user.
+`username`, `display_name` and `locale` are optional. A username is a second login identifier, primary of its kind, with the [rules of usernames](../architecture/contexts/identity.md#normalization), and what UserInfo answers as `preferred_username`. The answer is `201` with the user.
 
 The user is created active, with the address not yet verified and without a password. The person chooses a password by [recovering it](interaction-api.md#registering-and-recovering-a-password), which also verifies the address. An administrator never knows or sets anyone's password.
 
-An address that already has an account is refused with `409` and `identity.identifier_taken`. This interface may say so: its caller is allowed to see the tenant's users.
+An address or a username that already has an account is refused with `409` and `identity.identifier_taken`. This interface may say so: its caller is allowed to see the tenant's users.
+
+### A user's standard claims
+
+`PUT /users/{user_id}/claims` replaces the person's [standard claims](../architecture/contexts/identity.md#standard-claims) with those of the body, written as an answer writes `claims`:
+
+```json
+{
+  "given_name": "Ana",
+  "family_name": "Silva",
+  "birthdate": "1990-04-12",
+  "phone_number": "+55 11 91234-5678",
+  "phone_number_verified": true,
+  "address": { "street_address": "Rua Augusta, 100", "locality": "São Paulo", "postal_code": "01304-000", "country": "BR" }
+}
+```
+
+Every member is optional, and one left out, `null` or empty removes the claim; `phone_number_verified` is false unless given. A member that is not a claim is refused with `422` and `request.body_invalid`, as everywhere in this interface. The answer is `200` with the user, the number written as it is kept, `+5511912345678`.
+
+| Situation | Status | Code |
+|---|---|---|
+| A claim breaks its rule; the message names the claim, never the value | `422` | `identity.claim_invalid` |
+| The user is a service account or an agent | `422` | `identity.workload_claims_refused` |
+| The user is marked Deleted | `409` | `identity.invalid_transition` |
+| No such user | `404` | `identity.user_not_found` |
+| Someone else changed the user at the same moment | `409` | `identity.user_modified_concurrently` |
+
+The audit log records `identity.profile_changed`, with the user and never a value.
 
 ### Listing users
 
@@ -353,7 +414,8 @@ A provider of the kind `ldap`, a [directory](../architecture/contexts/federation
   "filter": "(uid={identifier})",
   "subject_attribute": "entryUUID",
   "email_attribute": "mail",
-  "name_attribute": "cn"
+  "name_attribute": "cn",
+  "claim_attributes": { "given_name": "givenName", "family_name": "sn", "phone_number": "telephoneNumber" }
 }
 ```
 
@@ -366,7 +428,8 @@ A provider of the kind `saml`, a [SAML identity provider](../architecture/contex
   "single_sign_on_address": "https://login.example.com/sso/saml",
   "certificate": "-----BEGIN CERTIFICATE-----\n…\n-----END CERTIFICATE-----",
   "email_attribute": "email",
-  "name_attribute": "name"
+  "name_attribute": "name",
+  "claim_attributes": { "given_name": "firstName", "family_name": "lastName" }
 },
 "metadata_address": "https://auth.example.com/t/acme/interaction/sign-in/providers/corp/saml/metadata"
 ```
@@ -389,7 +452,7 @@ For a SAML provider, `issuer` is the identity provider's entity identifier, `cli
 }
 ```
 
-`kind` is `openid_connect` unless given; the others are `github`, for which `issuer` may be left out, `ldap`, which needs `directory` with at least `base` and `filter`, and `saml`, which needs `saml` with at least `single_sign_on_address` and `certificate` and takes neither `client_id` nor `client_secret`. The attribute names are `entryUUID`, `mail` and `cn` for a directory, `email` and `name` for a SAML provider, unless given. A certificate that cannot be used is refused with `422` and `federation.saml_invalid`; the problem's `detail` names the reason, such as `key_too_short`. A directory whose host and port are not on the installation's list is refused with `403` and `federation.directory_not_allowed`. `scopes`, `creates_users` and `trusts_email` are optional. The answer is `201` with the provider, enabled.
+`kind` is `openid_connect` unless given; the others are `github`, for which `issuer` may be left out, `ldap`, which needs `directory` with at least `base` and `filter`, and `saml`, which needs `saml` with at least `single_sign_on_address` and `certificate` and takes neither `client_id` nor `client_secret`. The attribute names are `entryUUID`, `mail` and `cn` for a directory, `email` and `name` for a SAML provider, unless given. `claim_attributes` names which attribute gives which [standard claim](../architecture/contexts/federation.md#claim-attributes) of a person the provider creates, and is `{}` unless given; a `PATCH` that gives it replaces it whole. A certificate that cannot be used is refused with `422` and `federation.saml_invalid`; the problem's `detail` names the reason, such as `key_too_short`. A directory whose host and port are not on the installation's list is refused with `403` and `federation.directory_not_allowed`. `scopes`, `creates_users` and `trusts_email` are optional. The answer is `201` with the provider, enabled.
 
 `trusts_email` is a statement about the provider that is easy to get wrong; read [what it means](../architecture/contexts/federation.md#when-a-provider-does-not-say-whether-it-vouches) before setting it.
 
@@ -437,7 +500,7 @@ The `id` is the key identifier, `kid`, of the version in [the published key set]
 
 `GET /keys/{key_set}` answers `{ "items": [ … ] }`, newest first, for `sig` or `data`. Revoked and retired versions are listed too: they are kept so that every signature can be traced to its key.
 
-`POST /keys/sig:rotate` takes an optional body, `{ "algorithm": "ES256" }`, ES256 unless given, RS256 or PS256 otherwise. A pending version of that algorithm is activated, or a new one made and activated. The version it replaces starts retiring with the installation's overlap. The answer is `200` with the activated version. Only the signing key set rotates this way: `data` is refused with `422` and `keys.rotation_not_offered`.
+`POST /keys/sig:rotate` takes an optional body, `{ "algorithm": "ES256" }`, ES256 unless given, RS256, PS256 or EdDSA otherwise. A pending version of that algorithm is activated, or a new one made and activated. The version it replaces starts retiring with the installation's overlap. The answer is `200` with the activated version. Only the signing key set rotates this way: `data` is refused with `422` and `keys.rotation_not_offered`.
 
 `POST /keys/{key_set}/versions/{version_id}:revoke` with `{ "reason": "…" }`, 1 to 200 characters, answers `200` with the version, revoked. A signing version leaves the published key set at once. Revoking a revoked version changes nothing. To replace a key that is no longer trusted, rotate first and revoke the version that was replaced: revoking the active version first leaves the tenant signing nothing until the next pass of the rotation job.
 
@@ -445,10 +508,209 @@ The `id` is the key identifier, `kid`, of the version in [the published key set]
 |---|---|---|
 | A key set other than `sig` or `data` | `404` | `keys.key_set_not_found` |
 | No such version in this key set | `404` | `keys.version_not_found` |
-| An algorithm that is not ES256, RS256 or PS256 | `422` | `keys.algorithm_unsuitable` |
+| An algorithm that is not ES256, RS256, PS256 or EdDSA | `422` | `keys.algorithm_unsuitable` |
 | A reason that is empty or too long | `422` | `keys.reason_invalid` |
 | Two activations at the same moment | `409` | `keys.activation_conflict` |
 | The server has no keys to keep secrets with (`HODOR_SECRET_KEYS`) | `503` | `keys.not_configured` |
+
+### Trust domains
+
+The SPIFFE trust domains a tenant trusts, specified in [the keys context](../architecture/contexts/keys.md#trust-domains). A trust domain is answered as:
+
+```json
+{
+  "id": "0193f3a0-…",
+  "name": "prod.example.com",
+  "source": "bundle_endpoint",
+  "bundle_endpoint_url": "https://spire.example.com/bundle",
+  "bundle": {
+    "spiffe_sequence": 12,
+    "spiffe_refresh_hint": 300,
+    "keys": [
+      { "use": "x509-svid", "kty": "EC", "crv": "P-256", "x": "…", "y": "…", "x5c": ["MIIB…"] },
+      { "use": "jwt-svid", "kty": "EC", "crv": "P-256", "kid": "…", "x": "…", "y": "…" }
+    ]
+  },
+  "bundle_changed_at": "…",
+  "refresh": {
+    "fetched_at": "…",
+    "next_at": "…",
+    "failing_since": null,
+    "last_error": null
+  },
+  "created_at": "…",
+  "updated_at": "…"
+}
+```
+
+`bundle_endpoint_url` and `refresh` are present only for the source `bundle_endpoint`; `bundle` and `bundle_changed_at` are absent for `mesh`. A trust domain the tenant's [certificate authority](#the-certificate-authority) added has the source `authority` and the authority's bundle; it cannot be replaced, only removed. The bundle is the one in force, as Hodor keeps it: only the elements it kept, with their members in order. `refresh.failing_since` and `refresh.last_error` say, while fetching fails, since when and the code of the last reason; the bundle in force is then still the last one that read.
+
+`POST /trust-domains` takes the name and one source:
+
+```json
+{ "name": "prod.example.com", "source": "uploaded", "bundle": { "keys": [ … ] } }
+{ "name": "prod.example.com", "source": "bundle_endpoint", "bundle_endpoint_url": "https://spire.example.com/bundle" }
+{ "name": "cluster.local", "source": "mesh" }
+```
+
+and answers `201` with the trust domain. A bundle endpoint is fetched before anything is stored. `PUT /trust-domains/{trust_domain_id}` takes the same body without `name`, which cannot change, and answers `200` with the trust domain; a refusal leaves it as it was. `DELETE` answers `204`. `GET /trust-domains` answers a page of `{ "items": [ … ], "next_cursor": … }` in the order of their identifiers.
+
+| Situation | Status | Code |
+|---|---|---|
+| No trust domain of that identifier | `404` | `keys.trust_domain_not_found` |
+| A name the tenant has already | `409` | `keys.trust_domain_name_taken` |
+| A fifty-first trust domain | `409` | `keys.too_many_trust_domains` |
+| The trust domain changed while it was being changed | `409` | `keys.trust_domain_changed` |
+| Replacing a trust domain of source `authority` | `409` | `keys.trust_domain_of_authority` |
+| A name that breaks its rule, or a source that is not one of the three or comes without what it needs | `422` | `keys.trust_domain_name_invalid`, `keys.trust_domain_source_invalid` |
+| A bundle that does not read | `422` | `keys.trust_bundle_invalid` |
+| A bundle endpoint that is not an HTTPS address of at most 1000 characters | `422` | `keys.bundle_endpoint_invalid` |
+| A bundle endpoint that leads somewhere that may not be called, or resolves to nothing | `422` | `keys.bundle_endpoint_forbidden`, `keys.bundle_endpoint_unresolvable` |
+| A bundle endpoint that did not answer a bundle: no answer in 10 seconds, a status other than 2xx, a redirect, or more than 64 kibibytes | `422` | `keys.bundle_endpoint_unreachable` |
+
+### The certificate authority
+
+The tenant's certificate authority, specified in [the keys context](../architecture/contexts/keys.md#the-certificate-authority-of-a-tenant). These four operations, and the four of [its intermediates](#intermediates), are routed only when the installation sets `HODOR_CERTIFICATE_AUTHORITY` to `on` or `development`; otherwise they answer `404` as any path the interface does not have, and `GET /openapi.json` does not name them. The authority is answered as:
+
+```json
+{
+  "id": "0193f3a0-…",
+  "kind": "root",
+  "state": "active",
+  "trust_domains": ["prod.example.com", "edge.example.com"],
+  "common_name": "Hodor certificate authority",
+  "lifetime_days": 1826,
+  "intermediate_lifetime_days": 30,
+  "for_development": false,
+  "uri_constraints": true,
+  "additional_dns_names": [],
+  "key": { "id": "0193f3a0-…", "provider": "openbao", "algorithm": "ES256" },
+  "name_constraints": {
+    "permitted_uris": ["prod.example.com", "edge.example.com"],
+    "permitted_dns_names": ["prod.example.com", "edge.example.com"],
+    "excluded_ip_ranges": ["0.0.0.0/0", "::/0"]
+  },
+  "certificate": "-----BEGIN CERTIFICATE-----\n…",
+  "serial_number": "5f0c…",
+  "not_before": "…",
+  "not_after": "…",
+  "certificate_sha256": "9a1e…",
+  "chain": [],
+  "bundle_endpoint": "https://id.example.com/t/acme/certificate-authority/bundle",
+  "created_at": "…",
+  "activated_at": "…",
+  "updated_at": "…"
+}
+```
+
+`lifetime_days` is present for a root only. An intermediate awaiting its certificate has `"state": "awaiting_certificate"`, a `certificate_signing_request` in PEM, and no `certificate`, `serial_number`, `not_before`, `not_after`, `certificate_sha256`, `bundle_endpoint` or `activated_at`. The key is named by its identifier and its provider; nothing of it is ever answered.
+
+`POST /certificate-authority` takes:
+
+```json
+{ "kind": "root", "trust_domains": ["prod.example.com", "edge.example.com"], "common_name": "Example meshes", "lifetime_days": 1826, "intermediate_lifetime_days": 30 }
+{ "kind": "intermediate", "trust_domains": ["prod.example.com"] }
+{ "kind": "root", "trust_domains": ["east.example.com", "west.example.com"], "uri_constraints": false, "additional_dns_names": ["istio-system.svc"] }
+```
+
+`common_name`, `lifetime_days` (a root's only), `intermediate_lifetime_days`, `uri_constraints` and `additional_dns_names` may be left out. `uri_constraints` is `true` unless given: `false` writes the name constraints without URIs, and the answer's `name_constraints.permitted_uris` is empty. Leave URIs unconstrained when a Linkerd mesh of the tenant must accept the SPIFFE identities of its other meshes: Linkerd's proxy refuses every URI under an authority that constrains URIs. `additional_dns_names`, none unless given, are at most ten DNS names its name constraints permit after its trust domains, in its certificate and in every intermediate it signs: give `istio-system.svc` for an Istio mesh, whose istiod serves under the mesh's intermediate by names under it ([Decision 0076](../decisions/0076-names-an-authority-leaves-to-its-meshes.md)). It answers `201` with the authority: a root is active at once, and its trust domains are added to the tenant's with the source `authority`; an intermediate answers its certificate signing request, for the tenant's root to sign.
+
+`POST /certificate-authority:install` takes the certificate the tenant's root signed, in PEM, and the certificates above it if wished, nearest first:
+
+```json
+{ "certificate": "-----BEGIN CERTIFICATE-----\n…", "chain": ["-----BEGIN CERTIFICATE-----\n…"] }
+```
+
+and answers `200` with the authority, now active, whose trust domains are added to the tenant's. `DELETE /certificate-authority` answers `204`.
+
+| Situation | Status | Code |
+|---|---|---|
+| The tenant has no authority | `404` | `keys.authority_not_found` |
+| The tenant has an authority already | `409` | `keys.authority_exists` |
+| The key provider does not sign inside itself, on an installation not set to `development` | `409` | `keys.authority_provider_unsuitable` |
+| A trust domain the tenant already has from another source | `409` | `keys.authority_trust_domain_taken` |
+| Its trust domains would make the tenant's more than fifty | `409` | `keys.too_many_trust_domains` |
+| Installing a certificate on an authority that is not awaiting one | `409` | `keys.authority_not_awaiting_certificate` |
+| The authority changed while it was being changed | `409` | `keys.authority_changed` |
+| A kind other than `root` and `intermediate`, a lifetime out of its bounds, a common name of no characters or more than 64, a `lifetime_days` for an intermediate; more than ten additional DNS names, one that is not a DNS name, given twice or a trust domain | `422` | `keys.authority_request_invalid` |
+| No trust domain, more than ten, the same twice, or one that is not a DNS name | `422` | `keys.authority_trust_domain_invalid` |
+| A certificate or a chain that does not read, or a certificate that does not hold the authority's key, is not an authority, is not valid now, or whose name constraints are missing, reach past the authority's trust domains, or constrain URIs for an authority that leaves them unconstrained | `422` | `keys.authority_certificate_unsuitable` |
+| Adding through `POST /trust-domains` a trust domain of source `authority` | `422` | `keys.trust_domain_source_invalid` |
+| Replacing through `PUT /trust-domains/{trust_domain_id}` a trust domain of source `authority` | `409` | `keys.trust_domain_of_authority` |
+
+For `keys.authority_request_invalid`, `keys.authority_trust_domain_invalid` and `keys.authority_certificate_unsuitable`, the problem's `detail` names the reason, such as the trust domain that is not a DNS name or `it does not hold the authority's key`: it is about what the caller sent. Every other refusal's `detail` is its message, as everywhere in this interface.
+
+### Intermediates
+
+The intermediates the tenant's certificate authority signs for its meshes, specified in [signing intermediates](../architecture/contexts/keys.md#signing-intermediates). Like the authority's own, these four operations are routed only when the installation turns the authority on. An intermediate is answered as:
+
+```json
+{
+  "id": "0193f3b1-…",
+  "authority_id": "0193f3a0-…",
+  "state": "active",
+  "serial_number": "41c2…",
+  "subject": "CN=identity.linkerd.cluster.local",
+  "uris": [],
+  "dns_names": ["identity.linkerd.cluster.local"],
+  "name_constraints": {
+    "permitted_dns_names": ["cluster.local"],
+    "excluded_dns_names": [],
+    "excluded_ip_ranges": ["0.0.0.0/0", "::/0"]
+  },
+  "not_before": "…",
+  "not_after": "…",
+  "certificate": "-----BEGIN CERTIFICATE-----\n…",
+  "chain": ["-----BEGIN CERTIFICATE-----\n…"],
+  "certificate_sha256": "7be0…",
+  "public_key_sha256": "c41f…",
+  "request_sha256": "0d9a…",
+  "signed_at": "…",
+  "withdrawn_at": null,
+  "withdrawal_reason": null
+}
+```
+
+`chain` is what is above the intermediate, nearest first: the authority's certificate, then, for an intermediate authority, the certificates above it as the administrator gave them. `state` is `active` or `withdrawn`; a withdrawn one has `withdrawn_at` and `withdrawal_reason`.
+
+`POST /certificate-authority/intermediates` signs one. It takes the mesh's certificate signing request in PEM and, if wished, a lifetime in days, which is the authority's bound on intermediates unless given:
+
+```json
+{ "certificate_signing_request": "-----BEGIN CERTIFICATE REQUEST-----\n…", "lifetime_days": 2 }
+```
+
+and answers `201` with the intermediate. It needs `certificate-authority:sign`, which the tenant administrator holds, and so does the built-in role `certificate_signer`, which holds nothing else: the role of a workload whose API key holds the one scope `certificate-authority:sign` ([who may sign](../architecture/contexts/keys.md#who-may-sign)).
+
+This operation alone also takes, as its bearer, an access token of the tenant's token endpoint issued to a client acting as a service account, for the audience `urn:hodor:certificate-authority` and with the scope `certificate-authority:sign`, which is how [`hodor-cert-manager-issuer`](../operations/hodor-cert-manager-issuer.md) signs:
+
+```
+Authorization: Bearer eyJhbGciOiJFUzI1NiIsInR5cCI6ImF0K2p3dCIs…
+```
+
+Such a token that is not good, not for that audience, or not of a service account's client is answered `401` `admin.not_authenticated`; one without the scope, or whose service account does not hold `certificate-authority:sign` through its roles, `403` `admin.forbidden`. A bound token must come with its certificate. Every other operation refuses it with `401`.
+
+`GET /certificate-authority/intermediates` answers `{ "items": [ … ], "next_cursor": … }`, the intermediates of the tenant's authority, newest first, a page at a time as users are. `GET /certificate-authority/intermediates/{intermediate_id}` answers one.
+
+`POST /certificate-authority/intermediates/{intermediate_id}:withdraw` takes `{ "reason": "the cluster was rebuilt" }`, 1 to 200 characters, and answers `200` with the intermediate, withdrawn, with every other intermediate of the same key. Hodor refuses its workloads from the next request on ([withdrawing an intermediate](../architecture/contexts/keys.md#withdrawing-an-intermediate)).
+
+| Situation | Status | Code |
+|---|---|---|
+| The tenant has no authority, or no intermediate of that identifier | `404` | `keys.authority_not_found`, `keys.intermediate_not_found` |
+| The authority awaits its certificate | `409` | `keys.authority_not_active` |
+| A request for a key that was withdrawn | `409` | `keys.intermediate_key_withdrawn` |
+| Withdrawing an intermediate already withdrawn | `409` | `keys.intermediate_withdrawn` |
+| The intermediate or the authority changed while it was being changed | `409` | `keys.intermediate_changed`, `keys.authority_changed` |
+| A request that does not read, is larger than 16 kibibytes, whose signature does not check with its own key, or whose subject is empty | `422` | `keys.intermediate_request_invalid` |
+| A request that does not ask for an authority | `422` | `keys.intermediate_not_an_authority` |
+| A request that asks for a path length above zero | `422` | `keys.intermediate_path_length_invalid` |
+| A name outside the authority's trust domains, a name of another kind than a URI or a DNS name, or more than 20 | `422` | `keys.intermediate_name_outside_trust_domains` |
+| Name constraints that permit a DNS name outside the trust domains or a subtree of another kind, or more than 20 | `422` | `keys.intermediate_constraints_widened` |
+| Name constraints on URIs, or excluding a subtree of another kind than DNS names and addresses | `422` | `keys.intermediate_constraints_unsupported` |
+| A key that is not ECDSA on P-256 or P-384 nor RSA of 3072 to 8192 bits, or is the authority's own | `422` | `keys.intermediate_key_unsuitable` |
+| A lifetime of less than a day, longer than the authority's bound, or ending after the authority's own certificate | `422` | `keys.intermediate_lifetime_invalid` |
+| A reason of no characters or more than 200 | `422` | `keys.intermediate_reason_invalid` |
+
+The problem's `detail` names the reason, such as the name that is outside the trust domains or the size of the key, for every refusal of the `keys.intermediate_` codes, which are about what the caller sent; a refusal of another code is answered with its message, as everywhere in this interface.
 
 ### Applications, clients and resource servers
 
@@ -486,12 +748,23 @@ A client:
   "allowed_scopes": ["openid", "email", "invoices:read"],
   "require_pkce": true,
   "id_token_signed_response_alg": "ES256",
+  "userinfo_signed_response_alg": null,
+  "request_object_signing_alg": null,
+  "require_pushed_authorization_requests": false,
+  "request_uris": ["https://billing.example.com/requests/"],
   "backchannel_logout_uri": "https://billing.example.com/backchannel-logout",
   "backchannel_logout_session_required": false,
   "subject_type": "public",
   "sector_identifier_uri": null,
+  "jwks_uri": null,
+  "default_max_age": null,
+  "default_acr_values": [],
+  "require_auth_time": false,
   "principal": null,
   "exchange_rules": [],
+  "spiffe_id": null,
+  "linkerd_identity": null,
+  "tls_client_certificate_bound_access_tokens": false,
   "token_policy": {
     "access_token_seconds": 300,
     "id_token_seconds": 300,
@@ -508,7 +781,7 @@ A client:
 }
 ```
 
-`id` is the `client_id` the client sends. `secrets` lists the secrets that exist, by identifier and expiry, never the secret or its hash. `keys` lists the public keys, each as `{ "kid": "…", "jwk": { … }, "added_at": "…" }`.
+`id` is the `client_id` the client sends. `secrets` lists the secrets that exist, by identifier and expiry, never the secret or its hash. `keys` lists the public keys Hodor keeps, each as `{ "kid": "…", "jwk": { … }, "added_at": "…" }`. `jwks_uri` is the address where a client using `private_key_jwt` publishes its keys itself, or `null`; a client with one has no `keys`, and what its address answers is never shown. `spiffe_id` is the SPIFFE identifier of a client using `spiffe_jwt` or `spiffe_x509`, or using `tls_client_auth` bound to one, and `linkerd_identity` the Linkerd identity of a client using `linkerd_identity`, or using `tls_client_auth` bound to one; each is `null` for any other. `tls_client_certificate_bound_access_tokens` says whether the client's access tokens are bound to a certificate.
 
 `POST /applications/{application_id}/clients` with:
 
@@ -522,15 +795,15 @@ A client:
 }
 ```
 
-`name`, `type` and `grant_types` are required. `authentication_method` is `client_secret_basic` for a confidential client and `none` for a public one unless given; `redirect_uris`, `post_logout_redirect_uris` and `allowed_scopes` are empty, `require_pkce` is `true`, `id_token_signed_response_alg` is `ES256` (or `RS256`; how its ID tokens are signed), `backchannel_logout_uri` is `null` and `backchannel_logout_session_required` `false`, and `token_policy` is the default of the OAuth context unless given, and `token_policy` may give any of its four fields. `principal`, the identifier of a service account or an agent, binds the client to it ([clients that act as a workload](../architecture/contexts/oauth.md#clients-that-act-as-a-workload)); it is `null` unless given, and a client with one has `client_credentials` and, for an agent, may have `urn:ietf:params:oauth:grant-type:token-exchange` besides. `exchange_rules`, a list of `{ "subject_audience": "…", "audience": "…" }`, is the [token exchange](../architecture/contexts/oauth.md#token-exchange) policy of an agent's client with that grant, and is empty otherwise. `backchannel_logout_uri` is where Hodor sends a logout token when a session the client signed a person in with ends ([back-channel logout](../architecture/contexts/oauth.md#back-channel-logout)): an HTTPS address, only for a client with `authorization_code`, and checked when it is given as [a webhook endpoint's address](../architecture/contexts/oauth.md#the-back-channel-logout-address) is: one that leads to a private network is refused with `oauth.client_backchannel_logout_uri_forbidden`, a name that resolves to nothing with `oauth.client_backchannel_logout_uri_unresolvable`, and one that is not HTTPS or cannot be read with `oauth.client_backchannel_logout_uri_invalid`. `backchannel_logout_session_required` may be `true` only with an address; Hodor puts `sid` in every logout token whatever it says. `subject_type` is `public` unless given, or `pairwise`, only for a client with `authorization_code`, otherwise `oauth.client_subject_type_invalid`: a pairwise client knows each person by an identifier of its sector alone, in its ID tokens, access tokens, UserInfo, introspection and logout tokens ([pairwise subject identifiers](../architecture/contexts/oauth.md#pairwise-subject-identifiers)). Its sector is the host of `sector_identifier_uri` when it has one, or the one host of its redirect addresses; with redirect addresses of several hosts, or a private-use scheme, it needs `sector_identifier_uri`, otherwise `oauth.client_sector_identifier_uri_required`. `sector_identifier_uri`, `null` unless given and only for a pairwise client, is an HTTPS address that Hodor fetches when it is set, which must answer a JSON array holding every redirect address of the client ([the sector identifier address](../architecture/contexts/oauth.md#the-sector-identifier-address)): one that leads to a private network is refused with `oauth.client_sector_identifier_uri_forbidden`, a name that resolves to nothing with `oauth.client_sector_identifier_uri_unresolvable`, one that does not answer in time, answers another status or too much with `oauth.client_sector_identifier_uri_unreachable`, an answer that is not a JSON array of strings with `oauth.client_sector_identifier_uri_document_invalid`, a redirect address missing from it with `oauth.client_sector_identifier_uri_mismatch`, and an address that is not HTTPS or cannot be read with `oauth.client_sector_identifier_uri_invalid`. `secret_lifetime_days`, from 1 to 730, is how long the first secret lives; 365 unless given. The answer is `201` with the client. **A client with a secret method also has `client_secret` in this answer, once**: the secret itself, which no other answer holds and which Hodor cannot show again.
+`name`, `type` and `grant_types` are required. `authentication_method` is `client_secret_basic` for a confidential client and `none` for a public one unless given; `redirect_uris`, `post_logout_redirect_uris` and `allowed_scopes` are empty, `require_pkce` is `true`, `id_token_signed_response_alg` is `ES256` (or `RS256`, `PS256` or `EdDSA`; how its [ID tokens](../architecture/contexts/oauth.md#the-id-token) are signed; another value, `none` among them, is refused with `oauth.client_id_token_algorithm_invalid`), `userinfo_signed_response_alg` is `null` (or `ES256`, `RS256`, `PS256` or `EdDSA`; with `null` UserInfo answers the client in JSON, with an algorithm in a JSON Web Token signed with it, [signed UserInfo answers](../architecture/contexts/oauth.md#signed-userinfo-answers); another value, `none` among them, is refused with `oauth.client_userinfo_algorithm_invalid`), `request_object_signing_alg` is `null` (or `ES256`, `RS256`, `PS256` or `none`; how it signs its [request objects](../architecture/contexts/oauth.md#request-objects): `null` accepts an object signed with any of the three by one of its keys, one of them only that one, and `none` only unsigned objects; another value is refused with `oauth.client_request_object_algorithm_invalid`), `require_pushed_authorization_requests` is `false` (`true` has every request of the client [pushed](../architecture/contexts/oauth.md#pushed-authorization-requests) first, and refuses any other), `request_uris` is empty, `backchannel_logout_uri` is `null` and `backchannel_logout_session_required` `false`, and `token_policy` is the default of the OAuth context unless given, and `token_policy` may give any of its four fields. `principal`, the identifier of a service account or an agent, binds the client to it ([clients that act as a workload](../architecture/contexts/oauth.md#clients-that-act-as-a-workload)); it is `null` unless given, and a client with one has `client_credentials` and, for an agent, may have `urn:ietf:params:oauth:grant-type:token-exchange` besides. `exchange_rules`, a list of `{ "subject_audience": "…", "audience": "…" }`, is the [token exchange](../architecture/contexts/oauth.md#token-exchange) policy of an agent's client with that grant, and is empty otherwise. `spiffe_id`, `null` unless given, is the one SPIFFE identifier of a client using `spiffe_jwt`, such as `spiffe://cluster.local/ns/payroll/sa/nightly-export`, whose JWT-SVIDs then prove who the client is ([the SPIFFE identifier of a client](../architecture/contexts/oauth.md#the-spiffe-identifier-of-a-client)), or using `spiffe_x509`, whose X509-SVID a trusted proxy forwards ([an identity forwarded by a proxy](../architecture/contexts/oauth.md#an-identity-forwarded-by-a-proxy)): it is required with those methods, allowed with `tls_client_auth` and refused with any other, and the client's `principal` must then be a service account. An identifier that does not follow the SPIFFE rules, or ends in `/*`, is refused with `oauth.client_spiffe_id_invalid`, and one already bound to another client of the tenant with `oauth.client_spiffe_id_taken`. `linkerd_identity`, `null` unless given, is the one Linkerd identity of a client using `linkerd_identity`, such as `web.shop.serviceaccount.identity.linkerd.cluster.local`, which Linkerd's proxy forwards: it is required with that method, allowed with `tls_client_auth` and refused with any other, the client's `principal` must then be a service account, one that does not read is refused with `oauth.client_linkerd_identity_invalid`, and one already bound to another client of the tenant with `oauth.client_linkerd_identity_taken`. A client using `tls_client_auth` has exactly one of the two, and is refused with `oauth.client_spiffe_id_invalid` otherwise. These methods are for a confidential client, which then has no secret. `tls_client_certificate_bound_access_tokens`, `false` unless given, is the client metadata of RFC 8705: `true` asks for every access token of the client to be bound to the certificate the proxy in front of Hodor forwards with its request, and for a public client its refresh tokens too ([certificate-bound access tokens](../architecture/contexts/oauth.md#certificate-bound-access-tokens)); such a client is then refused a token when its request comes with no certificate. It is refused with `linkerd_identity`, whose proxy forwards no certificate, with `oauth.client_certificate_bound_access_tokens_invalid`. `backchannel_logout_uri` is where Hodor sends a logout token when a session the client signed a person in with ends ([back-channel logout](../architecture/contexts/oauth.md#back-channel-logout)): an HTTPS address, only for a client with `authorization_code`, and checked when it is given as [a webhook endpoint's address](../architecture/contexts/oauth.md#the-back-channel-logout-address) is: one that leads to a private network is refused with `oauth.client_backchannel_logout_uri_forbidden`, a name that resolves to nothing with `oauth.client_backchannel_logout_uri_unresolvable`, and one that is not HTTPS or cannot be read with `oauth.client_backchannel_logout_uri_invalid`. `backchannel_logout_session_required` may be `true` only with an address; Hodor puts `sid` in every logout token whatever it says. `request_uris`, at most 10 and only for a client with `authorization_code`, are where the client keeps [request objects](../architecture/contexts/oauth.md#request-objects-at-a-clients-address) that Hodor fetches when a request names one of them, or an address that starts with one ([request object addresses](../architecture/contexts/oauth.md#request-object-addresses)): each an HTTPS address with a path, at least `/`, without a fragment, otherwise `oauth.client_request_uri_invalid`, and checked when it is given as a back-channel logout address is: one that leads to a private network is refused with `oauth.client_request_uri_forbidden`, a name that resolves to nothing with `oauth.client_request_uri_unresolvable`. `subject_type` is `public` unless given, or `pairwise`, only for a client with `authorization_code`, otherwise `oauth.client_subject_type_invalid`: a pairwise client knows each person by an identifier of its sector alone, in its ID tokens, access tokens, UserInfo, introspection and logout tokens ([pairwise subject identifiers](../architecture/contexts/oauth.md#pairwise-subject-identifiers)). Its sector is the host of `sector_identifier_uri` when it has one, or the one host of its redirect addresses; with redirect addresses of several hosts, or a private-use scheme, it needs `sector_identifier_uri`, otherwise `oauth.client_sector_identifier_uri_required`. `sector_identifier_uri`, `null` unless given and only for a pairwise client, is an HTTPS address that Hodor fetches when it is set, which must answer a JSON array holding every redirect address of the client ([the sector identifier address](../architecture/contexts/oauth.md#the-sector-identifier-address)): one that leads to a private network is refused with `oauth.client_sector_identifier_uri_forbidden`, a name that resolves to nothing with `oauth.client_sector_identifier_uri_unresolvable`, one that does not answer in time, answers another status or too much with `oauth.client_sector_identifier_uri_unreachable`, an answer that is not a JSON array of strings with `oauth.client_sector_identifier_uri_document_invalid`, a redirect address missing from it with `oauth.client_sector_identifier_uri_mismatch`, and an address that is not HTTPS or cannot be read with `oauth.client_sector_identifier_uri_invalid`. `jwks_uri`, `null` unless given and only for a client using `private_key_jwt`, is the address where the client publishes its keys as a JSON Web Key Set, in place of keys added one by one ([keys at the client's address](../architecture/contexts/oauth.md#keys-at-the-clients-address)): Hodor fetches it when it checks an assertion or a request object of the client, keeps what it answered for an hour at most, and fetches it again for a `kid` it does not know at most once a minute. It is checked when it is given and nothing is fetched then: one that leads to a private network is refused with `oauth.client_jwks_uri_forbidden`, a name that resolves to nothing with `oauth.client_jwks_uri_unresolvable`, and one that is not HTTPS, cannot be read, or is given to a client of another method with `oauth.client_jwks_uri_invalid`. `default_max_age`, `default_acr_values` and `require_auth_time` are the client's [defaults for a sign-in](../architecture/contexts/oauth.md#defaults-for-a-sign-in), its metadata of the same names in OpenID Connect Registration, only for a client with `authorization_code`: `default_max_age`, `null` unless given, is the `max_age` in seconds, 0 to 31 536 000, of a request that names none, otherwise `oauth.client_default_max_age_invalid`; `default_acr_values`, empty unless given, is the `acr_values` of a request that names none, at most 10 names of 1 to 128 printable characters without spaces and at most 255 characters together, otherwise `oauth.client_default_acr_values_invalid`; `require_auth_time`, `false` unless given, records that the client needs `auth_time` in its ID tokens, which every ID token has, and `true` on a client without `authorization_code` is `oauth.client_require_auth_time_invalid`. `secret_lifetime_days`, from 1 to 730, is how long the first secret lives; 365 unless given. The answer is `201` with the client. **A client with a secret method also has `client_secret` in this answer, once**: the secret itself, which no other answer holds and which Hodor cannot show again.
 
-`PATCH /clients/{client_id}` takes any of `name`, `authentication_method`, `grant_types`, `redirect_uris`, `post_logout_redirect_uris`, `allowed_scopes`, `require_pkce`, `id_token_signed_response_alg`, `backchannel_logout_uri`, which `null` removes, `backchannel_logout_session_required`, `subject_type`, `sector_identifier_uri`, which `null` removes, `token_policy` (with any of its fields), `principal`, which `null` removes, and `exchange_rules`, which replaces the list; what is left out stays as it is, and the result is checked against every rule at once. The sector identifier address is fetched again when the change gives the client a new address, new redirect addresses or the pairwise subject type while it has one. **Changing `subject_type`, `sector_identifier_uri` or the host of the redirect addresses of a pairwise client changes the identifier by which it knows every person from then on.** The type and the application never change. Moving away from a secret method drops the client's secrets, and moving away from `private_key_jwt` drops its keys. The answer is `200` with the client.
+`PATCH /clients/{client_id}` takes any of `name`, `authentication_method`, `grant_types`, `redirect_uris`, `post_logout_redirect_uris`, `allowed_scopes`, `require_pkce`, `id_token_signed_response_alg`, `userinfo_signed_response_alg`, which `null` removes, `request_object_signing_alg`, which `null` removes, `require_pushed_authorization_requests`, `request_uris`, which replaces the list, `backchannel_logout_uri`, which `null` removes, `backchannel_logout_session_required`, `subject_type`, `sector_identifier_uri`, which `null` removes, `jwks_uri`, which `null` removes, `default_max_age`, which `null` removes, `default_acr_values`, which replaces the list, `require_auth_time`, `token_policy` (with any of its fields), `principal`, which `null` removes, and `exchange_rules`, which replaces the list, and `spiffe_id` and `linkerd_identity`, which `null` removes, and `tls_client_certificate_bound_access_tokens`; what is left out stays as it is, except that giving one identity removes the other, and the result is checked against every rule at once. Only a request object address the client did not have is checked again. The sector identifier address is fetched again when the change gives the client a new address, new redirect addresses or the pairwise subject type while it has one. **Changing `subject_type`, `sector_identifier_uri` or the host of the redirect addresses of a pairwise client changes the identifier by which it knows every person from then on.** The type and the application never change. Moving away from a secret method drops the client's secrets, and moving away from `private_key_jwt` drops its keys and its `jwks_uri`, and moving away from `spiffe_jwt` needs `spiffe_id` set to a method that does not take the client's `spiffe_id` or `linkerd_identity` drops it. The answer is `200` with the client.
 
 `POST /clients/{client_id}/secrets` with `{ "lifetime_days": 365, "keep_previous_days": 7 }` makes a new secret. Both fields are optional: the new secret lives 365 days and the newest previous one keeps working 7 more days unless given; `keep_previous_days` is 0 to 30, and 0 ends it at once. Every older secret ends at once. The answer is `201` with `{ "id": "…", "client_secret": "hodor_cs_…", "created_at": "…", "expires_at": "…" }`, once. A client without a secret method is refused with `422` and `oauth.client_secret_not_allowed`.
 
 `DELETE /clients/{client_id}/secrets/{secret_id}` ends one secret at once and answers `204`.
 
-`POST /clients/{client_id}/keys` with `{ "jwk": { "kty": "EC", "crv": "P-256", "kid": "2026-11", "x": "…", "y": "…" } }` adds a public key to a client using `private_key_jwt` and answers `201` with the client. A key with a private part is refused with `422` and `oauth.client_key_invalid`, and nothing is kept. `DELETE /clients/{client_id}/keys/{key_id}` removes the key with that `kid`, written in the path with percent-encoding where it needs it, and answers `204`.
+`POST /clients/{client_id}/keys` with `{ "jwk": { "kty": "EC", "crv": "P-256", "kid": "2026-11", "x": "…", "y": "…" } }` adds a public key to a client using `private_key_jwt` and answers `201` with the client. A key with a private part is refused with `422` and `oauth.client_key_invalid`, and nothing is kept. A client with a `jwks_uri` is refused a key with `422` and `oauth.client_keys_at_address`, and a `jwks_uri` given to a client that has keys is refused with `409` and `oauth.client_jwks_uri_with_keys`: a client's keys are in one place, never both, as RFC 7591 says of `jwks` and `jwks_uri`, so its keys are removed first. `DELETE /clients/{client_id}/keys/{key_id}` removes the key with that `kid`, written in the path with percent-encoding where it needs it, and answers `204`.
 
 `POST /clients/{client_id}:disable` and `:enable` take no body and answer `200` with the client. `GET /applications/{application_id}/clients` answers `{ "items": [ … ] }`, oldest first; an application has at most 20.
 
@@ -554,10 +827,11 @@ A resource server:
 
 | Situation | Status | Code |
 |---|---|---|
-| A value breaks its rule | `422` | The OAuth context's code, such as `oauth.client_redirect_uri_invalid` or `oauth.client_authentication_method_invalid`; a key for a client that does not use `private_key_jwt` is `oauth.client_key_not_allowed`; a principal that is not a service account or an agent of the tenant, or a deleted one, or not an agent with the token exchange grant, is `oauth.client_principal_invalid`; exchange rules that break their rules are `oauth.client_exchange_rules_invalid`; and one given with another grant than `client_credentials` is `oauth.client_grants_invalid` |
+| A value breaks its rule | `422` | The OAuth context's code, such as `oauth.client_redirect_uri_invalid` or `oauth.client_authentication_method_invalid`; a key for a client that does not use `private_key_jwt` is `oauth.client_key_not_allowed`; a principal that is not a service account or an agent of the tenant, or a deleted one, or not an agent with the token exchange grant, or not a service account with `spiffe_jwt`, `tls_client_auth`, `spiffe_x509` or `linkerd_identity`, is `oauth.client_principal_invalid`; a SPIFFE identifier that breaks its rules, or one given with a method that does not take it or missing with one that needs it, and a client using `tls_client_auth` with both identities or neither, is `oauth.client_spiffe_id_invalid`; a Linkerd identity that does not read, given with a method that does not take it or missing with `linkerd_identity`, is `oauth.client_linkerd_identity_invalid`; exchange rules that break their rules are `oauth.client_exchange_rules_invalid`; and one given with another grant than `client_credentials` is `oauth.client_grants_invalid` |
 | The tenant already has 100 applications, or the application 20 clients | `409` | `oauth.too_many_applications`, `oauth.too_many_clients` |
 | The audience is taken, or the application already has a resource server | `409` | `oauth.audience_taken`, `oauth.application_has_resource_server` |
 | A `kid` the client already has, or a sixth key | `409` | `oauth.client_key_taken`, `oauth.client_too_many_keys` |
+| A SPIFFE identifier or a Linkerd identity a client of the tenant acting as another principal is bound to | `409` | `oauth.client_spiffe_id_taken`, `oauth.client_linkerd_identity_taken` |
 | No such application, client, secret, key or resource server in this tenant | `404` | `oauth.application_not_found`, `oauth.client_not_found`, `oauth.client_secret_not_found`, `oauth.client_key_not_found`, `oauth.resource_server_not_found` |
 | Someone else changed it at the same moment | `409` | `oauth.application_modified_concurrently`, `oauth.client_modified_concurrently`, `oauth.resource_server_modified_concurrently` |
 
@@ -600,6 +874,65 @@ A claim mapper adds one claim to the tokens of one client. What it may read, the
 | No such client or mapper in this tenant, or a mapper of another client | `404` | `oauth.client_not_found`, `oauth.claim_mapper_not_found` |
 | Someone else changed the mapper at the same moment | `409` | `oauth.claim_mapper_modified_concurrently` |
 
+### Client registration
+
+Whether clients may register themselves in the tenant, and what they may become: [client registration](../architecture/contexts/oauth.md#client-registration) in the OAuth context, which this interface translates. The registration endpoint itself is not built yet (Issue-133).
+
+The settings, as `GET /client-registration` answers them, here with their defaults and registration on:
+
+```json
+{
+  "enabled": true,
+  "application_id": "0193f1c2-…",
+  "ways": ["initial_access_token"],
+  "max_clients": 100,
+  "policy": {
+    "grant_types": ["authorization_code"],
+    "response_types": ["code"],
+    "scopes": ["openid", "profile", "email"],
+    "token_endpoint_auth_methods": ["client_secret_basic", "private_key_jwt"],
+    "subject_types": ["public"],
+    "hosts": null
+  },
+  "updated_at": "2026-11-25T14:03:11Z"
+}
+```
+
+`ways` holds one or more of `initial_access_token`, `software_statement` and `open`. `hosts` is `null` for any host, or a list of 1 to 50 hosts that every address of a registration must name. A tenant that never set them answers the defaults, with `enabled` `false`, `application_id` and `updated_at` `null`.
+
+`PUT /client-registration` takes the same document without `updated_at` and replaces the settings as a whole. `enabled` is required; `application_id` is required while `enabled` is `true`, and may be `null` otherwise; any other member left out, and any member of `policy` left out, takes its default. The answer is `200` with the settings as they are now. Turning registration off with `{ "enabled": false }` keeps nothing of the policy that was set: an administrator who means to turn it on again later sends the settings with `enabled` `false` instead.
+
+An initial access token, as every answer writes it:
+
+```json
+{
+  "id": "0193f3a0-…",
+  "name": "Partner portal team",
+  "hint": "…7c1e",
+  "status": "active",
+  "max_registrations": 1,
+  "registrations": 0,
+  "created_at": "2026-11-25T14:03:11Z",
+  "expires_at": "2026-12-02T14:03:11Z",
+  "last_used_at": null,
+  "revoked_at": null
+}
+```
+
+`status` is `active`, `expired`, `used_up` or `revoked`. `hint` is the last four characters of the token. `POST /client-registration/initial-access-tokens` takes `{ "name": "…", "lifetime_hours": 168, "max_registrations": 1 }`; `lifetime_hours`, 1 to 2160, is 168 unless given, and `max_registrations`, 1 to 1000, is 1. The answer is `201` with the token and, **once**, `initial_access_token`: the token itself, `hodor_iat_…`, which no other answer holds and which Hodor cannot show again. `GET /client-registration/initial-access-tokens` answers `{ "items": [ … ] }`, newest first; a tenant holds at most 100 active tokens, and the list holds every token not yet removed. `DELETE /client-registration/initial-access-tokens/{token_id}` revokes it and answers `204`.
+
+| Situation | Status | Code |
+|---|---|---|
+| The application is missing while registration is on, not one of the tenant's, or first party | `422` | `oauth.client_registration_application_invalid` |
+| No way while registration is on, most clients outside 1 to 1000, or a limit of the policy that breaks its rule | `422` | `oauth.client_registration_ways_invalid`, `oauth.client_registration_most_clients_invalid`, `oauth.client_registration_policy_invalid` |
+| A token's name, lifetime or registrations break their rule | `422` | `oauth.initial_access_token_name_invalid`, `oauth.initial_access_token_lifetime_invalid`, `oauth.initial_access_token_registrations_invalid` |
+| A token is made while registration is off, or does not allow tokens, or the tenant already holds 100 active ones | `409` | `oauth.client_registration_off`, `oauth.initial_access_tokens_not_allowed`, `oauth.too_many_initial_access_tokens` |
+| Someone else changed the settings at the same moment | `409` | `oauth.client_registration_modified_concurrently` |
+| No such token in this tenant | `404` | `oauth.initial_access_token_not_found` |
+| A body that is not that document, or a value of a list that is not a word Hodor knows | `422` | `request.body_invalid`, `oauth.client_registration_policy_invalid` |
+
+What an administrator does here is in the audit log, through the events `oauth.client_registration_changed`, `oauth.initial_access_token_issued` and `oauth.initial_access_token_revoked`, which never carry a token or its hash.
+
 ### Assurance levels
 
 The levels an application names in `acr_values`, and which every token names in `acr` ([the tenant context](../architecture/contexts/tenant.md#assurance-levels)):
@@ -640,6 +973,16 @@ The tenant's [email sign-in policy](../architecture/contexts/tenant.md#email-sig
 ```
 
 `GET /email-sign-in` answers the policy in force, both `false` when none was set. `PUT /email-sign-in` takes the same document, both fields required, and answers it as it is now; a change applies to requests that arrive after it, and is recorded as `tenant.settings_changed`. Another body is `422` with `request.body_invalid`.
+
+### Pushed authorization requests
+
+The tenant's [pushed authorization request policy](../architecture/contexts/tenant.md#pushed-authorization-request-policy): how long a request a client [pushes](../architecture/contexts/oauth.md#pushed-authorization-requests) waits for its browser, in seconds, and whether every client of the tenant must push its requests.
+
+```json
+{ "lifetime_seconds": 60, "required": false }
+```
+
+`GET /pushed-authorization-requests` answers the policy in force, `60` and `false` when none was set. `PUT /pushed-authorization-requests` takes the same document, both fields required, and answers it as it is now; a change applies to requests pushed or sent after it, and is recorded as `tenant.settings_changed`. A life outside 10 to 600 seconds is `422` with `tenant.settings_invalid`; another body is `422` with `request.body_invalid`.
 
 ### The record of decisions
 

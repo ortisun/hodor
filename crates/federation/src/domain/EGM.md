@@ -13,8 +13,11 @@ Each type below is re-exported in `hodor_federation::api` unless marked crate-pr
   - `Alias` is the name of a provider in addresses, and it never changes. `parse(value)` checks it and `as_str()` returns it.
   - `ProviderKind` has the variants `OpenIdConnect`, `GitHub`, `Ldap` and `Saml`. `as_str()` returns `openid_connect`, `github`, `ldap` or `saml`, and `from_stored(value)` reads those names back.
   - `ProviderStatus` has the variants `Enabled` and `Disabled`. `as_str()` returns `enabled` or `disabled`, and `from_stored(value)` reads those names back. A disabled provider keeps its links (doc comment).
-  - `DirectorySettings` has the public fields `base`, `filter`, `subject_attribute`, `email_attribute` and `name_attribute`. `new(base, filter)` uses the default attribute names `entryUUID`, `mail` and `cn`.
-  - `SamlSettings` has the public fields `single_sign_on_address`, `certificate`, `email_attribute` and `name_attribute`. `new(single_sign_on_address, certificate)` uses the default attribute names `email` and `name`. `key()` turns the certificate into a `hodor_saml::IdentityProviderKey`. If the certificate cannot be used, it returns `federation.saml_invalid` with the certificate error's reason as the error detail.
+  - `ClaimAttributes` is a `BTreeMap<String, String>` from a standard claim's name to the attribute that gives it, such as `given_name` to `givenName` or `address.locality` to `l`. The names are those of `hodor_identity::api::ClaimField`: the seventeen text claims, with the parts of the address as `address.<part>`. `phone_number_verified` and `address` as a whole are not among them.
+  - `claims_from(attributes, read) -> StandardClaims` reads each named claim from the attribute's value through `read`, as given, and leaves out a claim `read` gives nothing for. It ignores the map entirely when one of its names is not a claim. A telephone number from it is never verified.
+  - `LONGEST_CLAIM_VALUE` = 1024: the longest value, in characters, kept of a claim a provider gives. Past it no rule of a claim could hold.
+  - `DirectorySettings` has the public fields `base`, `filter`, `subject_attribute`, `email_attribute`, `name_attribute` and `claim_attributes`. `new(base, filter)` uses the default attribute names `entryUUID`, `mail` and `cn`, and no claim attributes.
+  - `SamlSettings` has the public fields `single_sign_on_address`, `certificate`, `email_attribute`, `name_attribute` and `claim_attributes`. `new(single_sign_on_address, certificate)` uses the default attribute names `email` and `name`, and no claim attributes. `key()` turns the certificate into a `hodor_saml::IdentityProviderKey`. If the certificate cannot be used, it returns `federation.saml_invalid` with the certificate error's reason as the error detail.
   - `ProviderSettings` has the public fields `display_name`, `issuer`, `client_id`, `scopes`, `creates_users`, `trusts_email`, `directory: Option<DirectorySettings>` and `saml: Option<SamlSettings>`. Its methods are:
     - `default_scopes()` and `default_scopes_for(kind)`: `openid email profile` for OpenID Connect, `read:user user:email` for GitHub, and none for LDAP or SAML.
     - `default_issuer_for(kind)`: `https://github.com` for GitHub, and `None` for every other kind.
@@ -33,7 +36,8 @@ Each type below is re-exported in `hodor_federation::api` unless marked crate-pr
   - `Subject` is a provider's identifier for a person. `parse(value)` checks it and `expose()` returns it. Its `Debug` output is `Subject([REDACTED])`.
   - `ExternalIdentity` has the public fields `provider_id`, `subject`, `user_id`, `linked_at` and `last_used_at`.
 - `pending_authorization.rs`
-  - `PendingAuthorization` has the public fields `transaction_id`, `provider_id`, `state_hash: [u8; 32]`, `nonce`, `code_verifier: SealedSecret`, `redirect_uri`, `expires_at`, `saml_response: Option<String>` and `saml_receipt_hash: Option<[u8; 32]>`.
+  - `PendingAuthorization` has the public fields `transaction_id`, `provider_id`, `state_hash: [u8; 32]`, `nonce`, `code_verifier: SealedSecret`, `redirect_uri`, `expires_at`, `saml_answer: Option<SamlAnswer>` and `saml_receipt_hash: Option<[u8; 32]>`.
+  - `SamlAnswer` is what a SAML response said once it was checked on arrival: `Verified { subject, email, name, claims }`, where `claims` is a `BTreeMap<String, String>` of the standard claims the provider's claim attributes gave, by the claim's name, as given; or `Refused { reason }`. `refusal_named(name)` reads a stored reason back as its fixed name.
 - `event.rs`
   - `FederationEvent` is serialized untagged and implements `hodor_kernel::DomainEvent`. Each variant has its own event type:
 
@@ -64,15 +68,18 @@ Each type below is re-exported in `hodor_federation::api` unless marked crate-pr
   - Directory settings must be present for `Ldap` and absent for every other kind (`federation.directory_invalid`). `DirectorySettings::checked` requires the following:
     - a base of 1 to 255 characters;
     - a filter of at most 512 characters, wrapped in parentheses, with `{identifier}` exactly once;
-    - attribute names of 1 to 64 bytes, made of a letter followed by letters, digits and hyphens.
+    - attribute names of 1 to 64 bytes, made of a letter followed by letters, digits and hyphens, the claim attributes' included;
+    - claim attributes named only by a claim `ClaimField::parse` knows, so `shoe_size` or `address` alone is `federation.directory_invalid`.
   - SAML settings must be present for `Saml` and absent for every other kind (`federation.saml_invalid`). `SamlSettings::checked` requires the following:
     - a single sign-on address that passes `check_address`;
     - a certificate of at most 16 kibibytes that `key()` accepts;
-    - attribute names of 1 to 255 characters with no whitespace.
+    - attribute names of 1 to 255 characters with no whitespace, the claim attributes' included;
+    - claim attributes named only by a claim `ClaimField::parse` knows, or `federation.saml_invalid`.
+- Only a directory or a SAML identity provider has claim attributes, since they live in `DirectorySettings` and `SamlSettings`: an OpenID Connect provider gives the claims by their own names, and GitHub by its own members.
 - `IdentityProvider::change` checks the new settings against the provider's stored kind. The kind and alias of a provider cannot be changed: no method sets them.
 - `ProviderSnapshot::version` is incremented on every stored change, for optimistic locking (field doc comment). The store does the incrementing (`ProviderStore::update` in [application](../application/EGM.md)), not this module.
 - `ProviderKind::from_stored` and `ProviderStatus::from_stored` return the internal error `federation.stored_data_invalid` for a name they do not know.
-- `PendingAuthorization` belongs to one sign-in and is used once (doc comment). `saml_response` is kept at most once, and only for SAML providers (field doc comment).
+- `PendingAuthorization` belongs to one sign-in and is used once (doc comment). `saml_answer` is kept at most once, and only for SAML providers; the response itself is never kept (field doc comment). The claims of a verified answer are kept unchecked: they are checked, leniently, when the person is created.
 
 ## Side Effects
 

@@ -6,8 +6,8 @@ use crate::application::ports::{
     ClaimMapperStore, ClientStore, PersonClaimSources, PersonMemberships,
 };
 use crate::domain::claim_mapper::{
-    ClaimMapper, ClaimMapperId, ClaimMapperSettings, ClaimTarget, PersonFacts, check_together,
-    mapped_claims, needs,
+    ClaimMapper, ClaimMapperId, ClaimMapperSettings, ClaimTarget, PersonAttributes, PersonFacts,
+    check_together, mapped_claims, needs,
 };
 use crate::domain::client::{Client, ClientId};
 use crate::domain::event::OauthEvent;
@@ -328,6 +328,22 @@ impl ClaimMapping {
             memberships,
             sources,
         }
+    }
+
+    /// What Hodor knows of `user`, for the claims a client asks for
+    /// through the `claims` parameter: the attributes the mappers read,
+    /// with when the person was last changed. Empty for a user the tenant
+    /// does not have.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if storage fails.
+    pub async fn person(
+        &self,
+        tenant: &TenantContext,
+        user: UserId,
+    ) -> Result<PersonAttributes, DomainError> {
+        self.sources.attributes(tenant, user).await
     }
 
     /// The claims the client's mappers add to each of `targets` of

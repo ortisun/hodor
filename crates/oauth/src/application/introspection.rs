@@ -10,7 +10,7 @@ use crate::application::ports::{
 };
 use crate::application::token::{Issuer, TokenService};
 use crate::application::userinfo::published_keys;
-use crate::domain::authorization::GrantStatus;
+use crate::domain::authorization::{Grant, GrantStatus};
 use crate::domain::client::{Client, ClientType};
 use crate::domain::event::OauthEvent;
 use crate::domain::exchange::MAX_ACTORS;
@@ -157,6 +157,25 @@ impl AccessTokenRegister {
         token_id: &str,
         client_id: &str,
     ) -> Result<Option<UserId>, DomainError> {
+        Ok(self
+            .grant_in_force(tenant, token_id, client_id)
+            .await?
+            .map(|grant| grant.user_id))
+    }
+
+    /// The grant the access token `token_id` was issued under, if the
+    /// token is in force for `client_id` and its record names one; as
+    /// [`Self::person_in_force`] says, the grant's person is the token's.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if storage fails.
+    pub async fn grant_in_force(
+        &self,
+        tenant: &TenantContext,
+        token_id: &str,
+        client_id: &str,
+    ) -> Result<Option<Grant>, DomainError> {
         if !self.in_force(tenant, token_id, client_id).await? {
             return Ok(None);
         }
@@ -167,11 +186,7 @@ impl AccessTokenRegister {
         let Some(grant) = record.grant_id else {
             return Ok(None);
         };
-        Ok(self
-            .grants
-            .get(uow.as_mut(), grant)
-            .await?
-            .map(|grant| grant.user_id))
+        self.grants.get(uow.as_mut(), grant).await
     }
 
     /// The record of `token_id`, whatever its state, for an exchange that

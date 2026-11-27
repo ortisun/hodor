@@ -80,8 +80,14 @@ fn applications(
     hodor_oauth::api::ApplicationService,
     hodor_oauth::api::ConsentService,
     hodor_oauth::api::ClaimMapperService,
+    hodor_oauth::api::ClientRegistrationService,
 ) {
     let stores = hodor_oauth::testing::InMemoryStores::default();
+    let client_registration = hodor_oauth::testing::client_registration_service(
+        Arc::new(units_of_work.clone()),
+        &stores,
+        clock.clone(),
+    );
     let claim_mappers =
         hodor_oauth::api::ClaimMapperService::new(hodor_oauth::api::ClaimMapperPorts {
             units_of_work: Arc::new(units_of_work.clone()),
@@ -106,7 +112,7 @@ fn applications(
             random: Arc::new(hodor_oauth::testing::DistinctRandom),
             clock,
         });
-    (applications, consents, claim_mappers)
+    (applications, consents, claim_mappers, client_registration)
 }
 
 /// The use cases of people's factors on in-memory stores, with
@@ -290,8 +296,22 @@ fn world() -> World {
         federation: None,
         keys: None,
         key_rotation: hodor_keys::api::RotationPolicy::DEFAULT,
+        // Trust domains are tested in `admin.rs`; here none is fetched.
+        authority: None,
+        certificate_signing: None,
+        trust_domains: hodor_keys::api::TrustDomainService::new(
+            hodor_keys::api::TrustDomainPorts {
+                units_of_work: units(),
+                store: Arc::new(hodor_keys::testing::InMemoryTrustDomains::default()),
+                destinations: Arc::new(hodor_keys::testing::FakeBundleEndpoints::default()),
+                http: Arc::new(hodor_keys::testing::FakeBundleEndpoints::default()),
+                digest: Arc::new(FakeDigest),
+                clock: clock.clone(),
+            },
+        ),
         applications: oauth.0,
         claim_mappers: oauth.2.clone(),
+        client_registration: oauth.3.clone(),
         consents: oauth.1,
         tenants: TenantService::new(
             Arc::new(units_of_work.clone()),
@@ -536,6 +556,12 @@ async fn every_operation_is_refused_without_a_session() {
         let reply = world
             .send(method.clone(), &console(&concrete(path)), With::default())
             .await;
+        // The certificate authority is off in this world: its operations
+        // are not routed at all.
+        if path.starts_with("/certificate-authority") {
+            assert_eq!(reply.status, StatusCode::NOT_FOUND, "{method} {path}");
+            continue;
+        }
         assert_eq!(reply.status, StatusCode::UNAUTHORIZED, "{method} {path}");
         assert_eq!(reply.code(), "console.not_authenticated", "{method} {path}");
     }
@@ -574,6 +600,11 @@ async fn me_says_who_the_person_is_and_what_they_may_do() {
         .collect();
     assert!(permissions.contains(&"audit:read"), "{permissions:?}");
     assert!(!permissions.contains(&"users:write"), "{permissions:?}");
+    // The auditor holds it, but the authority is off in this world.
+    assert!(
+        !permissions.contains(&"certificate-authority:read"),
+        "{permissions:?}"
+    );
     assert_eq!(me.body["signed_in_at"], "1970-01-01T00:00:00Z");
     // The tenant lets the session live for a day; the console does not.
     assert_eq!(me.body["console_until"], "1970-01-01T12:00:00Z");

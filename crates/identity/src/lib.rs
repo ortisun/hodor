@@ -22,6 +22,12 @@ pub mod api {
     pub use crate::application::workloads::{
         ChangeWorkload, CreateWorkload, WORKLOAD_DELETED, WORKLOAD_DISABLED, WorkloadService,
     };
+    pub use crate::domain::claims::{
+        ClaimField, LONGEST_ADDRESS_PART, LONGEST_BIRTHDATE, LONGEST_FORMATTED_ADDRESS,
+        LONGEST_GENDER, LONGEST_NAME, LONGEST_PAGE_ADDRESS, LONGEST_PHONE_NUMBER,
+        LONGEST_POSTAL_CODE, LONGEST_STREET_ADDRESS, LONGEST_ZONEINFO, PostalAddress,
+        StandardClaims,
+    };
     pub use crate::domain::event::UserEvent;
     pub use crate::domain::group::{
         Group, GroupEvent, GroupMember, GroupName, GroupSnapshot, MAX_DESCRIPTION_CHARACTERS,

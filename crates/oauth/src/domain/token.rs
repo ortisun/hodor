@@ -6,10 +6,14 @@
 
 use crate::domain::authorization::AuthorizationCode;
 use crate::domain::client::{AuthenticationMethod, Client, ClientId};
+use crate::domain::forwarded::ForwardedIdentity;
+use crate::domain::key::ClientKey;
+use crate::domain::spiffe::SPIFFE_ASSERTION_TYPE;
 use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use hodor_kernel::{
-    GroupId, OrganizationId, RandomSource, Secret, SignatureAlgorithm, SignatureVerifier, Timestamp,
+    GroupId, OrganizationId, PublicKey, RandomSource, Secret, SignatureAlgorithm,
+    SignatureVerifier, Timestamp,
 };
 use serde_json::{Map, Value, json};
 use std::collections::BTreeSet;
@@ -48,6 +52,14 @@ impl TokenError {
             description,
             reason,
         }
+    }
+
+    /// An error of the authorization endpoint, answered by the pushed
+    /// request endpoint as JSON: the `error` and description the
+    /// authorization endpoint would send to the redirect address.
+    #[must_use]
+    pub const fn refused(error: &'static str, description: &'static str) -> Self {
+        Self::new(error, description, description)
     }
 
     /// The request is malformed.
@@ -149,10 +161,26 @@ pub enum PresentedClient {
         /// The `client_id` of the form, if one was given.
         client_id: Option<String>,
     },
+    /// A JWT-SVID of the workload the client is bound to (`spiffe_jwt`).
+    Svid {
+        /// The JWT-SVID.
+        svid: String,
+        /// The `client_id` of the form, if one was given.
+        client_id: Option<String>,
+    },
     /// Only its identifier: a public client.
     Public {
         /// The `client_id` it names.
         client_id: String,
+    },
+    /// Only its identifier, with the identity a trusted proxy forwarded:
+    /// a client of a forwarded identity, or a public client behind such a
+    /// proxy.
+    Forwarded {
+        /// The `client_id` it names.
+        client_id: String,
+        /// What the proxy forwarded.
+        identity: ForwardedIdentity,
     },
 }
 
@@ -170,22 +198,74 @@ impl fmt::Debug for PresentedClient {
                 .debug_struct("Assertion")
                 .field("client_id", client_id)
                 .finish_non_exhaustive(),
+            Self::Svid { client_id, .. } => f
+                .debug_struct("Svid")
+                .field("client_id", client_id)
+                .finish_non_exhaustive(),
             Self::Public { client_id } => f
                 .debug_struct("Public")
                 .field("client_id", client_id)
+                .finish(),
+            Self::Forwarded {
+                client_id,
+                identity,
+            } => f
+                .debug_struct("Forwarded")
+                .field("client_id", client_id)
+                .field("identity", identity)
                 .finish(),
         }
     }
 }
 
 impl PresentedClient {
-    /// The method the request used.
+    /// The method the request used. A request with only its identifier
+    /// is read as `none`, whether or not a proxy forwarded an identity:
+    /// see [`Self::may_be`].
     #[must_use]
     pub const fn method(&self) -> AuthenticationMethod {
         match self {
             Self::Secret { method, .. } => *method,
             Self::Assertion { .. } => AuthenticationMethod::PrivateKeyJwt,
-            Self::Public { .. } => AuthenticationMethod::None,
+            Self::Svid { .. } => AuthenticationMethod::SpiffeJwt,
+            Self::Public { .. } | Self::Forwarded { .. } => AuthenticationMethod::None,
+        }
+    }
+
+    /// Whether the request may be one of a client registered with
+    /// `registered`. A request with only its identifier may be a public
+    /// client's, or one of a client of a forwarded identity, which is then
+    /// checked by what the proxy forwarded.
+    #[must_use]
+    pub fn may_be(&self, registered: AuthenticationMethod) -> bool {
+        match self {
+            Self::Public { .. } | Self::Forwarded { .. } => {
+                registered == AuthenticationMethod::None || registered.uses_forwarded_identity()
+            }
+            _ => self.method() == registered,
+        }
+    }
+
+    /// The same request, with the identity a trusted proxy forwarded. Only
+    /// a request with its identifier alone takes it: one that carries a
+    /// secret or an assertion is answered by that.
+    #[must_use]
+    pub fn with_forwarded(self, identity: Option<ForwardedIdentity>) -> Self {
+        match (self, identity) {
+            (Self::Public { client_id }, Some(identity)) => Self::Forwarded {
+                client_id,
+                identity,
+            },
+            (presented, _) => presented,
+        }
+    }
+
+    /// The identity a trusted proxy forwarded with the request, if any.
+    #[must_use]
+    pub const fn forwarded(&self) -> Option<&ForwardedIdentity> {
+        match self {
+            Self::Forwarded { identity, .. } => Some(identity),
+            _ => None,
         }
     }
 }
@@ -321,6 +401,10 @@ pub struct TokenRequest {
     pub client: PresentedClient,
     /// What it asks for.
     pub grant: GrantRequest,
+    /// What a trusted proxy forwarded about the caller, whatever the
+    /// client proves who it is with: its certificate binds the tokens of a
+    /// client that asks for certificate-bound access tokens.
+    pub forwarded: Option<ForwardedIdentity>,
 }
 
 /// The identifier and the secret of an `Authorization: Basic` header,
@@ -389,7 +473,23 @@ impl TokenRequest {
                 return Err(TokenError::unsupported_grant_type("the grant is unknown"));
             }
         };
-        Ok(Self { client, grant })
+        Ok(Self {
+            client,
+            grant,
+            forwarded: None,
+        })
+    }
+
+    /// The same request, with what a trusted proxy forwarded about the
+    /// caller: for the client to prove who it is with, when it sent its
+    /// identifier alone, and for its tokens to be bound to.
+    #[must_use]
+    pub fn with_forwarded(self, forwarded: Option<ForwardedIdentity>) -> Self {
+        Self {
+            client: self.client.with_forwarded(forwarded.clone()),
+            grant: self.grant,
+            forwarded,
+        }
     }
 }
 
@@ -478,17 +578,20 @@ pub(crate) fn presented_client(
         });
     }
     if has_assertion {
-        if assertion_type.as_deref() != Some(ASSERTION_TYPE) {
-            return Err(TokenError::invalid_request(
+        let assertion = assertion.ok_or(TokenError::invalid_request("client_assertion is missing"));
+        return match assertion_type.as_deref() {
+            Some(ASSERTION_TYPE) => Ok(PresentedClient::Assertion {
+                assertion: assertion?,
+                client_id: form_id,
+            }),
+            Some(SPIFFE_ASSERTION_TYPE) => Ok(PresentedClient::Svid {
+                svid: assertion?,
+                client_id: form_id,
+            }),
+            _ => Err(TokenError::invalid_request(
                 "client_assertion_type is missing or unknown",
-            ));
-        }
-        let assertion =
-            assertion.ok_or(TokenError::invalid_request("client_assertion is missing"))?;
-        return Ok(PresentedClient::Assertion {
-            assertion,
-            client_id: form_id,
-        });
+            )),
+        };
     }
     match form_id {
         Some(client_id) => Ok(PresentedClient::Public { client_id }),
@@ -549,8 +652,60 @@ pub struct AssertionAudience<'a> {
     pub endpoint: &'a str,
 }
 
+/// Why none of a client's keys was chosen to check a signature.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum KeyChoice {
+    /// The header's `kid` is not text.
+    KidNotText,
+    /// No key of the client fits the header and the algorithm.
+    NoneFits,
+    /// More than one fits, and the header does not say which.
+    Ambiguous,
+}
+
+impl KeyChoice {
+    const fn assertion(self) -> &'static str {
+        match self {
+            Self::KidNotText => "the assertion's kid is not text",
+            Self::NoneFits => "no key of the client fits the assertion",
+            Self::Ambiguous => "the assertion does not say which of the client's keys signed it",
+        }
+    }
+}
+
+/// The one key of a client's `keys` that can have made a signature of
+/// `algorithm` under `header`: the key its `kid` names, or, without one,
+/// the only key that fits the algorithm. Client assertions and request
+/// objects choose the key alike. The keys are those Hodor keeps for the
+/// client or those at its address; a key of the address without a `kid`
+/// is never the one a `kid` names.
+pub(crate) fn client_key_for(
+    keys: &[ClientKey],
+    header: &Map<String, Value>,
+    algorithm: SignatureAlgorithm,
+) -> Result<PublicKey, KeyChoice> {
+    let mut candidates: Vec<PublicKey> = match header.get("kid") {
+        Some(Value::String(kid)) => keys
+            .iter()
+            .filter(|key| !key.key_id.is_empty() && &key.key_id == kid)
+            .filter_map(|key| key.verifying_key(algorithm))
+            .collect(),
+        Some(_) => return Err(KeyChoice::KidNotText),
+        None => keys
+            .iter()
+            .filter_map(|key| key.verifying_key(algorithm))
+            .collect(),
+    };
+    match candidates.len() {
+        1 => Ok(candidates.remove(0)),
+        0 => Err(KeyChoice::NoneFits),
+        _ => Err(KeyChoice::Ambiguous),
+    }
+}
+
 /// Checks a client's assertion (RFC 7523), in the order the specification
-/// gives. Nothing it says is used before its signature has been checked.
+/// gives, with `keys`, the client's: those Hodor keeps, or those at its
+/// address. Nothing it says is used before its signature has been checked.
 ///
 /// # Errors
 ///
@@ -559,6 +714,7 @@ pub struct AssertionAudience<'a> {
 pub fn check_assertion(
     assertion: &str,
     client: &Client,
+    keys: &[ClientKey],
     audience: AssertionAudience<'_>,
     now: Timestamp,
     verifier: &dyn SignatureVerifier,
@@ -579,26 +735,9 @@ pub fn check_assertion(
         .and_then(Value::as_str)
         .and_then(SignatureAlgorithm::from_name)
         .ok_or("the assertion names an algorithm that is not accepted")?;
-    let keys = &client.snapshot().keys;
-    let candidates: Vec<_> = match header.get("kid") {
-        Some(Value::String(kid)) => keys
-            .iter()
-            .filter(|key| &key.key_id == kid)
-            .filter_map(|key| key.verifying_key(algorithm))
-            .collect(),
-        Some(_) => return Err("the assertion's kid is not text"),
-        None => keys
-            .iter()
-            .filter_map(|key| key.verifying_key(algorithm))
-            .collect(),
-    };
-    let key = match candidates.as_slice() {
-        [key] => key,
-        [] => return Err("no key of the client fits the assertion"),
-        _ => return Err("the assertion does not say which of the client's keys signed it"),
-    };
+    let key = client_key_for(keys, &header, algorithm).map_err(KeyChoice::assertion)?;
     let signed = format!("{header_part}.{claims_part}");
-    if !verifier.verify(algorithm, key, signed.as_bytes(), &signature) {
+    if !verifier.verify(algorithm, &key, signed.as_bytes(), &signature) {
         return Err("the assertion's signature does not verify");
     }
 

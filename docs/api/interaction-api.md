@@ -150,7 +150,7 @@ A tenant may let people sign in with [a code or a link sent to their address](..
 { "email": "ana@example.com", "locale": "pt-BR" }
 ```
 
-`locale` is optional: the language of the message when the person has none of their own. The answer is `202` with `{ "status": "accepted" }`, the same whether the address has an account, has one that may not sign in, or is not an address at all. Asking again replaces what was sent before.
+`locale` is optional: the language of the message when the person has none of their own. The answer is `202` with `{ "status": "accepted" }`, the same whether the address has an account, has one that may not sign in, or is not an address at all. Asking again replaces what was sent before. Asking keeps nothing in the sign-in, so it is not refused because another request of the same sign-in, such as the page's request for the passkey challenge, changed it at the same moment: one request sends one message.
 
 **A code.** The page asks for the code and sends it to `POST /interaction/sign-in/steps/email_code`. The answer has [the shape of every sign-in response](#what-a-sign-in-response-looks-like): `completed`, or `pending` with the next step when the person has a second factor, or `rejected`, which leaves the code good for another try.
 
@@ -384,6 +384,8 @@ On a host that serves several tenants by path, cookies are separated by `Path`, 
 | `PATCH /interaction/factors/keys/{key_id}` | Rename a security key or a passkey |
 | `DELETE /interaction/factors/keys/{key_id}` | Remove a security key or a passkey |
 | `POST /interaction/factors/recovery-codes` | Generate a new set of recovery codes |
+| `GET /interaction/profile` | Read the person's display name and standard claims |
+| `PUT /interaction/profile` | Replace them |
 
 Every one of them needs a valid session cookie. Without one the answer is `401` with `session.not_authenticated`, whatever the reason: no cookie, an unknown token, an expired or a revoked session.
 
@@ -575,9 +577,34 @@ The pages show `uri` as a QR code and `secret` as text, for an application that 
 | Generating recovery codes without a second factor | `422` | `authentication.second_factor_missing` |
 | Another set of recovery codes was generated at the same moment | `409` | `credential.recovery_codes_conflict` |
 
+### The person's profile
+
+`GET /interaction/profile` answers what the [account page](../architecture/hosted-pages.md) shows of the person: their display name and their [standard claims](../architecture/contexts/identity.md#standard-claims), written as the administration interface writes [a user's `claims`](admin-api.md#a-user):
+
+```json
+{
+  "display_name": "Ana Silva",
+  "claims": {
+    "given_name": "Ana",
+    "family_name": "Silva",
+    "phone_number": "+5511912345678",
+    "phone_number_verified": true,
+    "address": { "locality": "São Paulo", "country": "BR" }
+  }
+}
+```
+
+`PUT /interaction/profile` with the same body replaces both: a claim left out, `null` or empty is removed. It needs no recent sign-in. The answer is `200` with the profile as it is kept.
+
+- **The person cannot vouch for their telephone number.** `phone_number_verified` in the body is ignored: the number stays verified when it is the same as before, and a new one is not verified ([who vouches](../architecture/contexts/identity.md#who-vouches-for-a-telephone-number)).
+- **The locale is not changed here**; the pages follow the browser's language, and messages the one the person registered with.
+- A display name or a claim that breaks its rule is `422` with `identity.display_name_invalid` or `identity.claim_invalid`, whose message names the claim and never the value. A change made at the same moment elsewhere is `409` with `identity.user_modified_concurrently`. A body of another shape, or with a member that is not a claim, is `422` with `request.invalid_body`.
+
+The audit log records `identity.profile_changed`, with the person's identifier only.
+
 ### Protection for these requests
 
-The `DELETE`, `PATCH` and `POST` requests above change something, so each must carry the CSRF token from `GET /interaction/session` in the `X-CSRF-Token` header. The token is derived from the session token, and only a page from this origin can read it. A request without it, or with a wrong one, is refused with `403` and `request.csrf_token_invalid`, and changes nothing. The origin check applies as everywhere.
+The `DELETE`, `PATCH`, `POST` and `PUT` requests above change something, so each must carry the CSRF token from `GET /interaction/session` in the `X-CSRF-Token` header. The token is derived from the session token, and only a page from this origin can read it. A request without it, or with a wrong one, is refused with `403` and `request.csrf_token_invalid`, and changes nothing. The origin check applies as everywhere.
 
 The session cookie is `SameSite=Lax`, which already keeps a browser from attaching it to a `DELETE` another site starts. The token is a second, independent measure. The bodies are JSON, which a plain cross-site form cannot send.
 

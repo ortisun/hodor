@@ -2,7 +2,8 @@
 // OpenID Provider plans of the OpenID conformance suite against Hodor, then
 // the Basic and Back-Channel plans again with pairwise clients, in the stack
 // of compose.yaml, and fails unless every test ends as
-// docs/operations/conformance.md expects.
+// docs/operations/conformance.md expects. The Form Post plan of the code
+// flow runs when asked for with CONFORMANCE_PLANS.
 //
 // NOT FOR ANYTHING REAL: the person, the clients and their secrets are made
 // here for the run and written to the console.
@@ -17,7 +18,9 @@
 // Hodor's to show an error.
 //
 // Environment: CONFORMANCE_ONLY (comma-separated test names, to run only
-// those), CONFORMANCE_REPORT (a file to write the results to as JSON).
+// those), CONFORMANCE_REPORT (a file to write the results to as JSON),
+// CONFORMANCE_PLANS (comma-separated names of PLANS below, to run only
+// those; the plans of continuous integration unless given).
 
 import { execFileSync } from "node:child_process";
 import { readFileSync, writeFileSync } from "node:fs";
@@ -50,6 +53,18 @@ const BACKCHANNEL_LOGOUT = `http://${RELAY}/test/a/${ALIAS}/backchannel_logout`;
 const SECTOR_DOCUMENT_HOST = "sector-document:8080";
 const SECTOR_IDENTIFIER_URI = `http://${SECTOR_DOCUMENT_HOST}/redirect_uris.json`;
 const ONLY = (process.env.CONFORMANCE_ONLY ?? "").split(",").filter((name) => name !== "");
+// The plans this script can run, by a short name. Continuous integration
+// runs the first five; the Form Post plan of the code flow runs when named.
+const PLANS = ["basic", "config", "backchannel", "basic-pairwise", "backchannel-pairwise", "formpost-basic"];
+const CONTINUOUS_INTEGRATION_PLANS = PLANS.slice(0, 5);
+const CHOSEN = (process.env.CONFORMANCE_PLANS ?? CONTINUOUS_INTEGRATION_PLANS.join(","))
+  .split(",")
+  .filter((name) => name !== "");
+for (const name of CHOSEN) {
+  if (!PLANS.includes(name)) {
+    throw new Error(`no plan is named ${name}; the plans are ${PLANS.join(", ")}`);
+  }
+}
 
 // Both servers show certificates of their own making.
 process.env.NODE_TLS_REJECT_UNAUTHORIZED = "0";
@@ -140,34 +155,48 @@ function seedHodor() {
       "--type", "confidential", "--method", method, "--without-pkce",
       "--grant", "authorization_code", "--grant", "refresh_token",
       "--redirect-uri", CALLBACK, "--post-logout-redirect-uri", POST_LOGOUT,
-      "--scope", "openid", "--scope", "profile", "--scope", "email", "--scope", "offline_access",
+      "--scope", "openid", "--scope", "profile", "--scope", "email", "--scope", "address",
+      "--scope", "phone", "--scope", "offline_access",
+      // The suite's request object tests send unsigned objects, which Hodor
+      // reads only from a client that chose `none`.
+      "--request-object-signing-alg", "none",
       ...more,
     );
     return { client_id: printed(output, "client"), client_secret: printed(output, "secret") };
   };
+  // A static client of the suite cannot choose how its ID tokens are
+  // signed, so each client is made with one of the four algorithms Hodor
+  // offers, and every one of them signs the ID tokens of some client: the
+  // suite checks each against the tenant's key set.
+  const signedWith = (algorithm) => ["--id-token-algorithm", algorithm];
   return {
-    first: client("First client", "client_secret_basic"),
-    second: client("Second client", "client_secret_basic"),
-    post: client("Client that sends its secret in the form", "client_secret_post"),
+    first: client("First client", "client_secret_basic", signedWith("ES256")),
+    second: client("Second client", "client_secret_basic", signedWith("RS256")),
+    post: client("Client that sends its secret in the form", "client_secret_post", signedWith("PS256")),
     // The back-channel plan's alone: a test of another plan that signs out
     // never gets a logout token it does not wait for.
     backchannel: client("Client told when the session ends", "client_secret_basic", [
       "--backchannel-logout-uri", BACKCHANNEL_LOGOUT, "--backchannel-logout-session-required",
+      ...signedWith("PS256"),
     ]),
     // The same four, pairwise, for the plans' second run: each knows the
     // person by an identifier of its sector. The second names a sector
     // identifier address, so its sector is another host than the others'.
     pairwise: {
-      first: client("Pairwise first client", "client_secret_basic", ["--subject-type", "pairwise"]),
+      first: client("Pairwise first client", "client_secret_basic", [
+        "--subject-type", "pairwise", ...signedWith("EdDSA"),
+      ]),
       second: client("Pairwise second client", "client_secret_basic", [
         "--subject-type", "pairwise", "--sector-identifier-uri", SECTOR_IDENTIFIER_URI,
+        ...signedWith("PS256"),
       ]),
       post: client("Pairwise client that sends its secret in the form", "client_secret_post", [
-        "--subject-type", "pairwise",
+        "--subject-type", "pairwise", ...signedWith("RS256"),
       ]),
       backchannel: client("Pairwise client told when the session ends", "client_secret_basic", [
         "--subject-type", "pairwise",
         "--backchannel-logout-uri", BACKCHANNEL_LOGOUT, "--backchannel-logout-session-required",
+        ...signedWith("EdDSA"),
       ]),
     },
   };
@@ -196,18 +225,30 @@ async function makePerson(browser) {
     console.log("made by an earlier run on this stack");
     return;
   }
-  // Made by an administrator with a name, so that UserInfo has a profile
-  // claim to give; the person then chooses a password through the link
-  // that recovering it sends, as any person made this way would.
+  // Made by an administrator with a username and a name, and given every
+  // standard claim, so that UserInfo has each claim the tests of the scopes
+  // want; the person then chooses a password through the link that
+  // recovering it sends, as any person made this way would.
   const token = printed(cli("admin", "bootstrap", "--tenant", TENANT, "--email", OPERATOR), "token");
   const made = await fetch(`${ISSUER}/api/v1/admin/users`, {
     method: "POST",
     headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
-    body: JSON.stringify({ email: PERSON, display_name: "Ada Conformance", locale: "en" }),
+    body: JSON.stringify({ email: PERSON, username: "ada", display_name: "Ada Conformance", locale: "en" }),
   });
   if (made.status !== 201) {
     throw new Error(`the administration interface did not make ${PERSON}: ${made.status} ${await made.text()}`);
   }
+  cli(
+    "user", "claims", "--tenant", TENANT, "--user", PERSON,
+    "--given-name", "Ada", "--middle-name", "Augusta", "--family-name", "Conformance",
+    "--nickname", "Ada", "--gender", "female", "--birthdate", "1990-12-10",
+    "--zoneinfo", "Europe/London", "--profile", "https://ada.example.com/profile",
+    "--picture", "https://ada.example.com/picture.png", "--website", "https://ada.example.com",
+    "--phone-number", "+44 20 7946 0000", "--phone-number-verified", "true",
+    "--street-address", "12 St James's Square", "--locality", "London", "--region", "England",
+    "--postal-code", "SW1Y 4JH", "--country", "GB",
+    "--formatted-address", "12 St James's Square, London SW1Y 4JH, United Kingdom",
+  );
   const context = await browser.newContext({ ignoreHTTPSErrors: true, locale: "en-US" });
   const page = await context.newPage();
   await page.goto(`${ISSUER}/account/recover`);
@@ -361,31 +402,41 @@ async function main() {
       // in the form from here.
       client_secret_post: clients.post,
     };
-    const results = [
-      ...(await runPlan("oidcc-basic-certification-test-plan", config,
-        { server_metadata: "discovery", client_registration: "static_client" }, browser)),
+    const plans = {
+      basic: () => runPlan("oidcc-basic-certification-test-plan", config,
+        { server_metadata: "discovery", client_registration: "static_client" }, browser),
       // This plan sets its own variants.
-      ...(await runPlan("oidcc-config-certification-test-plan", config, undefined, browser)),
+      config: () => runPlan("oidcc-config-certification-test-plan", config, undefined, browser),
       // The client of this plan is the one with a back-channel logout
       // address; the plan sets the rest of its variants.
-      ...(await runPlan("oidcc-backchannel-rp-initiated-logout-certification-test-plan",
+      backchannel: () => runPlan("oidcc-backchannel-rp-initiated-logout-certification-test-plan",
         { ...config, client: clients.backchannel, client2: undefined, client_secret_post: undefined },
-        { client_registration: "static_client", response_type: "code" }, browser)),
+        { client_registration: "static_client", response_type: "code" }, browser),
       // The pairwise configuration, the acceptance of Issue-98: the same
       // plans with clients that know the person by an identifier of their
       // sector. The suite checks that UserInfo, a second sign-in and the
       // logout token give the `sub` and `sid` of the ID token.
-      ...(await runPlan("oidcc-basic-certification-test-plan",
+      "basic-pairwise": () => runPlan("oidcc-basic-certification-test-plan",
         { ...config, client: clients.pairwise.first, client2: clients.pairwise.second,
           client_secret_post: clients.pairwise.post },
         { server_metadata: "discovery", client_registration: "static_client" }, browser,
-        "oidcc-basic-certification-test-plan (pairwise)")),
-      ...(await runPlan("oidcc-backchannel-rp-initiated-logout-certification-test-plan",
+        "oidcc-basic-certification-test-plan (pairwise)"),
+      "backchannel-pairwise": () => runPlan(
+        "oidcc-backchannel-rp-initiated-logout-certification-test-plan",
         { ...config, client: clients.pairwise.backchannel, client2: undefined,
           client_secret_post: undefined },
         { client_registration: "static_client", response_type: "code" }, browser,
-        "oidcc-backchannel-rp-initiated-logout-certification-test-plan (pairwise)")),
-    ];
+        "oidcc-backchannel-rp-initiated-logout-certification-test-plan (pairwise)"),
+      // Issue-129: the code flow of the Basic plan, every answer posted by
+      // Hodor's page of `form_post`. The Implicit and Hybrid flows follow
+      // their response types (Issues 127 and 128).
+      "formpost-basic": () => runPlan("oidcc-formpost-basic-certification-test-plan", config,
+        { server_metadata: "discovery", client_registration: "static_client" }, browser),
+    };
+    const results = [];
+    for (const name of PLANS.filter((plan) => CHOSEN.includes(plan))) {
+      results.push(...(await plans[name]()));
+    }
     if (process.env.CONFORMANCE_REPORT) {
       writeFileSync(process.env.CONFORMANCE_REPORT, JSON.stringify(results, null, 2));
     }

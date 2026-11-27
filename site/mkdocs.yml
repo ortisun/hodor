@@ -137,8 +137,13 @@ nav:
       - Test environments: development/test-environments.md
       - Install with Docker: operations/install-with-docker.md
       - Install on Kubernetes: operations/install-on-kubernetes.md
+      - Service meshes: operations/service-mesh.md
+      - Envoy's external authorization: operations/hodor-ext-authz.md
       - Deployment: operations/deployment.md
+      - Keys in OpenBao: operations/keys-in-openbao.md
+      - cert-manager's issuer: operations/hodor-cert-manager-issuer.md
       - OpenID conformance: operations/conformance.md
+      - OpenID certification: operations/certification.md
   - Examples:
       - examples/README.md
       - examples/first-tenant-and-administrator.md
@@ -224,6 +229,9 @@ nav:
       - decisions/0025-condition-language.md
       - decisions/0026-policy-checks-in-a-sandbox.md
       - decisions/0027-what-0.3.0-holds.md
+      - decisions/0028-what-0.4.0-holds.md
+      - decisions/0029-hodor-in-a-service-mesh.md
+      - decisions/0030-optional-certificate-authority.md
       - decisions/0031-workloads-are-users.md
       - decisions/0032-webhooks.md
       - decisions/0033-api-keys.md
@@ -231,9 +239,38 @@ nav:
       - decisions/0035-access-control-lists.md
       - decisions/0036-codes-and-links-by-email.md
       - decisions/0037-back-channel-logout.md
+      - decisions/0038-the-license.md
       - decisions/0039-enrolling-during-a-sign-in.md
       - decisions/0040-pairwise-subjects.md
       - decisions/0041-claim-mappers.md
+      - decisions/0042-trust-domains.md
+      - decisions/0044-what-0.5.0-and-0.6.0-hold.md
+      - decisions/0045-request-objects-and-pushed-requests.md
+      - decisions/0046-responses-through-the-browser.md
+      - decisions/0047-claims-and-the-person-s-claims.md
+      - decisions/0048-encryption.md
+      - decisions/0049-dynamic-client-registration.md
+      - decisions/0050-logout-and-session-state-in-the-browser.md
+      - decisions/0051-conformance-runs-and-certification.md
+      - decisions/0052-security-profiles.md
+      - decisions/0053-dpop.md
+      - decisions/0054-backchannel-authentication.md
+      - decisions/0055-spiffe-jwt-client-authentication.md
+      - decisions/0056-forwarded-client-identity.md
+      - decisions/0057-certificate-bound-access-tokens.md
+      - decisions/0058-hodor-ext-authz.md
+      - decisions/0059-linkerd-policies-from-roles.md
+      - decisions/0061-gateway-identities.md
+      - decisions/0062-the-certificate-authority-of-a-tenant.md
+      - decisions/0065-where-the-standard-claims-come-from.md
+      - decisions/0068-claims-of-every-consented-scope.md
+      - decisions/0071-signing-intermediates.md
+      - decisions/0074-hodor-cert-manager-issuer.md
+      - decisions/0075-the-registration-settings-of-a-tenant.md
+      - decisions/0076-names-an-authority-leaves-to-its-meshes.md
+      - decisions/0077-ext-authz-checks-the-audience.md
+      - decisions/0078-every-pod-of-the-release-in-the-mesh.md
+      - decisions/0079-keys-at-a-client-s-address-kept-in-memory.md
   - Contributing:
       - development/conventions.md
       - development/documentation-site.md

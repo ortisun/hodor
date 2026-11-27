@@ -182,6 +182,7 @@ async fn tenant(database: &TestDatabase, slug: &str) -> ClientId {
     );
     settings.allowed_scopes = vec![
         "openid".to_owned(),
+        "email".to_owned(),
         "offline_access".to_owned(),
         "invoices:read".to_owned(),
     ];
@@ -578,4 +579,102 @@ async fn withdrawing_a_consent_ends_its_refresh_tokens_and_asks_again() {
     .await
     .expect("outbox");
     assert_eq!(recorded, ["oauth.consent_given", "oauth.consent_withdrawn"]);
+}
+
+/// The claims of a token, unchecked: its signature is checked elsewhere.
+fn claims_of(token: &str) -> Value {
+    use base64::Engine as _;
+    let payload = token.split('.').nth(1).expect("a payload");
+    serde_json::from_slice(
+        &base64::engine::general_purpose::URL_SAFE_NO_PAD
+            .decode(payload)
+            .expect("base64url"),
+    )
+    .expect("JSON")
+}
+
+/// The ID token and the answer of UserInfo for a code.
+async fn redeemed(server: &Server, client_id: ClientId, code: &str) -> (Value, Value) {
+    let client_id = client_id.to_string();
+    let (status, tokens) = token(
+        server,
+        &[
+            ("grant_type", "authorization_code"),
+            ("code", code),
+            ("redirect_uri", REDIRECT),
+            ("code_verifier", VERIFIER),
+            ("client_id", &client_id),
+        ],
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{tokens}");
+    let info: Value = reqwest::Client::new()
+        .get(format!("{}/t/acme/oauth2/userinfo", server.base))
+        .bearer_auth(tokens["access_token"].as_str().expect("access token"))
+        .send()
+        .await
+        .expect("response")
+        .json()
+        .await
+        .expect("JSON");
+    (
+        claims_of(tokens["id_token"].as_str().expect("an ID token")),
+        info,
+    )
+}
+
+#[tokio::test]
+async fn the_claims_parameter_never_gives_a_claim_of_a_scope_the_person_did_not_agree_to() {
+    let database = TestDatabase::start().await;
+    let client_id = tenant(&database, "acme").await;
+    let server = server(&database).await;
+    let mut browser = signed_in(&server, "ana@example.com").await;
+    let claims = json!({
+        "id_token": {"email": {"essential": true}},
+        "userinfo": {"email": {"essential": true}, "email_verified": null}
+    })
+    .to_string();
+    let asking = |scope: &str| authorize("acme", client_id, scope, &[("claims", claims.as_str())]);
+
+    // Ana agrees to `openid` alone: her address is asked for, essential,
+    // and never given, neither in the ID token nor at UserInfo. She is not
+    // asked about it either: the page is a page of scopes.
+    let (status, location, _) = browser.navigate(Method::GET, &asking("openid"), None).await;
+    assert_eq!(status, StatusCode::FOUND);
+    assert_eq!(location.as_deref(), Some("/t/acme/account/consent"));
+    let (_, question) = browser
+        .send(Method::GET, "/t/acme/interaction/consent", None)
+        .await;
+    assert_eq!(
+        question["scopes"],
+        json!([{ "scope": "openid", "kind": "openid" }])
+    );
+    browser
+        .send(
+            Method::POST,
+            "/t/acme/interaction/consent",
+            Some(json!({ "decision": "allow" })),
+        )
+        .await;
+    let (_, location, _) = browser
+        .navigate(Method::GET, "/t/acme/oauth2/authorize/resume", None)
+        .await;
+    let answer = sent_back(&location.expect("a redirect"));
+    let (identity, info) = redeemed(&server, client_id, &answer["code"]).await;
+    assert!(identity.get("email").is_none(), "{identity}");
+    assert!(info.get("email").is_none(), "{info}");
+    assert!(info.get("email_verified").is_none(), "{info}");
+    assert!(info["sub"].is_string());
+
+    // Once she agrees to `email`, a request of `openid` alone gets it, where
+    // it was asked, without asking her again.
+    let agreed = asked_and_answered(&mut browser, client_id, "openid email", "allow").await;
+    assert!(agreed.contains_key("code"));
+    let (status, location, _) = browser.navigate(Method::GET, &asking("openid"), None).await;
+    assert_eq!(status, StatusCode::FOUND);
+    let answer = sent_back(&location.expect("a redirect"));
+    let (identity, info) = redeemed(&server, client_id, &answer["code"]).await;
+    assert_eq!(identity["email"], "ana@example.com");
+    assert_eq!(info["email"], "ana@example.com");
+    assert!(info["email_verified"].is_boolean());
 }

@@ -32,6 +32,7 @@ use std::sync::Arc;
 use time::format_description::well_known::Rfc3339;
 
 pub(crate) mod factors;
+mod profile;
 
 const SIGN_IN_COOKIE: &str = "__Secure-hodor_signin";
 pub(crate) const SESSION_COOKIE: &str = "__Secure-hodor_session";
@@ -106,6 +107,10 @@ pub fn interaction_routes(state: InteractionState) -> Router {
         .route("/sessions/{session_id}", delete(end_session))
         .route("/webauthn/registrations", post(begin_webauthn_registration))
         .route("/factors", get(factors::list_factors))
+        .route(
+            "/profile",
+            get(profile::read_profile).put(profile::replace_profile),
+        )
         .route(
             "/factors/authenticator-application",
             post(factors::begin_authenticator_application)

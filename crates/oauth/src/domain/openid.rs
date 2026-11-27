@@ -5,11 +5,15 @@
 //! Specified in `docs/architecture/contexts/oauth.md`, "OpenID Provider".
 
 use crate::domain::authorization::AuthorizationCode;
-use crate::domain::client::{ClientId, IdTokenAlgorithm};
+use crate::domain::binding::{CONFIRMATION_CLAIM, CertificateThumbprint, check_confirmation};
+use crate::domain::claim_mapper::PersonAttributes;
+use crate::domain::client::{ClientId, IdTokenAlgorithm, RequestObjectAlgorithm};
 use crate::domain::resource_server::GROUPS_SCOPE;
+use crate::domain::response::{ResponseMode, ResponseType};
 use crate::domain::token::decode_json;
 use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+use hodor_identity::api::{PostalAddress, StandardClaims};
 use hodor_kernel::{
     Digest, GroupId, OrganizationId, PublicKey, SignatureAlgorithm, SignatureVerifier, Timestamp,
 };
@@ -118,13 +122,28 @@ pub fn authentication_methods(methods: &[String]) -> Vec<&'static str> {
         .collect()
 }
 
-/// `at_hash`: the base64url of the left half of the SHA-256 of the access
-/// token, for an ID token signed with ES256 (OpenID Connect Core, section
+/// `at_hash`: the base64url of the left half of the hash of the access
+/// token that the ID token's `algorithm` uses (OpenID Connect Core, section
 /// 3.1.3.6).
 #[must_use]
-pub fn access_token_hash(access_token: &str, digest: &dyn Digest) -> String {
-    let hash = digest.sha256(access_token.as_bytes());
-    URL_SAFE_NO_PAD.encode(&hash[..16])
+pub fn access_token_hash(
+    access_token: &str,
+    algorithm: IdTokenAlgorithm,
+    digest: &dyn Digest,
+) -> String {
+    // The hash of the ID token's `alg`: SHA-256 for the algorithms named
+    // ...256, and SHA-512 for EdDSA on Ed25519, as OpenID Connect Core
+    // (errata set 2) says.
+    match algorithm {
+        IdTokenAlgorithm::EdDsa => {
+            let hash = digest.sha512(access_token.as_bytes());
+            URL_SAFE_NO_PAD.encode(&hash[..32])
+        }
+        IdTokenAlgorithm::Es256 | IdTokenAlgorithm::Rs256 | IdTokenAlgorithm::Ps256 => {
+            let hash = digest.sha256(access_token.as_bytes());
+            URL_SAFE_NO_PAD.encode(&hash[..16])
+        }
+    }
 }
 
 /// Whether `scopes` make an OpenID Connect request.
@@ -164,6 +183,7 @@ pub fn id_token_claims(
     lifetime: Duration,
     now: Timestamp,
     access_token: &str,
+    algorithm: IdTokenAlgorithm,
     digest: &dyn Digest,
 ) -> Value {
     let mut claims = Map::new();
@@ -191,7 +211,7 @@ pub fn id_token_claims(
     }
     claims.insert(
         "at_hash".to_owned(),
-        json!(access_token_hash(access_token, digest)),
+        json!(access_token_hash(access_token, algorithm, digest)),
     );
     // The session, never its token: logout needs to know whether an ID
     // token names the browser's current session.
@@ -261,6 +281,25 @@ pub struct ReadAccessToken {
     pub amr: Option<Vec<String>>,
     /// Its `org_id`.
     pub organization: Option<OrganizationId>,
+    /// Its `cnf`, for a token bound to a certificate. Any value that is
+    /// not an object is kept too, so that it is refused rather than taken
+    /// for no binding.
+    pub confirmation: Option<Value>,
+}
+
+impl ReadAccessToken {
+    /// Whether the token may be used by a request that came with the
+    /// certificate of `presented`: always for a token bound to nothing.
+    ///
+    /// # Errors
+    ///
+    /// The reason it may not, for Hodor's log.
+    pub fn check_certificate(
+        &self,
+        presented: Option<&CertificateThumbprint>,
+    ) -> Result<(), &'static str> {
+        check_confirmation(self.confirmation.as_ref(), presented)
+    }
 }
 
 /// Reads an access token of the tenant: checks its shape, header, key,
@@ -360,6 +399,7 @@ pub fn read_access_token(
                 .collect()
         }),
         organization: text("org_id").and_then(|organization| organization.parse().ok()),
+        confirmation: claims.get(CONFIRMATION_CLAIM).cloned(),
     })
 }
 
@@ -374,9 +414,9 @@ pub struct PublishedKey {
     pub key: PublicKey,
 }
 
-/// Checks an access token presented at UserInfo, in the order the OAuth
-/// context gives. Nothing it says is used before its signature has been
-/// checked.
+/// Checks an access token presented at UserInfo, by a request that came
+/// with the certificate of `presented`, in the order the OAuth context
+/// gives. Nothing it says is used before its signature has been checked.
 ///
 /// # Errors
 ///
@@ -387,9 +427,11 @@ pub fn check_access_token(
     keys: &[PublishedKey],
     now: Timestamp,
     verifier: &dyn SignatureVerifier,
+    presented: Option<&CertificateThumbprint>,
 ) -> Result<CheckedAccessToken, BearerRefusal> {
     use BearerRefusal::InvalidToken;
     let read = read_access_token(token, issuer, keys, now, verifier).map_err(InvalidToken)?;
+    read.check_certificate(presented).map_err(InvalidToken)?;
     if !read.audiences.iter().any(|audience| audience == issuer) {
         return Err(InvalidToken("the token is not for this server"));
     }
@@ -422,37 +464,142 @@ pub struct PersonClaims {
     /// The primary email address, and whether the person proved it is
     /// theirs.
     pub email: Option<(String, bool)>,
+    /// The person's standard claims: names, addresses of pages, birth
+    /// date, time zone, telephone number and postal address.
+    pub claims: StandardClaims,
     /// The person's effective groups, read only when the scopes hold
     /// `groups`.
     pub groups: Vec<GroupId>,
+}
+
+impl PersonClaims {
+    /// The claims of a person whose attributes are `attributes`, without
+    /// their groups: what the ID token may carry through the `claims`
+    /// parameter.
+    #[must_use]
+    pub fn from_attributes(attributes: PersonAttributes) -> Self {
+        Self {
+            name: attributes.display_name,
+            preferred_username: attributes.username,
+            locale: attributes.locale,
+            updated_at: attributes.updated_at,
+            email: attributes.email,
+            claims: attributes.claims,
+            groups: Vec::new(),
+        }
+    }
+}
+
+/// The postal address as OpenID Connect writes it: an object of the parts
+/// the person has.
+#[must_use]
+pub(crate) fn address_claim(address: &PostalAddress) -> Value {
+    let parts: Map<String, Value> = address
+        .parts()
+        .into_iter()
+        .filter_map(|(name, value)| value.map(|value| (name.to_owned(), json!(value))))
+        .collect();
+    Value::Object(parts)
+}
+
+/// The person's claims, each with the scope that covers it (OpenID
+/// Connect Core, section 5.4), in the order UserInfo and the ID token
+/// write them. What the `claims` parameter may ask for.
+pub const PERSON_CLAIMS: [(&str, &str); 19] = [
+    ("name", "profile"),
+    ("preferred_username", "profile"),
+    ("given_name", "profile"),
+    ("family_name", "profile"),
+    ("middle_name", "profile"),
+    ("nickname", "profile"),
+    ("profile", "profile"),
+    ("picture", "profile"),
+    ("website", "profile"),
+    ("gender", "profile"),
+    ("birthdate", "profile"),
+    ("zoneinfo", "profile"),
+    ("locale", "profile"),
+    ("updated_at", "profile"),
+    ("email", "email"),
+    ("email_verified", "email"),
+    ("address", "address"),
+    ("phone_number", "phone"),
+    ("phone_number_verified", "phone"),
+];
+
+/// The scope that covers the person's claim `name`, if it is one.
+#[must_use]
+pub fn scope_of_claim(name: &str) -> Option<&'static str> {
+    PERSON_CLAIMS
+        .iter()
+        .find(|(claim, _)| *claim == name)
+        .map(|(_, scope)| *scope)
+}
+
+/// The value of the person's claim `name`, as UserInfo writes it. `None`
+/// when the person has no such value, or `name` is not a claim of the
+/// person: `email_verified` without an address, `phone_number_verified`
+/// without a number.
+#[must_use]
+pub fn person_claim(name: &str, person: &PersonClaims) -> Option<Value> {
+    let standard = &person.claims;
+    let text = |value: &Option<String>| value.as_ref().map(|value| json!(value));
+    match name {
+        "name" => text(&person.name),
+        "preferred_username" => text(&person.preferred_username),
+        "given_name" => text(&standard.given_name),
+        "family_name" => text(&standard.family_name),
+        "middle_name" => text(&standard.middle_name),
+        "nickname" => text(&standard.nickname),
+        "profile" => text(&standard.profile),
+        "picture" => text(&standard.picture),
+        "website" => text(&standard.website),
+        "gender" => text(&standard.gender),
+        "birthdate" => text(&standard.birthdate),
+        "zoneinfo" => text(&standard.zoneinfo),
+        "locale" => text(&person.locale),
+        "updated_at" => person
+            .updated_at
+            .map(|updated_at| json!(updated_at.unix_timestamp())),
+        "email" => person.email.as_ref().map(|(email, _)| json!(email)),
+        "email_verified" => person.email.as_ref().map(|(_, verified)| json!(verified)),
+        "address" => standard.address.as_ref().map(address_claim),
+        "phone_number" => text(&standard.phone_number),
+        "phone_number_verified" => standard
+            .phone_number
+            .as_ref()
+            .map(|_| json!(standard.phone_number_verified)),
+        _ => None,
+    }
 }
 
 /// The answer of UserInfo for the person the client knows as `subject`,
 /// with the claims of `scopes`.
 #[must_use]
 pub fn userinfo_claims(subject: &str, scopes: &[String], person: &PersonClaims) -> Value {
+    userinfo_claims_with(subject, scopes, &[], person)
+}
+
+/// The answer of UserInfo for the person the client knows as `subject`,
+/// with the claims of `scopes` and those of `asked`, the claims the grant
+/// was asked for UserInfo through the `claims` parameter that a consented
+/// scope covers.
+#[must_use]
+pub fn userinfo_claims_with(
+    subject: &str,
+    scopes: &[String],
+    asked: &[String],
+    person: &PersonClaims,
+) -> Value {
     let has = |scope: &str| scopes.iter().any(|given| given == scope);
     let mut claims = Map::new();
     claims.insert("sub".to_owned(), json!(subject));
-    if has("profile") {
-        if let Some(name) = &person.name {
-            claims.insert("name".to_owned(), json!(name));
+    for (name, scope) in PERSON_CLAIMS {
+        if (has(scope) || asked.iter().any(|claim| claim == name))
+            && let Some(value) = person_claim(name, person)
+        {
+            claims.insert(name.to_owned(), value);
         }
-        if let Some(username) = &person.preferred_username {
-            claims.insert("preferred_username".to_owned(), json!(username));
-        }
-        if let Some(locale) = &person.locale {
-            claims.insert("locale".to_owned(), json!(locale));
-        }
-        if let Some(updated_at) = person.updated_at {
-            claims.insert("updated_at".to_owned(), json!(updated_at.unix_timestamp()));
-        }
-    }
-    if has("email")
-        && let Some((email, verified)) = &person.email
-    {
-        claims.insert("email".to_owned(), json!(email));
-        claims.insert("email_verified".to_owned(), json!(verified));
     }
     // Every group, however many: a token holds at most a hundred, and a
     // client reads the rest here.
@@ -463,10 +610,56 @@ pub fn userinfo_claims(subject: &str, scopes: &[String], person: &PersonClaims) 
     Value::Object(claims)
 }
 
-/// The tenant's discovery document (OpenID Connect Discovery 1.0 and RFC
-/// 8414). It names only what is built.
+/// The values of `prompt` a tenant supports: `create` only when it is open
+/// to registration, since a tenant closed to it does not support the value
+/// (Initiating User Registration via OpenID Connect, section 4.2).
 #[must_use]
-pub fn discovery_document(issuer: &str, acr_values: &[&str]) -> Value {
+pub fn prompt_values_supported(registration_open: bool) -> Vec<&'static str> {
+    let mut values = vec!["none", "login", "consent", "select_account"];
+    if registration_open {
+        values.push("create");
+    }
+    values
+}
+
+/// The tenant's discovery document as a tenant open to registration
+/// writes it, `create` among its prompts, when `registration_open`.
+#[must_use]
+pub fn with_registration(mut document: Value, registration_open: bool) -> Value {
+    document["prompt_values_supported"] = json!(prompt_values_supported(registration_open));
+    document
+}
+
+/// The header of a signed UserInfo answer: `alg` and `kid`, and no `typ`.
+/// The answer is not an ID token, and nothing that checks one, the
+/// end-session endpoint's hint among them, takes it for one. See
+/// `docs/architecture/contexts/oauth.md`, "Signed UserInfo answers".
+#[must_use]
+pub(crate) fn userinfo_header(algorithm: &str, key_id: &str) -> Value {
+    json!({"alg": algorithm, "kid": key_id})
+}
+
+/// The claims of a signed UserInfo answer: those of the JSON answer, then
+/// `iss`, the tenant's issuer, and `aud`, the client, as OpenID Connect
+/// Core asks (section 5.3.2). No `exp` and no `iat`: the answer is read
+/// once, as the JSON one is, and a check of an ID token refuses it for
+/// lacking them.
+#[must_use]
+pub(crate) fn signed_userinfo_claims(claims: Value, issuer: &str, client_id: &str) -> Value {
+    let mut claims = match claims {
+        Value::Object(claims) => claims,
+        _ => Map::new(),
+    };
+    claims.insert("iss".to_owned(), json!(issuer));
+    claims.insert("aud".to_owned(), json!(client_id));
+    Value::Object(claims)
+}
+
+/// The tenant's discovery document (OpenID Connect Discovery 1.0 and RFC
+/// 8414). It names only what is built; a tenant open to registration adds
+/// `create` through [`with_registration`].
+#[must_use]
+pub fn discovery_document(issuer: &str, acr_values: &[&str], pushed_required: bool) -> Value {
     json!({
         "issuer": issuer,
         "authorization_endpoint": format!("{issuer}/oauth2/authorize"),
@@ -476,37 +669,55 @@ pub fn discovery_document(issuer: &str, acr_values: &[&str]) -> Value {
         "revocation_endpoint": format!("{issuer}/oauth2/revoke"),
         "introspection_endpoint": format!("{issuer}/oauth2/introspect"),
         "end_session_endpoint": format!("{issuer}/oauth2/logout"),
-        "response_types_supported": ["code"],
-        "response_modes_supported": ["query"],
+        "pushed_authorization_request_endpoint": format!("{issuer}/oauth2/par"),
+        "response_types_supported": ResponseType::ALL.map(ResponseType::as_str),
+        "response_modes_supported": ResponseMode::ALL.map(ResponseMode::as_str),
         "grant_types_supported": crate::domain::token::SUPPORTED_GRANT_TYPES,
         "code_challenge_methods_supported": ["S256"],
+        // `spiffe_jwt` follows draft-ietf-oauth-spiffe-client-auth-03,
+        // which asks for it in all three lists (section 4).
         "token_endpoint_auth_methods_supported": [
-            "client_secret_basic", "client_secret_post", "private_key_jwt", "none"
+            "client_secret_basic", "client_secret_post", "private_key_jwt", "spiffe_jwt", "none"
         ],
         "token_endpoint_auth_signing_alg_values_supported": ["ES256", "RS256", "PS256"],
         "revocation_endpoint_auth_methods_supported": [
-            "client_secret_basic", "client_secret_post", "private_key_jwt", "none"
+            "client_secret_basic", "client_secret_post", "private_key_jwt", "spiffe_jwt", "none"
         ],
         "revocation_endpoint_auth_signing_alg_values_supported": ["ES256", "RS256", "PS256"],
         "introspection_endpoint_auth_methods_supported": [
-            "client_secret_basic", "client_secret_post", "private_key_jwt"
+            "client_secret_basic", "client_secret_post", "private_key_jwt", "spiffe_jwt"
         ],
         "introspection_endpoint_auth_signing_alg_values_supported": ["ES256", "RS256", "PS256"],
         "id_token_signing_alg_values_supported": IdTokenAlgorithm::ALL.map(IdTokenAlgorithm::as_str),
+        // Signed UserInfo answers; `none` is not named, since a client that
+        // wants no signature gets JSON.
+        "userinfo_signing_alg_values_supported":
+            IdTokenAlgorithm::ALL.map(IdTokenAlgorithm::as_str),
         "subject_types_supported": ["public", "pairwise"],
-        "scopes_supported": ["openid", "profile", "email", "groups"],
+        "scopes_supported": ["openid", "profile", "email", "address", "phone", "groups"],
         "claims_supported": [
             "iss", "sub", "aud", "exp", "iat", "auth_time", "nonce", "acr", "amr", "at_hash", "sid",
-            "org_id", "name", "preferred_username", "locale", "updated_at", "email",
-            "email_verified", "groups"
+            "org_id", "name", "given_name", "family_name", "middle_name", "nickname",
+            "preferred_username", "profile", "picture", "website", "gender", "birthdate",
+            "zoneinfo", "locale", "updated_at", "email", "email_verified", "address",
+            "phone_number", "phone_number_verified", "groups"
         ],
         "acr_values_supported": acr_values,
-        "prompt_values_supported": ["none", "login", "consent", "select_account"],
+        "prompt_values_supported": prompt_values_supported(false),
+        "display_values_supported": crate::domain::authorization::DISPLAYS,
         "ui_locales_supported": UI_LOCALES,
         "authorization_response_iss_parameter_supported": true,
-        "request_parameter_supported": false,
-        "request_uri_parameter_supported": false,
-        "claims_parameter_supported": false,
+        // Request objects by value; `none` only for a client that chose it.
+        "request_parameter_supported": true,
+        "request_object_signing_alg_values_supported":
+            RequestObjectAlgorithm::ALL.map(RequestObjectAlgorithm::as_str),
+        // `request_uri` at an address the client registered, and only
+        // there; Hodor's own references to pushed requests are named by
+        // the members after them.
+        "request_uri_parameter_supported": true,
+        "require_request_uri_registration": true,
+        "require_pushed_authorization_requests": pushed_required,
+        "claims_parameter_supported": true,
         // Every client with a back-channel logout address is told when a
         // session it signed a person in with ends, and every logout token
         // carries `sid`.
@@ -516,4 +727,30 @@ pub fn discovery_document(issuer: &str, acr_values: &[&str]) -> Value {
 }
 
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;
+
+#[cfg(test)]
+mod registration_tests {
+    use super::*;
+
+    #[test]
+    fn create_is_named_by_a_tenant_open_to_registration_only() {
+        let closed = with_registration(
+            discovery_document("https://hodor.example.com/t/acme", &[], false),
+            false,
+        );
+        assert_eq!(
+            closed["prompt_values_supported"],
+            json!(["none", "login", "consent", "select_account"])
+        );
+        let open = with_registration(closed, true);
+        assert_eq!(
+            open["prompt_values_supported"],
+            json!(["none", "login", "consent", "select_account", "create"])
+        );
+        assert_eq!(
+            open["display_values_supported"],
+            json!(["page", "popup", "touch"])
+        );
+    }
+}

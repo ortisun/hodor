@@ -163,7 +163,7 @@ impl WorkloadAccess for CommandLineAccess {
     }
 }
 
-fn identity(database: &Database) -> IdentityService {
+pub(crate) fn identity(database: &Database) -> IdentityService {
     IdentityService::new(
         Arc::new(database.clone()),
         Arc::new(PgUserRepository),
@@ -205,19 +205,21 @@ pub(crate) async fn principal_of(
     database: &Database,
     tenant: &TenantContext,
     principal: UserId,
-    agent_only: bool,
+    kind: Option<UserKind>,
 ) -> Result<UserId, DomainError> {
     let refused = || {
         DomainError::invalid(
             "oauth.client_principal_invalid",
-            "a client's principal is a service account or an agent of the tenant",
+            "a client's principal is a service account or an agent of the tenant; an agent \
+             with the token exchange grant, a service account with `spiffe_jwt`, \
+             `tls_client_auth`, `spiffe_x509` or `linkerd_identity`",
         )
     };
     match identity(database).get(tenant, principal).await {
         Ok(user)
             if user.kind().is_workload()
                 && user.status() != UserStatus::Deleted
-                && (!agent_only || user.kind() == UserKind::Agent) =>
+                && kind.is_none_or(|kind| user.kind() == kind) =>
         {
             Ok(principal)
         }

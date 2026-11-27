@@ -1,0 +1,30 @@
+# Hodor inside Linkerd, as the service mesh guide writes it: mesh.provider puts the server, the worker, the
+# migration job and hodor-ext-authz in the mesh; Envoy Gateway, meshed, is the gateway in front, named by
+# its Linkerd identity, the service account envoy-gateway.yaml gives its proxies; and the network
+# policy lets in only Envoy Gateway's namespace and the namespace of the workloads, on the public port and
+# on port 4143. Linkerd's proxy would hold the stand-in mail server's greeting on port 1025, so Hodor
+# reaches it past the proxy.
+#
+#   python3 deploy/demo/service_mesh.py installs it with hodor-common.yaml; see docs/operations/quick-start.md.
+
+mesh:
+  provider: linkerd
+  skipOutboundPorts: [1025]
+gatewayIdentities:
+  - edge-gateway.envoy-gateway-system.serviceaccount.identity.linkerd.cluster.local
+networkPolicy:
+  enabled: true
+  ingressFrom:
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: envoy-gateway-system
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: shop
+extAuthz:
+  networkPolicy:
+    # Envoy Gateway's proxies ask hodor-ext-authz.
+    ingressFrom:
+      - namespaceSelector:
+          matchLabels:
+            kubernetes.io/metadata.name: envoy-gateway-system

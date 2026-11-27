@@ -6,8 +6,8 @@ The screens of the administration console: users and one user, groups and
 one group, organizations and one organization, service accounts and agents
 and one of each with its API keys, identity providers and one provider,
 applications, one application with its clients and resource server, one
-client, webhook endpoints and one endpoint with its deliveries, and the audit
-log. Each screen loads what it shows
+client, the trust domains and one trust domain, webhook endpoints and one
+endpoint with its deliveries, and the audit log. Each screen loads what it shows
 through a method of `../client.ts:Client`, gates every button that changes
 something with `../actions.ts:may`, and sends dangerous actions through
 `../parts/Confirm.tsx:Confirm`. Screens see values, never addresses of the
@@ -107,6 +107,35 @@ console interface.
   new secret by `ShownOnce`), remove it (`removeEndpoint`, the address typed,
   then `go` to `webhooks`), deliver a set-aside delivery again (`Confirm`
   `redeliver`, `client.redeliver`). `DeliveryBadge` is a delivery's status.
+- `TrustDomainForm.tsx:TrustDomainForm` - adds a trust domain (`current`
+  `null`: name, `addTrustDomain`, level 1) or replaces the source of one (no
+  name, which never changes; `replaceTrustDomain`, level 1). The source is a
+  `RadioList` of `bundle_endpoint` (an address), `uploaded` (the bundle in a
+  text area, refused with `text.bundleNotJson` without asking the server when
+  it is not JSON) and `mesh` (nothing more); `submit(name, settings)` gets a
+  `TrustDomainSettings`. It says the consequence before its button, and
+  replacing a `mesh` trust domain with `mesh` is not offered.
+- `TrustDomainsScreen.tsx:TrustDomainsScreen` - the trust domains a page at a
+  time (`client.listTrustDomains`), each with its name as a link, its
+  source, `BundleStatus` and when the bundle changed, or that the mesh checks
+  its workloads, and its last refresh: when it was fetched, since when and
+  why it fails, when it is fetched next; replaced by hand for `uploaded`,
+  nothing to fetch for `mesh`. "Add trust domain" (`addTrustDomain`) opens
+  `TrustDomainForm` (`client.addTrustDomain`), then `go` to the new one.
+- `TrustDomainsScreen.tsx:BundleStatus` - a badge: no bundle (`mesh`), fetching
+  fails (a refresh with `failingSince`), or in force.
+  `TrustDomainsScreen.tsx:bundleFailure(code, text)` - the code of why a fetch
+  fails, in words from `text.bundleFailures`, or the code itself when unknown.
+- `TrustDomainScreen.tsx:TrustDomainScreen` - one trust domain
+  (`client.getTrustDomain`): its identifier, name, source with its sentence,
+  bundle endpoint address; the bundle in force summarized (sequence number,
+  refresh hint by `lifetime`, how many authorities for X509-SVIDs and for
+  JWT-SVIDs, when it changed), or `text.meshLead` for `mesh`; for a bundle
+  endpoint, its refresh (last fetch that read, next fetch, and while failing
+  since when and why). Replace the source (`TrustDomainForm`,
+  `client.replaceTrustDomain`, the answer replaces the shown value) and
+  remove it (`Confirm` `removeTrustDomain`, the name typed, then `go` to
+  `trustDomains`), both gated by `may(..., "replaceTrustDomain")`.
 - `names.tsx:PrincipalOf` - on `ClientScreen`, the workload a client acts as:
   asked as a service account, then as an agent, and shown as a link with its
   name; without `workloads:read`, the identifier.
@@ -122,7 +151,10 @@ console interface.
   `client.listFactors(id)`; with `credentials:write` (`removeFactor`, level 2,
   the typed primary identifier) it removes the application, a key or the
   recovery codes, and the dialog says when it is the last second factor and
-  that no session ends.
+  that no session ends. A card `standardClaims` lists the person's standard
+  claims that have a value, each labelled `text.claimLabel(claim)`, the
+  telephone number with a badge `verified` or `notVerified`; with none it
+  says `noStandardClaims`. The console shows them and does not change them.
 - `ProvidersScreen.tsx:ProvidersScreen` - the identity provider table, loaded
   with `client.listProviders()`; "Add provider" (`addProvider`) opens
   `ProviderForm`, which calls `client.addProvider(added)`.
@@ -150,16 +182,27 @@ console interface.
   with `disableApplication`, the name typed), enable (`enableApplication`),
   create a client (`ClientForm`, `client.addClient`) and register or change the
   resource server (`ResourceServerForm`).
-- `ClientForm.tsx:ClientForm` - name, type (only when creating), method (not for
-  a public client), grants (`client_credentials` not offered to a public
-  client), redirect addresses one per line (`linesOf`) and scopes separated by
-  spaces. `submit(type, settings)` returns a promise; a failure it throws is
-  shown and the form stays open.
+- `ClientForm.tsx:ClientForm` - name, type (only when creating), method (a
+  `RadioList` of the seven confidential methods, each with its sentence from
+  `text.methodHints`; not for a public client), grants (`client_credentials`
+  not offered to a public client), redirect addresses one per line
+  (`linesOf`), scopes separated by spaces, and whether access tokens are
+  bound to the certificate (a `Switch`, not for `linkerd_identity`). A method
+  of a workload's identity (`spiffe_jwt`, `spiffe_x509`, `tls_client_auth`,
+  `linkerd_identity`) asks for the service account's identifier, refused with
+  `text.principalNotAnIdentifier` without asking the server when it has not
+  the shape of one, and for the identity it takes: the SPIFFE identifier, the
+  Linkerd identity, or for `tls_client_auth` one of the two chosen with a
+  `SegmentedControl`; it offers only `client_credentials` and no redirect
+  address, and sends empty ones. `submit(type, settings)` returns a promise;
+  a failure it throws is shown and the form stays open.
 - `ResourceServerForm.tsx:ResourceServerForm` - audience (fixed when changing),
   name and scopes one per line as `name description` (`definedScopesOf`,
   `writtenScopes`).
 - `ClientScreen.tsx:ClientScreen` - one client, loaded with
-  `client.getClient(id)`: its identifier whole, settings, token lifetimes
+  `client.getClient(id)`: its identifier whole, settings (with the SPIFFE
+  identifier or the Linkerd identity when it has one, and whether its access
+  tokens are bound to a certificate), token lifetimes
   (`lifetime`), secrets by identifier and expiry, keys for `private_key_jwt`.
   Change (`ClientForm`, `client.changeClient`), give a new secret (`Confirm`
   with `rotateSecret`, the name typed, `client.rotateSecret`), end a secret
@@ -189,7 +232,10 @@ console interface.
   a new secret), and is dropped from state when that dialog closes. Creating a
   client with a secret goes to the client's page only after the dialog closes.
 - `ClientScreen.tsx:KeyForm` refuses text that is not JSON with
-  `text.keyNotJson` without asking the server.
+  `text.keyNotJson` without asking the server, as `TrustDomainForm` refuses a
+  bundle with `text.bundleNotJson`.
+- A trust domain's keys are never shown: the client keeps only how many
+  elements of each `use` its bundle holds.
 - `ProviderForm.tsx:ProviderForm` sends, when changing, only the fields that
   differ and is disabled until one does; when adding, alias, display name,
   issuer, client identifier and secret must all be non-empty. The secret field
@@ -200,7 +246,8 @@ console interface.
 - An invitation shows its address, units and expiry only; no link or secret
   is ever read from an answer.
 - Lists with "load more" (users, audit, groups, organizations, the members of
-  a group or an organization) do nothing while busy or when
+  a group or an organization, workloads, endpoints, deliveries, trust
+  domains) do nothing while busy or when
   `nextCursor` is `null`; the provider and session lists are not paged.
 - A plain primary click on a link calls `go`; a click with meta, control or
   shift, or another button, keeps the browser's own navigation to `path()`.

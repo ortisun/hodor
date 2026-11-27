@@ -6,10 +6,16 @@
 //! endpoint".
 
 use crate::domain::application::Application;
+use crate::domain::claims_parameter::{ClaimsRequest, GrantClaims, read_claims};
 use crate::domain::client::{Client, ClientId, GrantType};
 use crate::domain::consent::ConsentWait;
 use crate::domain::event::OauthEvent;
+use crate::domain::logout::IdTokenHint;
+use crate::domain::request_object::{
+    RequestObjectCheck, RequestObjectRefusal, check_request_object, unchecked_claims,
+};
 use crate::domain::resource_server::{OPENID_SCOPES, ResourceServer};
+use crate::domain::response::{ResponseMode, ResponseType, error_mode};
 use crate::domain::text::is_scope;
 use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
@@ -38,7 +44,7 @@ pub const PENDING_LIFETIME: Duration = Duration::minutes(10);
 /// The most `resource` values one request may name.
 pub const MAX_RESOURCES: usize = 10;
 /// The longest `state` or `nonce` accepted.
-const MAX_OPAQUE_LENGTH: usize = 1024;
+pub(crate) const MAX_OPAQUE_LENGTH: usize = 1024;
 /// The longest `login_hint`, `ui_locales` or `acr_values` accepted.
 const MAX_HINT_LENGTH: usize = 255;
 /// The largest `max_age` accepted: a year, in seconds.
@@ -58,9 +64,13 @@ pub struct AuthorizationParameters {
     pairs: Vec<(String, String)>,
 }
 
-enum Given<'a> {
+/// How a parameter was given.
+pub(crate) enum Given<'a> {
+    /// Not at all.
     Absent,
+    /// Once, with this value.
     Once(&'a str),
+    /// More than once.
     Repeated,
 }
 
@@ -75,7 +85,7 @@ impl AuthorizationParameters {
         }
     }
 
-    fn given(&self, name: &str) -> Given<'_> {
+    pub(crate) fn given(&self, name: &str) -> Given<'_> {
         let mut found = self.pairs.iter().filter(|(key, _)| key == name);
         match (found.next(), found.next()) {
             (None, _) => Given::Absent,
@@ -84,7 +94,7 @@ impl AuthorizationParameters {
         }
     }
 
-    fn all(&self, name: &str) -> Vec<&str> {
+    pub(crate) fn all(&self, name: &str) -> Vec<&str> {
         self.pairs
             .iter()
             .filter(|(key, _)| key == name)
@@ -92,7 +102,7 @@ impl AuthorizationParameters {
             .collect()
     }
 
-    fn once(&self, name: &str) -> Option<&str> {
+    pub(crate) fn once(&self, name: &str) -> Option<&str> {
         match self.given(name) {
             Given::Once(value) => Some(value),
             Given::Absent | Given::Repeated => None,
@@ -108,11 +118,61 @@ impl AuthorizationParameters {
         })
     }
 
-    /// The `client_id`, if it was given once and is the identifier of a
-    /// client at all. Which tenant has it is for the store to say.
+    /// The client the request names: `client_id` given once, or, when it
+    /// is not given, the `client_id` of the request object, read without
+    /// checking anything, only to know whose keys check the object.
+    fn named_client(&self) -> Option<String> {
+        match self.given("client_id") {
+            Given::Once(named) => Some(named.to_owned()),
+            Given::Repeated => None,
+            Given::Absent => match self.given("request") {
+                Given::Once(object) => unchecked_claims(object)?
+                    .get("client_id")?
+                    .as_str()
+                    .map(str::to_owned),
+                Given::Absent | Given::Repeated => None,
+            },
+        }
+    }
+
+    /// The same parameters with the request object fetched from the
+    /// address `request_uri` named given as `request` in its place, to be
+    /// checked as one given by value.
+    #[must_use]
+    pub(crate) fn with_object(&self, object: String) -> Self {
+        let mut pairs: Vec<(String, String)> = self
+            .pairs
+            .iter()
+            .filter(|(name, _)| name != "request_uri")
+            .cloned()
+            .collect();
+        pairs.push(("request".to_owned(), object));
+        Self { pairs }
+    }
+
+    /// The same parameters, naming `client` as `client_id`, whatever they
+    /// named before: the client that proved who it is when it pushed them.
+    #[must_use]
+    pub(crate) fn naming(mut self, client: ClientId) -> Self {
+        self.pairs.retain(|(name, _)| name != "client_id");
+        self.pairs
+            .push(("client_id".to_owned(), client.to_string()));
+        self
+    }
+
+    /// The `client_id`, if the request names one client and it is the
+    /// identifier of a client at all. Which tenant has it is for the store
+    /// to say.
     #[must_use]
     pub fn client_id(&self) -> Option<ClientId> {
-        self.once("client_id")?.parse().ok()
+        self.named_client()?.parse().ok()
+    }
+
+    /// The `id_token_hint`, if it was given once, to be checked with the
+    /// tenant's keys; see [`AuthorizationRequest::hinted`].
+    #[must_use]
+    pub fn id_token_hint(&self) -> Option<&str> {
+        self.once("id_token_hint")
     }
 }
 
@@ -153,6 +213,29 @@ pub struct AuthorizationRequest {
     /// `org_id`. The person must be a member of it.
     #[serde(default)]
     pub organization: Option<OrganizationId>,
+    /// Where the answer goes. A request kept before response modes existed
+    /// reads as the query.
+    #[serde(default)]
+    pub response_mode: ResponseMode,
+    /// The `sub` of the request's `id_token_hint`, once checked: the person
+    /// as the client knows them. The browser's session answers the request
+    /// only when it is this person's.
+    #[serde(default)]
+    pub id_token_hint: Option<String>,
+    /// The `id_token_hint` as the request gave it, inside its request
+    /// object when it has one, until it is checked: see
+    /// [`AuthorizationRequest::hinted`]. Never stored, so a request kept
+    /// while the person signs in holds the hint's `sub` alone.
+    #[serde(skip)]
+    pub given_hint: Option<String>,
+    /// What the `claims` parameter asked for: the person's claims for the
+    /// ID token and for UserInfo, and the `sub` expected. Empty without
+    /// one.
+    #[serde(default, skip_serializing_if = "ClaimsRequest::is_empty")]
+    pub claims: ClaimsRequest,
+    /// The languages the client prefers for the claims, as given.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub claims_locales: Option<String>,
 }
 
 /// An error that may be sent back to the client at its redirect address.
@@ -166,6 +249,8 @@ pub struct AuthorizationError {
     pub description: &'static str,
     /// The `state` of the request, when it had one that could be read.
     pub state: Option<String>,
+    /// Where the parameters go: the mode the answer would have had.
+    pub mode: ResponseMode,
 }
 
 /// Why a request is refused.
@@ -179,7 +264,7 @@ pub enum AuthorizationRefusal {
     Redirect(AuthorizationError),
 }
 
-fn is_printable(value: &str) -> bool {
+pub(crate) fn is_printable(value: &str) -> bool {
     value.bytes().all(|b| (0x20..=0x7e).contains(&b))
 }
 
@@ -204,12 +289,95 @@ fn is_absolute_without_fragment(value: &str) -> bool {
         && !value.contains(' ')
 }
 
-const PROMPTS: [&str; 4] = ["none", "login", "consent", "select_account"];
+const PROMPTS: [&str; 5] = ["none", "login", "consent", "select_account", "create"];
+/// The values of `display` the pages are made for: one layout fits a whole
+/// window, a popup and a touch screen. `wap` is not offered.
+pub(crate) const DISPLAYS: [&str; 3] = ["page", "popup", "touch"];
+
+/// The client and application a request names, if they may be answered
+/// at all: known in this tenant, enabled, and allowed the code.
+pub(crate) fn trusted_client<'c>(
+    parameters: &AuthorizationParameters,
+    client: Option<&'c Client>,
+    application: Option<&'c Application>,
+) -> Result<(&'c Client, &'c Application), AuthorizationRefusal> {
+    match (parameters.client_id(), client, application) {
+        (Some(named), Some(client), Some(application))
+            if named == client.id()
+                && client.is_enabled()
+                && application.is_enabled()
+                && client.application_id() == application.id()
+                && client
+                    .snapshot()
+                    .settings
+                    .grant_types
+                    .contains(&GrantType::AuthorizationCode) =>
+        {
+            Ok((client, application))
+        }
+        _ => Err(AuthorizationRefusal::NotRedirectable(
+            "oauth.authorization_client_unknown",
+        )),
+    }
+}
+
+/// Where a refused request object is answered: the redirect address
+/// outside it when it is one of the client's, otherwise the object's own
+/// when it is, each with the `state` given beside it; otherwise Hodor's
+/// own page.
+fn refused_object(
+    outside: &AuthorizationParameters,
+    object: Option<&str>,
+    client: &Client,
+    refusal: RequestObjectRefusal,
+) -> AuthorizationRefusal {
+    let readable = |state: Option<&str>| {
+        state
+            .filter(|value| value.len() <= MAX_OPAQUE_LENGTH && is_printable(value))
+            .map(str::to_owned)
+    };
+    let from_outside = outside
+        .once("redirect_uri")
+        .filter(|uri| client.accepts_redirect_uri(uri))
+        .map(|uri| {
+            (
+                uri.to_owned(),
+                readable(outside.once("state")),
+                error_mode(outside.once("response_type"), outside.once("response_mode")),
+            )
+        });
+    let target = from_outside.or_else(|| {
+        let claims = unchecked_claims(object?)?;
+        let uri = claims.get("redirect_uri")?.as_str()?;
+        let text = |name: &str| claims.get(name).and_then(serde_json::Value::as_str);
+        client.accepts_redirect_uri(uri).then(|| {
+            (
+                uri.to_owned(),
+                readable(text("state")),
+                error_mode(text("response_type"), text("response_mode")),
+            )
+        })
+    });
+    match target {
+        Some((redirect_uri, state, mode)) => AuthorizationRefusal::Redirect(AuthorizationError {
+            redirect_uri,
+            error: refusal.error(),
+            description: refusal.description(),
+            state,
+            mode,
+        }),
+        None => AuthorizationRefusal::NotRedirectable("oauth.authorization_request_object_invalid"),
+    }
+}
 
 /// Checks a request in the order the specification gives, the first
 /// failure deciding the answer. `client` is the client its `client_id`
 /// names in this tenant, `application` that client's application, and
-/// `servers` the tenant's resource servers.
+/// `servers` the tenant's resource servers. A request object in `request`
+/// is checked first, with `objects`, and its parameters are then the
+/// request. With `pushed_only`, the client or its tenant requires pushed
+/// requests, and a request that was not pushed is refused once its
+/// redirect address is trusted.
 ///
 /// # Errors
 ///
@@ -220,24 +388,45 @@ pub fn check_request(
     client: Option<&Client>,
     application: Option<&Application>,
     servers: &[ResourceServer],
+    objects: RequestObjectCheck<'_>,
+    pushed_only: bool,
 ) -> Result<AuthorizationRequest, AuthorizationRefusal> {
-    let unknown = AuthorizationRefusal::NotRedirectable("oauth.authorization_client_unknown");
-    let (client, application) = match (parameters.given("client_id"), client, application) {
-        (Given::Once(named), Some(client), Some(application))
-            if named.parse::<ClientId>().ok() == Some(client.id())
-                && client.is_enabled()
-                && application.is_enabled()
-                && client.application_id() == application.id()
-                && client
-                    .snapshot()
-                    .settings
-                    .grant_types
-                    .contains(&GrantType::AuthorizationCode) =>
-        {
-            (client, application)
+    let object = match parameters.given("request") {
+        Given::Absent => {
+            return check_parameters(parameters, client, application, servers, pushed_only);
         }
-        _ => return Err(unknown),
+        Given::Once(object) => Some(object),
+        Given::Repeated => None,
     };
+    let (client, application) = trusted_client(parameters, client, application)?;
+    let checked = match object {
+        Some(object) => check_request_object(object, client, parameters, objects),
+        None => Err(RequestObjectRefusal::Contradicted(
+            "a parameter is given more than once",
+        )),
+    };
+    match checked {
+        Ok(inside) => check_parameters(
+            &inside,
+            Some(client),
+            Some(application),
+            servers,
+            pushed_only,
+        ),
+        Err(refusal) => Err(refused_object(parameters, object, client, refusal)),
+    }
+}
+
+/// Checks the parameters of a request, without a request object: those
+/// given, or those a checked request object gave.
+fn check_parameters(
+    parameters: &AuthorizationParameters,
+    client: Option<&Client>,
+    application: Option<&Application>,
+    servers: &[ResourceServer],
+    pushed_only: bool,
+) -> Result<AuthorizationRequest, AuthorizationRefusal> {
+    let (client, application) = trusted_client(parameters, client, application)?;
     let redirect_uri = match parameters.given("redirect_uri") {
         Given::Once(uri) if client.accepts_redirect_uri(uri) => uri.to_owned(),
         Given::Once(_) => {
@@ -252,53 +441,67 @@ pub fn check_request(
         }
     };
 
-    // From here on, errors go back to the client. Its state goes with
-    // them when it can be read.
+    // From here on, errors go back to the client, in the mode the answer
+    // would have had. Its state goes with them when it can be read.
     let state = parameters
         .once("state")
         .filter(|value| value.len() <= MAX_OPAQUE_LENGTH && is_printable(value))
         .map(str::to_owned);
+    let mode = error_mode(
+        parameters.once("response_type"),
+        parameters.once("response_mode"),
+    );
     let refuse = |error: &'static str, description: &'static str| {
         AuthorizationRefusal::Redirect(AuthorizationError {
             redirect_uri: redirect_uri.clone(),
             error,
             description,
             state: state.clone(),
+            mode,
         })
     };
     let invalid = |description: &'static str| refuse("invalid_request", description);
 
+    if pushed_only {
+        return Err(invalid("this client must push its authorization requests"));
+    }
     if parameters.any_repeated() {
         return Err(invalid("a parameter is given more than once"));
     }
-    if parameters.once("request").is_some() {
-        return Err(refuse(
-            "request_not_supported",
-            "request objects are not supported",
-        ));
-    }
+    // A reference is read before the request is checked, by the
+    // authorization endpoint; one here would name a request from inside
+    // another, as when it is pushed.
     if parameters.once("request_uri").is_some() {
-        return Err(refuse(
-            "request_uri_not_supported",
-            "request objects are not supported",
+        return Err(invalid(
+            "request_uri cannot be given with the request it would name",
         ));
     }
-    if parameters
-        .once("response_mode")
-        .is_some_and(|mode| mode != "query")
-    {
-        return Err(invalid("the only response mode is query"));
-    }
-    match parameters.once("response_type") {
+    let response_type = match parameters.once("response_type") {
         None => return Err(invalid("response_type is required")),
-        Some("code") => {}
-        Some(_) => {
-            return Err(refuse(
-                "unsupported_response_type",
-                "the only response type is code",
-            ));
-        }
-    }
+        Some(given) => match ResponseType::read(given) {
+            Some(kind) => kind,
+            None => {
+                return Err(refuse(
+                    "unsupported_response_type",
+                    "the only response type is code",
+                ));
+            }
+        },
+    };
+    let response_mode = match parameters.once("response_mode") {
+        None => response_type.default_mode(),
+        Some(given) => match ResponseMode::read(given) {
+            Some(asked) if response_type.allows(asked) => asked,
+            Some(_) => {
+                return Err(invalid(
+                    "the response type may not be answered in this response mode",
+                ));
+            }
+            None => {
+                return Err(invalid("the response modes are query and form_post"));
+            }
+        },
+    };
 
     let code_challenge = match (
         parameters.once("code_challenge"),
@@ -355,8 +558,15 @@ pub fn check_request(
             "prompt holds an unknown value, or none with another",
         ));
     }
+    if parameters
+        .once("display")
+        .is_some_and(|value| !DISPLAYS.contains(&value))
+    {
+        return Err(invalid("display is page, popup or touch"));
+    }
+    // A request that names no `max_age` takes the client's default.
     let max_age = match parameters.once("max_age") {
-        None => None,
+        None => client.default_max_age(),
         Some(value) => match value.parse::<u32>() {
             Ok(seconds)
                 if seconds <= MAX_AGE_SECONDS && value.bytes().all(|b| b.is_ascii_digit()) =>
@@ -369,14 +579,33 @@ pub fn check_request(
     let hint = |name: &str| -> Result<Option<String>, AuthorizationRefusal> {
         match parameters.once(name) {
             Some(value) if value.len() > MAX_HINT_LENGTH || !is_printable(value) => Err(invalid(
-                "login_hint, ui_locales and acr_values hold at most 255 characters",
+                "login_hint, ui_locales, claims_locales and acr_values hold at most 255 characters",
             )),
             value => Ok(value.map(str::to_owned)),
         }
     };
     let login_hint = hint("login_hint")?;
     let ui_locales = hint("ui_locales")?;
-    let acr_values = hint("acr_values")?;
+    let claims_locales = hint("claims_locales")?;
+    let mut acr_values = hint("acr_values")?;
+    let claims = match parameters.once("claims") {
+        None => ClaimsRequest::default(),
+        Some(text) => {
+            let read = read_claims(text).map_err(invalid)?;
+            if read.acr_with_values && acr_values.is_some() {
+                return Err(invalid(
+                    "acr is asked for with values both in claims and in acr_values",
+                ));
+            }
+            if read.essential_acr.is_some() {
+                acr_values = read.essential_acr;
+            }
+            read.request
+        }
+    };
+    // A request that names no `acr_values`, neither as the parameter nor as
+    // an essential `acr` of `claims`, takes the client's defaults.
+    let acr_values = acr_values.or_else(|| client.default_acr_values());
     let organization = match parameters.once("organization") {
         None => None,
         Some(value) => match value.parse::<OrganizationId>() {
@@ -477,6 +706,11 @@ pub fn check_request(
         acr_values,
         first_party: application.snapshot().settings.first_party,
         organization,
+        response_mode,
+        id_token_hint: None,
+        given_hint: parameters.id_token_hint().map(str::to_owned),
+        claims,
+        claims_locales,
     })
 }
 
@@ -529,9 +763,75 @@ impl AuthorizationRequest {
         self.prompt.iter().any(|given| given == value)
     }
 
-    /// Whether the request asks for a sign-in even when there is a session.
+    /// Whether the request asks for a sign-in even when there is a session:
+    /// `create` too, so that a session from before is not taken for the
+    /// account the person makes.
     fn asks_for_a_new_sign_in(&self) -> bool {
-        self.prompts("login") || self.prompts("select_account")
+        self.prompts("login") || self.prompts("select_account") || self.prompts("create")
+    }
+
+    /// Whether the person is sent to register rather than to sign in:
+    /// `prompt=create`.
+    #[must_use]
+    pub fn asks_to_register(&self) -> bool {
+        self.prompts("create")
+    }
+
+    /// The refusal of `prompt=create` by a tenant whose registration policy
+    /// is closed: it does not support the value, which Initiating User
+    /// Registration via OpenID Connect answers with `invalid_request`
+    /// (section 4.1). `None` when the request may go on.
+    #[must_use]
+    pub fn registration_refusal(&self, registration_open: bool) -> Option<AuthorizationError> {
+        (self.asks_to_register() && !registration_open).then(|| AuthorizationError {
+            redirect_uri: self.redirect_uri.clone(),
+            error: "invalid_request",
+            description: "prompt=create is not supported: this tenant does not accept \
+                          registrations",
+            state: self.state.clone(),
+            mode: self.response_mode,
+        })
+    }
+
+    /// The request with its `id_token_hint`, as checked against the
+    /// tenant's keys: an ID token of this tenant issued to the client of
+    /// the request. Its `sub` is kept.
+    ///
+    /// # Errors
+    ///
+    /// Returns the refusal, `invalid_request` at the redirect address, and
+    /// the reason for the logs.
+    pub fn hinted(
+        mut self,
+        checked: Result<IdTokenHint, &'static str>,
+    ) -> Result<Self, (AuthorizationRefusal, &'static str)> {
+        let reason = match checked {
+            Ok(hint) if hint.client_id == self.client_id => {
+                self.id_token_hint = Some(hint.subject);
+                return Ok(self);
+            }
+            Ok(_) => "the hint was issued to another client",
+            Err(reason) => reason,
+        };
+        Err((
+            AuthorizationRefusal::Redirect(AuthorizationError {
+                redirect_uri: self.redirect_uri,
+                error: "invalid_request",
+                description: "id_token_hint is not an ID token this tenant issued to this client",
+                state: self.state,
+                mode: self.response_mode,
+            }),
+            reason,
+        ))
+    }
+
+    /// Whether the person the client knows as `subject` is the one the
+    /// request's `id_token_hint` names. Without a hint, anyone is.
+    #[must_use]
+    pub fn names_person(&self, subject: &str) -> bool {
+        self.id_token_hint
+            .as_deref()
+            .is_none_or(|hinted| hinted == subject)
     }
 
     /// The proofs of a session that count for this request: all of them,
@@ -578,6 +878,17 @@ impl AuthorizationRequest {
                 carried: counting.to_vec(),
             }
         }
+    }
+
+    /// Whether the request asked through `claims` for a `sub` other than
+    /// `subject`, the person signed in as the client knows them. Such a
+    /// session is not used: the person signs in again.
+    #[must_use]
+    pub fn names_another(&self, subject: &str) -> bool {
+        self.claims
+            .subject
+            .as_deref()
+            .is_some_and(|wanted| wanted != subject)
     }
 
     /// Whether a person who comes back to a request that arrived at
@@ -744,6 +1055,8 @@ pub struct Grant {
     /// The organization the person signed in for, if the request named
     /// one.
     pub organization: Option<OrganizationId>,
+    /// The claims asked through the `claims` parameter that it gives.
+    pub claims: GrantClaims,
     /// Whether it stands.
     pub status: GrantStatus,
     /// When it was made.
@@ -766,6 +1079,7 @@ impl Grant {
             scopes: request.scopes.clone(),
             audiences: request.audiences.clone(),
             organization: request.organization,
+            claims: GrantClaims::default(),
             status: GrantStatus::Active,
             created_at: now,
             revoked_at: None,
@@ -1028,3 +1342,6 @@ pub fn s256_challenge(verifier: &str, digest: &dyn Digest) -> String {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod parameter_tests;

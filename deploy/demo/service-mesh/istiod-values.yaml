@@ -1,0 +1,31 @@
+# Istio's control plane for the demonstration of Milestone 11, on a kind cluster of one node: small, with
+# Kubernetes's own sidecar containers, so that the sidecar starts before Hodor's containers, the job that
+# migrates the database included, and stops after them; and with hodor-ext-authz named as the provider of
+# external authorization that an AuthorizationPolicy of action CUSTOM points at, as the service mesh guide
+# writes it. Its trust domain is the default, cluster.local.
+#
+#   python3 deploy/demo/service_mesh.py installs it; see docs/operations/quick-start.md.
+
+pilot:
+  autoscaleEnabled: false
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+  env:
+    ENABLE_NATIVE_SIDECARS: "true"
+
+meshConfig:
+  extensionProviders:
+    - name: hodor
+      envoyExtAuthzGrpc:
+        service: hodor-ext-authz.hodor.svc.cluster.local
+        port: 9191
+        timeout: 2s
+
+global:
+  proxy:
+    resources:
+      requests:
+        cpu: 10m
+        memory: 64Mi

@@ -9,12 +9,13 @@ use aws_lc_rs::encoding::AsDer as _;
 use aws_lc_rs::rand::SystemRandom;
 use aws_lc_rs::rsa::KeySize;
 use aws_lc_rs::signature::{
-    ECDSA_P256_SHA256_FIXED_SIGNING, EcdsaKeyPair, KeyPair as _, RSA_PKCS1_SHA256, RSA_PSS_SHA256,
-    RsaEncoding, RsaKeyPair,
+    ECDSA_P256_SHA256_ASN1_SIGNING, ECDSA_P256_SHA256_FIXED_SIGNING, EcdsaKeyPair, Ed25519KeyPair,
+    KeyPair as _, RSA_PKCS1_SHA256, RSA_PSS_SHA256, RsaEncoding, RsaKeyPair,
 };
 use hodor_kernel::{DomainError, PublicKey, SealedSecret, Secret, TenantContext};
 use hodor_keys::api::{
     GeneratedKey, KeyAlgorithm, KeyMaterial, KeyProvider, KeyUse, KeyVersion, KeyVersionId,
+    SignatureEncoding,
 };
 use std::sync::Arc;
 use zeroize::Zeroize as _;
@@ -128,6 +129,20 @@ fn generate_rsa() -> Result<(PublicKey, Secret<Vec<u8>>), DomainError> {
     Ok((public, Secret::new(document.as_ref().to_vec())))
 }
 
+fn generate_ed25519() -> Result<(PublicKey, Secret<Vec<u8>>), DomainError> {
+    let pair =
+        Ed25519KeyPair::generate().map_err(|_| failed("an Ed25519 key could not be made"))?;
+    let document = pair
+        .to_pkcs8v1()
+        .map_err(|_| failed("an Ed25519 key could not be written"))?;
+    let public = pair.public_key().as_ref();
+    if public.len() != 32 {
+        return Err(failed("the Ed25519 public key has an unexpected size"));
+    }
+    let public = PublicKey::Ed25519 { x: public.to_vec() };
+    Ok((public, Secret::new(document.as_ref().to_vec())))
+}
+
 fn generate_data_key() -> Result<Secret<Vec<u8>>, DomainError> {
     let mut key = vec![0_u8; DATA_KEY_BYTES];
     aws_lc_rs::rand::fill(&mut key).map_err(|_| failed("no random bytes for a data key"))?;
@@ -160,6 +175,10 @@ impl KeyProvider for LocalKeyProvider {
                 let (public, key) = generate_rsa()?;
                 (Some(public), key)
             }
+            KeyAlgorithm::EdDsa => {
+                let (public, key) = generate_ed25519()?;
+                (Some(public), key)
+            }
             KeyAlgorithm::A256Gcm => (None, generate_data_key()?),
         };
         let material = self.wrap(tenant, version, algorithm, key)?;
@@ -174,12 +193,17 @@ impl KeyProvider for LocalKeyProvider {
         tenant: &TenantContext,
         version: &KeyVersion,
         message: &[u8],
+        encoding: SignatureEncoding,
     ) -> Result<Vec<u8>, DomainError> {
         let key = self.unwrap(tenant, version, KeyUse::Signing)?;
         let random = SystemRandom::new();
         match version.algorithm() {
             KeyAlgorithm::Es256 => {
-                let pair = EcdsaKeyPair::from_pkcs8(&ECDSA_P256_SHA256_FIXED_SIGNING, key.expose())
+                let written = match encoding {
+                    SignatureEncoding::Jose => &ECDSA_P256_SHA256_FIXED_SIGNING,
+                    SignatureEncoding::Der => &ECDSA_P256_SHA256_ASN1_SIGNING,
+                };
+                let pair = EcdsaKeyPair::from_pkcs8(written, key.expose())
                     .map_err(|_| unusable("the key is not a P-256 key"))?;
                 let signature = pair
                     .sign(&random, message)
@@ -189,7 +213,8 @@ impl KeyProvider for LocalKeyProvider {
             algorithm @ (KeyAlgorithm::Rs256 | KeyAlgorithm::Ps256) => {
                 // An RSA signature takes about a millisecond, a thousand
                 // times an ECDSA one: off the threads that answer requests,
-                // as the password hasher does.
+                // as the password hasher does. Its two encodings are the
+                // same bytes.
                 let message = message.to_vec();
                 tokio::task::spawn_blocking(move || {
                     let pair = RsaKeyPair::from_pkcs8(key.expose())
@@ -206,6 +231,13 @@ impl KeyProvider for LocalKeyProvider {
                 })
                 .await
                 .map_err(|_| unusable("the signature could not be made"))?
+            }
+            KeyAlgorithm::EdDsa => {
+                // RFC 8032 writes one signature, 64 bytes, in tokens and in
+                // certificates alike: both encodings are the same.
+                let pair = Ed25519KeyPair::from_pkcs8(key.expose())
+                    .map_err(|_| unusable("the key is not an Ed25519 key"))?;
+                Ok(pair.sign(message).as_ref().to_vec())
             }
             KeyAlgorithm::A256Gcm => Err(unusable("a data key does not sign")),
         }

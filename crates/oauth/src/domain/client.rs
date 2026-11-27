@@ -6,14 +6,18 @@ use crate::domain::consent::{
     DEFAULT_CONSENT_LIFETIME, LONGEST_CONSENT_LIFETIME, SHORTEST_CONSENT_LIFETIME,
 };
 use crate::domain::event::OauthEvent;
+use crate::domain::forwarded::{LinkerdIdentity, WorkloadIdentity, linkerd_identity_invalid};
 use crate::domain::key::{ClientKey, MAX_KEYS};
+use crate::domain::key_set::{check_jwks_uri, jwks_uri_not_allowed};
 use crate::domain::pairwise::{
     SubjectType, check_sector_identifier_uri, sector_of, sector_required, sector_uri_invalid,
     subject_type_invalid,
 };
+use crate::domain::request_uri::{MAX_REQUEST_URIS, check_request_uri, request_uri_invalid};
 use crate::domain::secret::{ClientSecret, ClientSecretHash, ClientSecretId, ClientSecretValue};
+use crate::domain::spiffe::SpiffeId;
 use crate::domain::text;
-use hodor_kernel::{Digest, DomainError, RandomSource, Timestamp, UserId};
+use hodor_kernel::{Digest, DomainError, RandomSource, SignatureAlgorithm, Timestamp, UserId};
 use hodor_keys::api::{KeyAlgorithm, RotationPolicy};
 use time::Duration;
 
@@ -31,9 +35,22 @@ pub const MAX_REDIRECT_URIS: usize = 10;
 pub(crate) const MAX_REDIRECT_URI_LENGTH: usize = 2000;
 /// The most scopes a client may ask for.
 pub const MAX_SCOPES: usize = 50;
+/// The largest default max age: a year, in seconds, as `max_age` at the
+/// authorization endpoint.
+pub(crate) const MAX_DEFAULT_MAX_AGE: u32 = 31_536_000;
+/// The most default assurance levels a client may have.
+pub(crate) const MAX_DEFAULT_ACR_VALUES: usize = 10;
+/// The longest name of a default assurance level.
+const MAX_ACR_VALUE_LENGTH: usize = 128;
+/// The longest the default assurance levels may be once joined by spaces,
+/// as `acr_values` at the authorization endpoint.
+const MAX_ACR_VALUES_LENGTH: usize = 255;
 
-/// How a client's ID tokens are signed: its `id_token_signed_response_alg`
-/// of OpenID Connect Registration.
+/// How Hodor signs what it answers a client: its ID tokens, its
+/// `id_token_signed_response_alg` of OpenID Connect Registration, and its
+/// UserInfo answers, its `userinfo_signed_response_alg`. Every one is an
+/// algorithm each tenant can sign with: both key providers make keys of
+/// all four. See `docs/architecture/contexts/oauth.md`, "The ID token".
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum IdTokenAlgorithm {
     /// ECDSA on P-256, the algorithm Hodor signs with unless told otherwise
@@ -43,19 +60,20 @@ pub enum IdTokenAlgorithm {
     /// RSA with PKCS#1 version 1.5 padding, which every OpenID Provider must
     /// offer and every relying party understands.
     Rs256,
+    /// RSA with PSS padding, which FAPI asks for instead of `RS256`.
+    Ps256,
+    /// EdDSA on Ed25519 (RFC 8037).
+    EdDsa,
 }
 
 impl IdTokenAlgorithm {
     /// Every algorithm a client may choose, as discovery lists them.
-    pub const ALL: [Self; 2] = [Self::Es256, Self::Rs256];
+    pub const ALL: [Self; 4] = [Self::Es256, Self::Rs256, Self::Ps256, Self::EdDsa];
 
     /// The name JSON Web Signature gives it, which is also the stored name.
     #[must_use]
     pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::Es256 => "ES256",
-            Self::Rs256 => "RS256",
-        }
+        self.key_algorithm().as_str()
     }
 
     /// The key that signs with it.
@@ -64,6 +82,103 @@ impl IdTokenAlgorithm {
         match self {
             Self::Es256 => KeyAlgorithm::Es256,
             Self::Rs256 => KeyAlgorithm::Rs256,
+            Self::Ps256 => KeyAlgorithm::Ps256,
+            Self::EdDsa => KeyAlgorithm::EdDsa,
+        }
+    }
+
+    /// The signature it makes, as signatures are checked.
+    #[must_use]
+    pub const fn signature(self) -> SignatureAlgorithm {
+        match self {
+            Self::Es256 => SignatureAlgorithm::Es256,
+            Self::Rs256 => SignatureAlgorithm::Rs256,
+            Self::Ps256 => SignatureAlgorithm::Ps256,
+            Self::EdDsa => SignatureAlgorithm::EdDsa,
+        }
+    }
+
+    /// The algorithm of this name, if a client may choose it.
+    #[must_use]
+    pub fn from_name(value: &str) -> Option<Self> {
+        Self::ALL
+            .into_iter()
+            .find(|algorithm| algorithm.as_str() == value)
+    }
+
+    /// Reads the name JSON Web Signature gives it, for a client's ID
+    /// tokens.
+    ///
+    /// # Errors
+    ///
+    /// Returns `oauth.client_id_token_algorithm_invalid` for any other name.
+    pub fn parse(value: &str) -> Result<Self, DomainError> {
+        Self::from_name(value).ok_or_else(|| {
+            DomainError::invalid(
+                "oauth.client_id_token_algorithm_invalid",
+                "a client's ID tokens are signed with `ES256`, `RS256`, `PS256` or `EdDSA`",
+            )
+        })
+    }
+
+    /// Reads the name JSON Web Signature gives it, for a client's UserInfo
+    /// answers. `none` is not one: a client that wants no signature gets
+    /// JSON.
+    ///
+    /// # Errors
+    ///
+    /// Returns `oauth.client_userinfo_algorithm_invalid` for any other name.
+    pub fn parse_for_userinfo(value: &str) -> Result<Self, DomainError> {
+        Self::from_name(value).ok_or_else(|| {
+            DomainError::invalid(
+                "oauth.client_userinfo_algorithm_invalid",
+                "a client's UserInfo answers are signed with `ES256`, `RS256`, `PS256` or \
+                 `EdDSA`, or not signed at all",
+            )
+        })
+    }
+}
+
+/// How a client signs its request objects: its `request_object_signing_alg`
+/// of OpenID Connect Registration. A client that names none accepts every
+/// algorithm but `none`. See `docs/architecture/contexts/oauth.md`,
+/// "Request objects".
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RequestObjectAlgorithm {
+    /// ECDSA on P-256 with SHA-256.
+    Es256,
+    /// RSA with PKCS#1 version 1.5 padding and SHA-256.
+    Rs256,
+    /// RSA with PSS padding and SHA-256.
+    Ps256,
+    /// Unsigned: the client's request objects protect nothing, and are
+    /// held to every check of a request without one.
+    None,
+}
+
+impl RequestObjectAlgorithm {
+    /// Every algorithm a client may name, as discovery lists them.
+    pub const ALL: [Self; 4] = [Self::Es256, Self::Rs256, Self::Ps256, Self::None];
+
+    /// The name JSON Web Signature gives it, which is also the stored name.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Es256 => "ES256",
+            Self::Rs256 => "RS256",
+            Self::Ps256 => "PS256",
+            Self::None => "none",
+        }
+    }
+
+    /// The signature it checks, or `None` for an unsigned object.
+    #[must_use]
+    pub const fn signature(self) -> Option<SignatureAlgorithm> {
+        match self {
+            Self::Es256 => Some(SignatureAlgorithm::Es256),
+            Self::Rs256 => Some(SignatureAlgorithm::Rs256),
+            Self::Ps256 => Some(SignatureAlgorithm::Ps256),
+            Self::None => None,
         }
     }
 
@@ -71,16 +186,19 @@ impl IdTokenAlgorithm {
     ///
     /// # Errors
     ///
-    /// Returns `oauth.client_id_token_algorithm_invalid` for any other name.
+    /// Returns `oauth.client_request_object_algorithm_invalid` for any
+    /// other name.
     pub fn parse(value: &str) -> Result<Self, DomainError> {
-        match value {
-            "ES256" => Ok(Self::Es256),
-            "RS256" => Ok(Self::Rs256),
-            _ => Err(DomainError::invalid(
-                "oauth.client_id_token_algorithm_invalid",
-                "a client's ID tokens are signed with `ES256` or `RS256`",
-            )),
-        }
+        Self::ALL
+            .into_iter()
+            .find(|algorithm| algorithm.as_str() == value)
+            .ok_or_else(|| {
+                DomainError::invalid(
+                    "oauth.client_request_object_algorithm_invalid",
+                    "a client's request objects are signed with `ES256`, `RS256` or `PS256`, \
+                     or not signed with `none`",
+                )
+            })
     }
 }
 
@@ -127,6 +245,19 @@ pub enum AuthenticationMethod {
     ClientSecretPost,
     /// An assertion signed with the client's own private key (RFC 7523).
     PrivateKeyJwt,
+    /// A JWT-SVID of the one SPIFFE identifier the client is bound to,
+    /// checked against its trust domain's bundle
+    /// (draft-ietf-oauth-spiffe-client-auth-03).
+    SpiffeJwt,
+    /// The certificate it presented to the proxy in front of Hodor, as the
+    /// proxy forwards it (RFC 8705, section 2.1).
+    TlsClientAuth,
+    /// Its X509-SVID, as the proxy in front of Hodor forwards it
+    /// (draft-ietf-oauth-spiffe-client-auth-03, section 3.3).
+    SpiffeX509,
+    /// The identity Linkerd's proxy asserts in `l5d-client-id`. Hodor's
+    /// own name, registered nowhere.
+    LinkerdIdentity,
     /// Nothing: a public client.
     None,
 }
@@ -139,6 +270,10 @@ impl AuthenticationMethod {
             Self::ClientSecretBasic => "client_secret_basic",
             Self::ClientSecretPost => "client_secret_post",
             Self::PrivateKeyJwt => "private_key_jwt",
+            Self::SpiffeJwt => "spiffe_jwt",
+            Self::TlsClientAuth => "tls_client_auth",
+            Self::SpiffeX509 => "spiffe_x509",
+            Self::LinkerdIdentity => "linkerd_identity",
             Self::None => "none",
         }
     }
@@ -154,6 +289,10 @@ impl AuthenticationMethod {
             "client_secret_basic" => Ok(Self::ClientSecretBasic),
             "client_secret_post" => Ok(Self::ClientSecretPost),
             "private_key_jwt" => Ok(Self::PrivateKeyJwt),
+            "spiffe_jwt" => Ok(Self::SpiffeJwt),
+            "tls_client_auth" => Ok(Self::TlsClientAuth),
+            "spiffe_x509" => Ok(Self::SpiffeX509),
+            "linkerd_identity" => Ok(Self::LinkerdIdentity),
             "none" => Ok(Self::None),
             _ => Err(method_invalid()),
         }
@@ -164,13 +303,116 @@ impl AuthenticationMethod {
     pub const fn uses_secret(self) -> bool {
         matches!(self, Self::ClientSecretBasic | Self::ClientSecretPost)
     }
+
+    /// Whether the method proves who the client is with the credential of
+    /// the one SPIFFE identifier it is bound to: a JWT-SVID, or an
+    /// X509-SVID a proxy forwards.
+    #[must_use]
+    pub const fn uses_spiffe_id(self) -> bool {
+        matches!(self, Self::SpiffeJwt | Self::SpiffeX509)
+    }
+
+    /// Whether the method proves who the client is with an identity the
+    /// proxy in front of Hodor forwards.
+    #[must_use]
+    pub const fn uses_forwarded_identity(self) -> bool {
+        matches!(
+            self,
+            Self::TlsClientAuth | Self::SpiffeX509 | Self::LinkerdIdentity
+        )
+    }
+
+    /// Whether the method binds the client to a workload's identity, a
+    /// SPIFFE identifier or a Linkerd identity, so that it acts as a
+    /// service account.
+    #[must_use]
+    pub const fn uses_workload_identity(self) -> bool {
+        self.uses_spiffe_id() || self.uses_forwarded_identity()
+    }
+}
+
+fn spiffe_id_required(reason: &'static str) -> DomainError {
+    DomainError::invalid(
+        "oauth.client_spiffe_id_invalid",
+        "a client using `spiffe_jwt` or `spiffe_x509` is bound to one SPIFFE identifier, one \
+         using `tls_client_auth` to one SPIFFE identifier or one Linkerd identity, and each \
+         acts as a service account; only such a client has one",
+    )
+    .with_detail(reason)
+}
+
+/// Checks that a client of `method` is bound to the identity its method
+/// takes, and only then, and that a bound client acts as a workload.
+fn check_identities(
+    method: AuthenticationMethod,
+    spiffe: bool,
+    linkerd: bool,
+    principal: bool,
+) -> Result<(), DomainError> {
+    const NO_SPIFFE_ID: &str = "only a client using `spiffe_jwt`, `spiffe_x509` or `tls_client_auth` has a SPIFFE \
+         identifier";
+    const NO_LINKERD_IDENTITY: &str =
+        "only a client using `linkerd_identity` or `tls_client_auth` has a Linkerd identity";
+    match method {
+        AuthenticationMethod::SpiffeJwt if !spiffe => Err(spiffe_id_required(
+            "a client using `spiffe_jwt` has a SPIFFE identifier",
+        )),
+        AuthenticationMethod::SpiffeX509 if !spiffe => Err(spiffe_id_required(
+            "a client using `spiffe_x509` has a SPIFFE identifier",
+        )),
+        AuthenticationMethod::SpiffeJwt | AuthenticationMethod::SpiffeX509 if linkerd => {
+            Err(linkerd_identity_invalid(NO_LINKERD_IDENTITY))
+        }
+        AuthenticationMethod::LinkerdIdentity if !linkerd => Err(linkerd_identity_invalid(
+            "a client using `linkerd_identity` has a Linkerd identity",
+        )),
+        AuthenticationMethod::LinkerdIdentity if spiffe => Err(spiffe_id_required(NO_SPIFFE_ID)),
+        AuthenticationMethod::TlsClientAuth if spiffe == linkerd => Err(spiffe_id_required(
+            "a client using `tls_client_auth` has a SPIFFE identifier or a Linkerd identity, \
+             not both",
+        )),
+        AuthenticationMethod::ClientSecretBasic
+        | AuthenticationMethod::ClientSecretPost
+        | AuthenticationMethod::PrivateKeyJwt
+        | AuthenticationMethod::None
+            if spiffe =>
+        {
+            Err(spiffe_id_required(NO_SPIFFE_ID))
+        }
+        AuthenticationMethod::ClientSecretBasic
+        | AuthenticationMethod::ClientSecretPost
+        | AuthenticationMethod::PrivateKeyJwt
+        | AuthenticationMethod::None
+            if linkerd =>
+        {
+            Err(linkerd_identity_invalid(NO_LINKERD_IDENTITY))
+        }
+        _ if spiffe && !principal => Err(spiffe_id_required(
+            "a client bound to a SPIFFE identifier acts as a service account",
+        )),
+        _ if linkerd && !principal => Err(linkerd_identity_invalid(
+            "a client bound to a Linkerd identity acts as a service account",
+        )),
+        _ => Ok(()),
+    }
+}
+
+/// Refuses a client that asks for certificate-bound access tokens while
+/// no certificate can ever come with its requests.
+fn certificate_bound_invalid() -> DomainError {
+    DomainError::invalid(
+        "oauth.client_certificate_bound_access_tokens_invalid",
+        "a client using `linkerd_identity` does not ask for certificate-bound access tokens: \
+         Linkerd forwards no certificate to bind them to",
+    )
 }
 
 fn method_invalid() -> DomainError {
     DomainError::invalid(
         "oauth.client_authentication_method_invalid",
         "a confidential client proves who it is with `client_secret_basic`, \
-         `client_secret_post` or `private_key_jwt`; a public client with `none`",
+         `client_secret_post`, `private_key_jwt`, `spiffe_jwt`, `tls_client_auth`, \
+         `spiffe_x509` or `linkerd_identity`; a public client with `none`",
     )
 }
 
@@ -338,6 +580,17 @@ pub struct ClientSettings {
     pub require_pkce: bool,
     /// How its ID tokens are signed.
     pub id_token_algorithm: IdTokenAlgorithm,
+    /// How its UserInfo answers are signed, or `None` for answers in JSON.
+    pub userinfo_algorithm: Option<IdTokenAlgorithm>,
+    /// How it signs its request objects, if it named an algorithm.
+    pub request_object_algorithm: Option<RequestObjectAlgorithm>,
+    /// Whether every request of it must be pushed first, its
+    /// `require_pushed_authorization_requests` of RFC 9126.
+    pub require_pushed_requests: bool,
+    /// Where it keeps request objects Hodor may fetch, its `request_uris`
+    /// of OpenID Connect Registration: a `request_uri` is fetched only when
+    /// it starts with one of them.
+    pub request_uris: Vec<String>,
     /// Where its logout tokens are sent when a session it signed a person
     /// in with ends, if anywhere.
     pub backchannel_logout_uri: Option<String>,
@@ -350,6 +603,19 @@ pub struct ClientSettings {
     /// For a pairwise client, the address whose host is its sector and
     /// which lists its redirect addresses, if it has one.
     pub sector_identifier_uri: Option<String>,
+    /// For a client using `private_key_jwt`, the address where it
+    /// publishes its keys itself, its `jwks_uri`, in place of keys Hodor
+    /// keeps.
+    pub jwks_uri: Option<String>,
+    /// The `max_age` of a request that names none, its `default_max_age`.
+    pub default_max_age: Option<u32>,
+    /// The `acr_values` of a request that names none, in order, its
+    /// `default_acr_values`.
+    pub default_acr_values: Vec<String>,
+    /// Whether it needs `auth_time` in its ID tokens, its
+    /// `require_auth_time`. Every ID token carries it; this records what
+    /// the client relies on.
+    pub require_auth_time: bool,
     /// How long its tokens live.
     pub token_policy: TokenPolicy,
     /// The service account or agent it acts as, if any: its tokens are
@@ -359,6 +625,78 @@ pub struct ClientSettings {
     /// What an agent's client may exchange for which audience; empty
     /// unless it has the token exchange grant.
     pub exchange_rules: Vec<ExchangeRule>,
+    /// The one SPIFFE identifier whose JWT-SVIDs prove who the client is,
+    /// for a client using `spiffe_jwt` only. Whether its principal is a
+    /// service account is checked by whoever binds it, through the
+    /// identity context.
+    pub spiffe_id: Option<SpiffeId>,
+    /// The one Linkerd identity Linkerd's proxy, or a certificate a proxy
+    /// forwards, must name, for a client using `linkerd_identity`, or
+    /// `tls_client_auth` without a SPIFFE identifier.
+    pub linkerd_identity: Option<LinkerdIdentity>,
+    /// Whether its access tokens, and a public client's refresh tokens, are
+    /// bound to the certificate its requests come with: its
+    /// `tls_client_certificate_bound_access_tokens` of RFC 8705.
+    pub certificate_bound_access_tokens: bool,
+}
+
+/// Checks a client's defaults for a sign-in: see
+/// `docs/architecture/contexts/oauth.md`, "Defaults for a sign-in".
+fn check_sign_in_defaults(
+    has_code: bool,
+    max_age: Option<u32>,
+    acr_values: &[String],
+    require_auth_time: bool,
+) -> Result<(), DomainError> {
+    let max_age_invalid = |reason: &'static str| {
+        DomainError::invalid(
+            "oauth.client_default_max_age_invalid",
+            "a default max age is 0 to 31536000 seconds, for a client with              `authorization_code` only",
+        )
+        .with_detail(reason)
+    };
+    let acr_values_invalid = |reason: &'static str| {
+        DomainError::invalid(
+            "oauth.client_default_acr_values_invalid",
+            "default assurance levels are at most 10 names of 1 to 128 printable characters              without spaces, 255 characters together, for a client with `authorization_code`              only",
+        )
+        .with_detail(reason)
+    };
+    if let Some(seconds) = max_age {
+        if !has_code {
+            return Err(max_age_invalid(
+                "a client without `authorization_code` has no default max age",
+            ));
+        }
+        if seconds > MAX_DEFAULT_MAX_AGE {
+            return Err(max_age_invalid("longer than a year"));
+        }
+    }
+    if !acr_values.is_empty() {
+        if !has_code {
+            return Err(acr_values_invalid(
+                "a client without `authorization_code` has no default assurance levels",
+            ));
+        }
+        let joined = acr_values.iter().map(String::len).sum::<usize>() + acr_values.len() - 1;
+        if acr_values.len() > MAX_DEFAULT_ACR_VALUES
+            || joined > MAX_ACR_VALUES_LENGTH
+            || !acr_values.iter().all(|value| {
+                !value.is_empty()
+                    && value.len() <= MAX_ACR_VALUE_LENGTH
+                    && value.bytes().all(|b| b.is_ascii_graphic())
+            })
+        {
+            return Err(acr_values_invalid("too many, too long, or not printable"));
+        }
+    }
+    if require_auth_time && !has_code {
+        return Err(DomainError::invalid(
+            "oauth.client_require_auth_time_invalid",
+            "only a client with `authorization_code` gets ID tokens, and may require              `auth_time` in them",
+        ));
+    }
+    Ok(())
 }
 
 fn redirect_invalid(reason: &'static str) -> DomainError {
@@ -482,6 +820,16 @@ fn without_repeats<T: PartialEq>(values: Vec<T>) -> Vec<T> {
 }
 
 impl ClientSettings {
+    /// The workload's identity the client is bound to, if any.
+    #[must_use]
+    pub fn workload_identity(&self) -> Option<WorkloadIdentity> {
+        match (&self.spiffe_id, &self.linkerd_identity) {
+            (Some(id), _) => Some(WorkloadIdentity::Spiffe(id.clone())),
+            (None, Some(id)) => Some(WorkloadIdentity::Linkerd(id.clone())),
+            (None, None) => None,
+        }
+    }
+
     /// Settings for a client of `client_type` with these grants and
     /// redirect addresses, and everything else at its default.
     #[must_use]
@@ -503,13 +851,24 @@ impl ClientSettings {
             allowed_scopes: Vec::new(),
             require_pkce: true,
             id_token_algorithm: IdTokenAlgorithm::default(),
+            userinfo_algorithm: None,
+            request_object_algorithm: None,
+            require_pushed_requests: false,
+            request_uris: Vec::new(),
             backchannel_logout_uri: None,
             backchannel_logout_session_required: false,
             subject_type: SubjectType::Public,
             sector_identifier_uri: None,
+            jwks_uri: None,
+            default_max_age: None,
+            default_acr_values: Vec::new(),
+            require_auth_time: false,
             token_policy: TokenPolicy::default(),
             principal: None,
             exchange_rules: Vec::new(),
+            spiffe_id: None,
+            linkerd_identity: None,
+            certificate_bound_access_tokens: false,
         }
     }
 
@@ -633,6 +992,20 @@ impl ClientSettings {
                 post_logout_invalid(error.detail().unwrap_or_default().to_owned())
             })?;
         }
+        let request_uris = without_repeats(self.request_uris);
+        if request_uris.len() > MAX_REQUEST_URIS {
+            return Err(request_uri_invalid(
+                "a client has at most 10 request object addresses",
+            ));
+        }
+        if !has_code && !request_uris.is_empty() {
+            return Err(request_uri_invalid(
+                "a client without `authorization_code` has no request object address",
+            ));
+        }
+        for uri in &request_uris {
+            check_request_uri(uri)?;
+        }
         if let Some(uri) = &self.backchannel_logout_uri {
             if !has_code {
                 return Err(backchannel_invalid(
@@ -667,6 +1040,30 @@ impl ClientSettings {
                 }
             }
         }
+        if let Some(uri) = &self.jwks_uri {
+            if self.authentication_method != AuthenticationMethod::PrivateKeyJwt {
+                return Err(jwks_uri_not_allowed());
+            }
+            check_jwks_uri(uri)?;
+        }
+        check_identities(
+            self.authentication_method,
+            self.spiffe_id.is_some(),
+            self.linkerd_identity.is_some(),
+            self.principal.is_some(),
+        )?;
+        if self.certificate_bound_access_tokens
+            && self.authentication_method == AuthenticationMethod::LinkerdIdentity
+        {
+            return Err(certificate_bound_invalid());
+        }
+        let default_acr_values = without_repeats(self.default_acr_values);
+        check_sign_in_defaults(
+            has_code,
+            self.default_max_age,
+            &default_acr_values,
+            self.require_auth_time,
+        )?;
         let allowed_scopes = without_repeats(self.allowed_scopes);
         if allowed_scopes.len() > MAX_SCOPES || !allowed_scopes.iter().all(|s| text::is_scope(s)) {
             return Err(DomainError::invalid(
@@ -684,13 +1081,24 @@ impl ClientSettings {
             allowed_scopes,
             require_pkce: self.require_pkce,
             id_token_algorithm: self.id_token_algorithm,
+            userinfo_algorithm: self.userinfo_algorithm,
+            request_object_algorithm: self.request_object_algorithm,
+            require_pushed_requests: self.require_pushed_requests,
+            request_uris,
             backchannel_logout_uri: self.backchannel_logout_uri,
             backchannel_logout_session_required: self.backchannel_logout_session_required,
             subject_type: self.subject_type,
             sector_identifier_uri: self.sector_identifier_uri,
+            jwks_uri: self.jwks_uri,
+            default_max_age: self.default_max_age,
+            default_acr_values,
+            require_auth_time: self.require_auth_time,
             token_policy: self.token_policy.checked()?,
             principal: self.principal,
             exchange_rules,
+            spiffe_id: self.spiffe_id,
+            linkerd_identity: self.linkerd_identity,
+            certificate_bound_access_tokens: self.certificate_bound_access_tokens,
         })
     }
 }
@@ -846,6 +1254,26 @@ impl Client {
         self.state.settings.backchannel_logout_uri.as_deref()
     }
 
+    /// Where the client publishes its keys itself, if it does.
+    #[must_use]
+    pub fn jwks_uri(&self) -> Option<&str> {
+        self.state.settings.jwks_uri.as_deref()
+    }
+
+    /// The `max_age` of a request of this client that names none.
+    #[must_use]
+    pub const fn default_max_age(&self) -> Option<u32> {
+        self.state.settings.default_max_age
+    }
+
+    /// The `acr_values` of a request of this client that names none, joined
+    /// by spaces; `None` when it has no default assurance levels.
+    #[must_use]
+    pub fn default_acr_values(&self) -> Option<String> {
+        let values = &self.state.settings.default_acr_values;
+        (!values.is_empty()).then(|| values.join(" "))
+    }
+
     /// How the client knows a person.
     #[must_use]
     pub const fn subject_type(&self) -> SubjectType {
@@ -923,8 +1351,9 @@ impl Client {
     ///
     /// # Errors
     ///
-    /// Returns an `Invalid` error if a setting breaks its rule; nothing
-    /// changes then.
+    /// Returns an `Invalid` error if a setting breaks its rule, and
+    /// `oauth.client_jwks_uri_with_keys` for a key set address given to a
+    /// client that has keys; nothing changes then.
     pub fn change(
         &mut self,
         settings: ClientSettings,
@@ -933,6 +1362,14 @@ impl Client {
         let settings = settings.checked(self.state.client_type)?;
         if settings == self.state.settings {
             return Ok(Vec::new());
+        }
+        // A client's keys are in one place: kept by Hodor, or at its
+        // address.
+        if settings.jwks_uri.is_some() && !self.state.keys.is_empty() {
+            return Err(DomainError::conflict(
+                "oauth.client_jwks_uri_with_keys",
+                "a client with keys has no key set address: remove its keys first",
+            ));
         }
         let method = settings.authentication_method;
         let mut events = vec![];
@@ -1057,13 +1494,20 @@ impl Client {
     /// # Errors
     ///
     /// Returns `oauth.client_key_not_allowed` for a client that does not
-    /// use `private_key_jwt`, `oauth.client_key_taken` if it has a key
+    /// use `private_key_jwt`, `oauth.client_keys_at_address` for one with
+    /// a key set address, `oauth.client_key_taken` if it has a key
     /// with the same `kid`, and `oauth.client_too_many_keys` if it has 5.
     pub fn add_key(&mut self, key: ClientKey, now: Timestamp) -> Result<OauthEvent, DomainError> {
         if self.state.settings.authentication_method != AuthenticationMethod::PrivateKeyJwt {
             return Err(DomainError::invalid(
                 "oauth.client_key_not_allowed",
                 "only a client using `private_key_jwt` has keys",
+            ));
+        }
+        if self.state.settings.jwks_uri.is_some() {
+            return Err(DomainError::invalid(
+                "oauth.client_keys_at_address",
+                "the client publishes its keys at its key set address, and has no others",
             ));
         }
         if self.state.keys.iter().any(|kept| kept.key_id == key.key_id) {
@@ -1216,6 +1660,104 @@ mod tests {
             .checked(ClientType::Confidential)
             .expect_err("fragment");
         assert_eq!(error.code(), "oauth.client_sector_identifier_uri_invalid");
+    }
+
+    #[test]
+    fn the_defaults_for_a_sign_in_are_for_a_client_that_signs_people_in() {
+        let with = |settings: ClientSettings| ClientSettings {
+            default_max_age: Some(3600),
+            default_acr_values: vec![
+                "urn:hodor:acr:mfa".to_owned(),
+                "urn:hodor:acr:single-factor".to_owned(),
+                "urn:hodor:acr:mfa".to_owned(),
+            ],
+            require_auth_time: true,
+            ..settings
+        };
+        let (client, _) = create(ClientType::Confidential, with(web())).expect("client");
+        assert_eq!(client.default_max_age(), Some(3600));
+        // Kept in order, without repeats, and joined as `acr_values`.
+        assert_eq!(
+            client.default_acr_values().as_deref(),
+            Some("urn:hodor:acr:mfa urn:hodor:acr:single-factor")
+        );
+        assert!(client.snapshot().settings.require_auth_time);
+        let (plain, _) = create(ClientType::Confidential, web()).expect("plain");
+        assert_eq!(plain.default_max_age(), None);
+        assert_eq!(plain.default_acr_values(), None);
+        assert!(!plain.snapshot().settings.require_auth_time);
+
+        // Zero and a year are the bounds, as for `max_age`.
+        for seconds in [0, MAX_DEFAULT_MAX_AGE] {
+            let settings = ClientSettings {
+                default_max_age: Some(seconds),
+                ..web()
+            };
+            assert!(settings.checked(ClientType::Confidential).is_ok());
+        }
+        let error = ClientSettings {
+            default_max_age: Some(MAX_DEFAULT_MAX_AGE + 1),
+            ..web()
+        }
+        .checked(ClientType::Confidential)
+        .expect_err("too long");
+        assert_eq!(error.code(), "oauth.client_default_max_age_invalid");
+
+        // Names: printable without spaces, at most 10, 255 characters
+        // together.
+        for values in [
+            vec![String::new()],
+            vec!["two words".to_owned()],
+            vec!["a".repeat(129)],
+            (0..11).map(|n| format!("level-{n}")).collect(),
+            (0..3).map(|n| format!("{n}{}", "a".repeat(90))).collect(),
+        ] {
+            let error = ClientSettings {
+                default_acr_values: values,
+                ..web()
+            }
+            .checked(ClientType::Confidential)
+            .expect_err("refused");
+            assert_eq!(error.code(), "oauth.client_default_acr_values_invalid");
+        }
+
+        // A client that signs nobody in has none of them.
+        let service = || {
+            ClientSettings::new(
+                "Payroll service",
+                ClientType::Confidential,
+                vec![GrantType::ClientCredentials],
+                Vec::new(),
+            )
+        };
+        let refused = |settings: ClientSettings| {
+            settings
+                .checked(ClientType::Confidential)
+                .expect_err("no code")
+                .code()
+                .to_owned()
+        };
+        assert_eq!(
+            refused(ClientSettings {
+                default_max_age: Some(60),
+                ..service()
+            }),
+            "oauth.client_default_max_age_invalid"
+        );
+        assert_eq!(
+            refused(ClientSettings {
+                default_acr_values: vec!["urn:hodor:acr:mfa".to_owned()],
+                ..service()
+            }),
+            "oauth.client_default_acr_values_invalid"
+        );
+        assert_eq!(
+            refused(ClientSettings {
+                require_auth_time: true,
+                ..service()
+            }),
+            "oauth.client_require_auth_time_invalid"
+        );
     }
 
     fn spa() -> ClientSettings {
@@ -1419,20 +1961,98 @@ mod tests {
     }
 
     #[test]
-    fn an_id_token_algorithm_is_es256_unless_rs256_is_chosen() {
+    fn an_id_token_algorithm_is_es256_unless_another_of_the_four_is_chosen() {
         assert_eq!(IdTokenAlgorithm::default(), IdTokenAlgorithm::Es256);
+        assert_eq!(
+            IdTokenAlgorithm::ALL.map(IdTokenAlgorithm::as_str),
+            ["ES256", "RS256", "PS256", "EdDSA"]
+        );
         for algorithm in IdTokenAlgorithm::ALL {
             assert_eq!(IdTokenAlgorithm::parse(algorithm.as_str()), Ok(algorithm));
+            assert_eq!(
+                IdTokenAlgorithm::parse_for_userinfo(algorithm.as_str()),
+                Ok(algorithm)
+            );
+            // Each signs with a key of its own algorithm, which every
+            // provider makes, and checks as that algorithm.
+            assert_eq!(
+                algorithm.key_algorithm().as_str(),
+                algorithm.as_str(),
+                "one name"
+            );
+            assert_eq!(
+                algorithm.key_algorithm().signature(),
+                Some(algorithm.signature())
+            );
         }
-        assert_eq!(IdTokenAlgorithm::Rs256.key_algorithm(), KeyAlgorithm::Rs256);
-        for refused in ["PS256", "HS256", "none", "rs256", ""] {
+        assert_eq!(IdTokenAlgorithm::Ps256.key_algorithm(), KeyAlgorithm::Ps256);
+        assert_eq!(IdTokenAlgorithm::EdDsa.key_algorithm(), KeyAlgorithm::EdDsa);
+        // Algorithms no tenant signs with: never saved.
+        for refused in [
+            "HS256", "none", "None", "rs256", "ES384", "RS512", "Ed25519", "Ed448", "EDDSA", "",
+        ] {
             assert_eq!(
                 IdTokenAlgorithm::parse(refused)
                     .expect_err("refused")
                     .code(),
                 "oauth.client_id_token_algorithm_invalid"
             );
+            assert_eq!(
+                IdTokenAlgorithm::parse_for_userinfo(refused)
+                    .expect_err("refused")
+                    .code(),
+                "oauth.client_userinfo_algorithm_invalid"
+            );
         }
+    }
+
+    #[test]
+    fn userinfo_answers_are_json_unless_an_algorithm_is_chosen() {
+        assert_eq!(web().userinfo_algorithm, None);
+        let mut settings = web();
+        settings.userinfo_algorithm = Some(IdTokenAlgorithm::EdDsa);
+        settings.id_token_algorithm = IdTokenAlgorithm::Ps256;
+        let (client, _) = create(ClientType::Confidential, settings).expect("valid");
+        assert_eq!(
+            client.snapshot().settings.userinfo_algorithm,
+            Some(IdTokenAlgorithm::EdDsa)
+        );
+        assert_eq!(
+            client.snapshot().settings.id_token_algorithm,
+            IdTokenAlgorithm::Ps256
+        );
+    }
+
+    #[test]
+    fn a_request_object_algorithm_is_named_as_json_web_signature_names_it() {
+        assert_eq!(web().request_object_algorithm, None);
+        for algorithm in RequestObjectAlgorithm::ALL {
+            assert_eq!(
+                RequestObjectAlgorithm::parse(algorithm.as_str()),
+                Ok(algorithm)
+            );
+        }
+        assert_eq!(
+            RequestObjectAlgorithm::Ps256.signature(),
+            Some(SignatureAlgorithm::Ps256)
+        );
+        assert_eq!(RequestObjectAlgorithm::None.signature(), None);
+        for refused in ["HS256", "ES384", "EdDSA", "None", "es256", ""] {
+            assert_eq!(
+                RequestObjectAlgorithm::parse(refused)
+                    .expect_err("refused")
+                    .code(),
+                "oauth.client_request_object_algorithm_invalid"
+            );
+        }
+        // Kept as it was given through every check of the settings.
+        let mut settings = web();
+        settings.request_object_algorithm = Some(RequestObjectAlgorithm::None);
+        let (client, _) = create(ClientType::Confidential, settings).expect("valid");
+        assert_eq!(
+            client.snapshot().settings.request_object_algorithm,
+            Some(RequestObjectAlgorithm::None)
+        );
     }
 
     #[test]
@@ -1861,6 +2481,61 @@ mod tests {
     }
 
     #[test]
+    fn a_client_has_its_keys_kept_by_hodor_or_at_its_address_never_both() {
+        const ADDRESS: &str = "https://payroll.example.com/jwks";
+        let key = ClientKey::parse(
+            r#"{"kty":"OKP","crv":"Ed25519","kid":"one","x":"AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE"}"#,
+            NOW,
+        )
+        .expect("key");
+        // Only a client using `private_key_jwt` has an address.
+        let mut secret_with_address = web();
+        secret_with_address.jwks_uri = Some(ADDRESS.to_owned());
+        assert_eq!(
+            create(ClientType::Confidential, secret_with_address)
+                .expect_err("a secret method")
+                .code(),
+            "oauth.client_jwks_uri_invalid"
+        );
+        let mut jwt = web();
+        jwt.authentication_method = AuthenticationMethod::PrivateKeyJwt;
+        let mut bad = jwt.clone();
+        bad.jwks_uri = Some("https://payroll.example.com/jwks#now".to_owned());
+        assert_eq!(
+            create(ClientType::Confidential, bad)
+                .expect_err("a fragment")
+                .code(),
+            "oauth.client_jwks_uri_invalid"
+        );
+        let mut at_address = jwt.clone();
+        at_address.jwks_uri = Some(ADDRESS.to_owned());
+        let (mut client, secret) =
+            create(ClientType::Confidential, at_address.clone()).expect("valid");
+        assert!(secret.is_none());
+        assert_eq!(client.jwks_uri(), Some(ADDRESS));
+        assert_eq!(
+            client
+                .add_key(key.clone(), NOW)
+                .expect_err("an address")
+                .code(),
+            "oauth.client_keys_at_address"
+        );
+
+        // Without its address the client takes keys, and with keys it takes
+        // no address until they are removed.
+        client.change(jwt.clone(), NOW).expect("no address");
+        client.add_key(key, NOW).expect("a key");
+        let error = client
+            .change(at_address.clone(), NOW)
+            .expect_err("keys and an address");
+        assert_eq!(error.code(), "oauth.client_jwks_uri_with_keys");
+        assert_eq!(client.jwks_uri(), None, "nothing changed");
+        client.remove_key("one", NOW).expect("removed");
+        client.change(at_address, NOW).expect("an address again");
+        assert_eq!(client.jwks_uri(), Some(ADDRESS));
+    }
+
+    #[test]
     fn keys_are_for_private_key_jwt_only_and_number_at_most_five() {
         let key = |kid: &str| {
             ClientKey::parse(
@@ -1893,6 +2568,38 @@ mod tests {
             "oauth.client_key_not_found"
         );
         assert_eq!(client.snapshot().keys.len(), 4);
+    }
+
+    #[test]
+    fn any_client_but_a_linkerd_one_may_ask_for_certificate_bound_tokens() {
+        let mut public = spa();
+        public.certificate_bound_access_tokens = true;
+        let (client, _) = create(ClientType::Public, public).expect("a public client may");
+        assert!(client.snapshot().settings.certificate_bound_access_tokens);
+        let mut secret = web();
+        secret.certificate_bound_access_tokens = true;
+        create(ClientType::Confidential, secret).expect("a client of a secret may");
+
+        let mut linkerd = ClientSettings::new(
+            "Linkerd workload",
+            ClientType::Confidential,
+            vec![GrantType::ClientCredentials],
+            Vec::new(),
+        );
+        linkerd.authentication_method = AuthenticationMethod::LinkerdIdentity;
+        linkerd.linkerd_identity = Some(
+            LinkerdIdentity::parse("web.shop.serviceaccount.identity.linkerd.cluster.local")
+                .expect("an identity"),
+        );
+        linkerd.principal = Some(UserId::generate());
+        create(ClientType::Confidential, linkerd.clone()).expect("unbound");
+        linkerd.certificate_bound_access_tokens = true;
+        assert_eq!(
+            create(ClientType::Confidential, linkerd)
+                .expect_err("no certificate to bind to")
+                .code(),
+            "oauth.client_certificate_bound_access_tokens_invalid"
+        );
     }
 
     #[test]

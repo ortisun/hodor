@@ -2,7 +2,7 @@
 
 use crate::application::ports::{KeyProvider, KeyStore};
 use crate::domain::event::KeyEvent;
-use crate::domain::key::{KeyAlgorithm, KeyUse, KeyVersion, KeyVersionId};
+use crate::domain::key::{KeyAlgorithm, KeyUse, KeyVersion, KeyVersionId, SignatureEncoding};
 use crate::domain::key_set::{KeySet, not_found};
 use crate::domain::rotation::{RotationChange, RotationPolicy};
 use hodor_kernel::{
@@ -103,7 +103,7 @@ impl KeyService {
         let (version, event) = KeyVersion::create(
             id,
             algorithm,
-            self.provider.name(),
+            self.provider.name_for(algorithm),
             generated,
             self.clock.now(),
         )?;
@@ -429,7 +429,10 @@ impl KeyService {
             )
         })?;
         let signed = message(version.id());
-        let bytes = self.provider.sign(tenant, version, &signed).await?;
+        let bytes = self
+            .provider
+            .sign(tenant, version, &signed, SignatureEncoding::Jose)
+            .await?;
         Ok((
             signed,
             Signature {

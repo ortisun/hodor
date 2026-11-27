@@ -23,7 +23,7 @@ use hodor_kernel::{
     Actor, Caller, ClientActorId, CorrelationId, DomainError, ErrorKind, GroupId, TenantContext,
     UserId,
 };
-use hodor_oauth::api::{BearerRefusal, ResourceAccessService};
+use hodor_oauth::api::{BearerRefusal, ForwardedIdentity, ResourceAccessService};
 use hodor_provisioning::api::{
     Attribute, BULK_RESPONSE_SCHEMA, BulkMethod, ERROR_SCHEMA, GROUP_SHAPE, GroupAttribute,
     INVALID_FILTER, INVALID_PATH, INVALID_SYNTAX, ListParameters, ListQuery, MAX_BULK_BYTES,
@@ -211,12 +211,14 @@ fn base(public_url: &str, slug: &str) -> String {
 }
 
 /// The calling client, as the actor of what it changes, or the answer
-/// refusing its token.
+/// refusing its token. A bound token must come with the certificate a
+/// trusted proxy `forwarded`.
 async fn caller(
     state: &ScimState,
     tenant: &TenantContext,
     slug: &str,
     headers: &HeaderMap,
+    forwarded: Option<&Extension<ForwardedIdentity>>,
 ) -> Result<Caller, Box<Response>> {
     let Ok(token) = bearer(headers) else {
         return Err(Box::new(refused(BearerRefusal::InvalidToken(
@@ -226,7 +228,13 @@ async fn caller(
     let issuer = format!("{}/t/{slug}", state.public_url.trim_end_matches('/'));
     let caller = match state
         .access
-        .caller(tenant, &issuer, SCIM_AUDIENCE, token)
+        .caller(
+            tenant,
+            &issuer,
+            SCIM_AUDIENCE,
+            token,
+            forwarded.map(|Extension(found)| found),
+        )
         .await
     {
         Ok(Ok(caller)) => caller,
@@ -307,12 +315,17 @@ fn parameter(parameters: &RawPathParams, name: &str) -> String {
         .unwrap_or_default()
 }
 
-/// The tenant, its slug and the caller of every handler.
-type Context = (Extension<TenantContext>, Extension<TenantSlug>);
+/// The tenant, its slug and what a trusted proxy forwarded about the
+/// caller, for every handler.
+type Context = (
+    Extension<TenantContext>,
+    Extension<TenantSlug>,
+    Option<Extension<ForwardedIdentity>>,
+);
 
 macro_rules! authenticated {
-    ($state:expr, $tenant:expr, $slug:expr, $headers:expr) => {
-        match caller(&$state, &$tenant, &$slug, &$headers).await {
+    ($state:expr, $tenant:expr, $slug:expr, $headers:expr, $forwarded:expr) => {
+        match caller(&$state, &$tenant, &$slug, &$headers, $forwarded.as_ref()).await {
             Ok(caller) => caller,
             Err(response) => return *response,
         }
@@ -321,10 +334,10 @@ macro_rules! authenticated {
 
 async fn service_provider(
     State(state): State<ScimState>,
-    (Extension(tenant), Extension(TenantSlug(slug))): Context,
+    (Extension(tenant), Extension(TenantSlug(slug)), forwarded): Context,
     headers: HeaderMap,
 ) -> Response {
-    authenticated!(state, tenant, slug, headers);
+    authenticated!(state, tenant, slug, headers, forwarded);
     scim(
         StatusCode::OK,
         &service_provider_config(&base(&state.public_url, &slug)),
@@ -333,10 +346,10 @@ async fn service_provider(
 
 async fn list_resource_types(
     State(state): State<ScimState>,
-    (Extension(tenant), Extension(TenantSlug(slug))): Context,
+    (Extension(tenant), Extension(TenantSlug(slug)), forwarded): Context,
     headers: HeaderMap,
 ) -> Response {
-    authenticated!(state, tenant, slug, headers);
+    authenticated!(state, tenant, slug, headers, forwarded);
     let listed = resource_types(&base(&state.public_url, &slug));
     scim(
         StatusCode::OK,
@@ -346,11 +359,11 @@ async fn list_resource_types(
 
 async fn one_resource_type(
     State(state): State<ScimState>,
-    (Extension(tenant), Extension(TenantSlug(slug))): Context,
+    (Extension(tenant), Extension(TenantSlug(slug)), forwarded): Context,
     parameters: RawPathParams,
     headers: HeaderMap,
 ) -> Response {
-    authenticated!(state, tenant, slug, headers);
+    authenticated!(state, tenant, slug, headers, forwarded);
     let name = parameter(&parameters, "name");
     resource_type(&name, &base(&state.public_url, &slug)).map_or_else(
         || Failure::not_found().response(),
@@ -360,10 +373,10 @@ async fn one_resource_type(
 
 async fn list_schemas(
     State(state): State<ScimState>,
-    (Extension(tenant), Extension(TenantSlug(slug))): Context,
+    (Extension(tenant), Extension(TenantSlug(slug)), forwarded): Context,
     headers: HeaderMap,
 ) -> Response {
-    authenticated!(state, tenant, slug, headers);
+    authenticated!(state, tenant, slug, headers, forwarded);
     let listed = schemas(&base(&state.public_url, &slug));
     scim(
         StatusCode::OK,
@@ -373,11 +386,11 @@ async fn list_schemas(
 
 async fn one_schema(
     State(state): State<ScimState>,
-    (Extension(tenant), Extension(TenantSlug(slug))): Context,
+    (Extension(tenant), Extension(TenantSlug(slug)), forwarded): Context,
     parameters: RawPathParams,
     headers: HeaderMap,
 ) -> Response {
-    authenticated!(state, tenant, slug, headers);
+    authenticated!(state, tenant, slug, headers, forwarded);
     let uri = parameter(&parameters, "uri");
     schema_named(&uri, &base(&state.public_url, &slug)).map_or_else(
         || Failure::not_found().response(),
@@ -611,12 +624,12 @@ fn bulk_method(method: &Method) -> Option<BulkMethod> {
 /// `POST /Users` and `POST /Groups`.
 async fn change_collection(
     State(state): State<ScimState>,
-    (Extension(tenant), Extension(TenantSlug(slug))): Context,
+    (Extension(tenant), Extension(TenantSlug(slug)), forwarded): Context,
     uri: axum::http::Uri,
     headers: HeaderMap,
     bytes: Bytes,
 ) -> Response {
-    let caller = authenticated!(state, tenant, slug, headers);
+    let caller = authenticated!(state, tenant, slug, headers, forwarded);
     let target = if uri.path().ends_with("/Groups") {
         Target::Groups
     } else {
@@ -649,14 +662,14 @@ async fn change_collection(
 /// `PUT`, `PATCH` and `DELETE` of one user or group, with `If-Match`.
 async fn change_one(
     State(state): State<ScimState>,
-    (Extension(tenant), Extension(TenantSlug(slug))): Context,
+    (Extension(tenant), Extension(TenantSlug(slug)), forwarded): Context,
     method: Method,
     uri: axum::http::Uri,
     parameters: RawPathParams,
     headers: HeaderMap,
     bytes: Bytes,
 ) -> Response {
-    let caller = authenticated!(state, tenant, slug, headers);
+    let caller = authenticated!(state, tenant, slug, headers, forwarded);
     let Some(method) = bulk_method(&method) else {
         return Failure::not_found().response();
     };
@@ -720,11 +733,11 @@ fn read_one(headers: &HeaderMap, document: Value) -> Response {
 
 async fn list_users(
     State(state): State<ScimState>,
-    (Extension(tenant), Extension(TenantSlug(slug))): Context,
+    (Extension(tenant), Extension(TenantSlug(slug)), forwarded): Context,
     RawQuery(query): RawQuery,
     headers: HeaderMap,
 ) -> Response {
-    authenticated!(state, tenant, slug, headers);
+    authenticated!(state, tenant, slug, headers, forwarded);
     let asked = match list_query::<UserAttribute>(query.as_deref()) {
         Ok(asked) => asked,
         Err(error) => return failure(&error).response(),
@@ -748,11 +761,11 @@ async fn list_users(
 
 async fn get_user(
     State(state): State<ScimState>,
-    (Extension(tenant), Extension(TenantSlug(slug))): Context,
+    (Extension(tenant), Extension(TenantSlug(slug)), forwarded): Context,
     parameters: RawPathParams,
     headers: HeaderMap,
 ) -> Response {
-    authenticated!(state, tenant, slug, headers);
+    authenticated!(state, tenant, slug, headers, forwarded);
     let Ok(id) = parameter(&parameters, "id").parse::<UserId>() else {
         return Failure::not_found().response();
     };
@@ -764,11 +777,11 @@ async fn get_user(
 
 async fn list_groups(
     State(state): State<ScimState>,
-    (Extension(tenant), Extension(TenantSlug(slug))): Context,
+    (Extension(tenant), Extension(TenantSlug(slug)), forwarded): Context,
     RawQuery(query): RawQuery,
     headers: HeaderMap,
 ) -> Response {
-    authenticated!(state, tenant, slug, headers);
+    authenticated!(state, tenant, slug, headers, forwarded);
     let asked = match list_query::<GroupAttribute>(query.as_deref()) {
         Ok(asked) => asked,
         Err(error) => return failure(&error).response(),
@@ -792,11 +805,11 @@ async fn list_groups(
 
 async fn get_group(
     State(state): State<ScimState>,
-    (Extension(tenant), Extension(TenantSlug(slug))): Context,
+    (Extension(tenant), Extension(TenantSlug(slug)), forwarded): Context,
     parameters: RawPathParams,
     headers: HeaderMap,
 ) -> Response {
-    authenticated!(state, tenant, slug, headers);
+    authenticated!(state, tenant, slug, headers, forwarded);
     let Ok(id) = parameter(&parameters, "id").parse::<GroupId>() else {
         return Failure::not_found().response();
     };
@@ -834,11 +847,11 @@ fn bulk_result(method: &str, bulk_id: Option<&String>, result: &Result<Outcome, 
 /// between them by `bulkId`.
 async fn bulk(
     State(state): State<ScimState>,
-    (Extension(tenant), Extension(TenantSlug(slug))): Context,
+    (Extension(tenant), Extension(TenantSlug(slug)), forwarded): Context,
     headers: HeaderMap,
     bytes: Bytes,
 ) -> Response {
-    let caller = authenticated!(state, tenant, slug, headers);
+    let caller = authenticated!(state, tenant, slug, headers, forwarded);
     let too_large = || {
         Failure::new(
             StatusCode::PAYLOAD_TOO_LARGE,
@@ -963,11 +976,11 @@ async fn bulk(
 /// Searching with `POST`: not built yet.
 async fn not_supported(
     State(state): State<ScimState>,
-    (Extension(tenant), Extension(TenantSlug(slug))): Context,
+    (Extension(tenant), Extension(TenantSlug(slug)), forwarded): Context,
     method: Method,
     headers: HeaderMap,
 ) -> Response {
-    authenticated!(state, tenant, slug, headers);
+    authenticated!(state, tenant, slug, headers, forwarded);
     Failure::new(
         StatusCode::NOT_IMPLEMENTED,
         None,

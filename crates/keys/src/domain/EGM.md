@@ -2,8 +2,8 @@
 
 ## Overview
 
-Key versions, the key set of one use, and the events other contexts hear
-about. The domain is pure: time and the provider's answer are passed in.
+Key versions, the key set of one use, trust domains with their bundles,
+and the events other contexts hear about. The domain is pure: time and the provider's answer are passed in.
 The modules are `pub(crate)` in `mod.rs`; their types are re-exported
 through `crate::api`.
 
@@ -15,7 +15,7 @@ through `crate::api`.
   the key identifier of a signing key.
 - `KeyUse { Signing, Encryption, Data }` with `as_str()` (`sig`, `enc`,
   `data`) and `from_stored`.
-- `KeyAlgorithm { Es256, Rs256, Ps256, A256Gcm }` with `as_str()`,
+- `KeyAlgorithm { Es256, Rs256, Ps256, EdDsa, A256Gcm }` (`EdDsa` written `EdDSA`) with `as_str()`,
   `from_name`, `from_stored`, `key_use()`, `signature()`, `ALL` and
   `DEFAULT_SIGNING = Es256`.
 - `KeyState { Pending, Active, Retiring, Retired, Revoked }` with `as_str()`
@@ -51,6 +51,108 @@ through `crate::api`.
   `oldest_pending(algorithm)`, `published()` (pending, active and retiring
   signing versions, newest first).
 
+### `trust_domain.rs`
+
+- `TrustDomainId`: identifier from `hodor_kernel::define_id!`.
+- `TrustDomainName::parse`: 1 to 255 of `a-z0-9._-`, nothing lowered
+  (`keys.trust_domain_name_invalid`); `as_str`.
+- `SvidKind { X509, Jwt }` (`x509-svid`, `jwt-svid`).
+- `BundleKey { kind, key_id, jwk }`: a kept element, written as compact JSON
+  with its members in order.
+- `TrustBundle`: `parse(bytes)`, `from_stored`, `document()` (the bundle as
+  kept: `keys`, `spiffe_refresh_hint`, `spiffe_sequence` in that order),
+  `sequence`, `refresh_hint`, `keys`, `authorities(kind)`, `jwt_key(kid)`,
+  `refresh_interval()` (the hint between 1 minute and 1 day, 5 minutes
+  without one), `may_follow(in_force)`.
+- `TrustSource { Uploaded, BundleEndpoint, Mesh }` with `as_str` and
+  `parse` (`keys.trust_domain_source_invalid`).
+- `CheckedSource { Uploaded(bundle), BundleEndpoint { url, bundle }, Mesh }`:
+  a source whose bundle was read or fetched.
+- `TrustDomainSnapshot`: the stored state; `TrustDomain`: `add(name,
+  source, now)`, `from_snapshot`, `snapshot`, `id`, `name`, `source`,
+  `bundle`, `version`, `replace(source, now)`, `is_due(now)`,
+  `bundle_endpoint_url`, `lease(now, until)` (`keys.trust_domain_not_due`),
+  `record_fetch(result, now) -> FetchOutcome`.
+- `FetchOutcome { Changed { previous_sequence }, Unchanged, Failed { reason,
+  first } }`.
+- Bounds: `MAX_TRUST_DOMAINS` (50), `MAX_NAME_LENGTH`,
+  `MAX_BUNDLE_ENDPOINT_LENGTH`, `MAX_BUNDLE_BYTES`, `MAX_BUNDLE_ELEMENTS`,
+  `MAX_ERROR_LENGTH`, `FETCH_TIME_LIMIT`, `DEFAULT_REFRESH`,
+  `SHORTEST_REFRESH`, `LONGEST_REFRESH`, `LONGEST_RETRY`; crate-private
+  `LEASE_MARGIN` (1 minute), `check_bundle_endpoint`.
+
+### `authority.rs`
+
+- `AuthorityId`; `AuthoritySetting { Off, On, Development }` with
+  `parse(Option<&str>)` (`keys.authority_setting_invalid`);
+  `AuthorityKind { Root, Intermediate }` and `AuthorityState {
+  AwaitingCertificate, Active }`, each with `as_str` and `parse`.
+- `authority_trust_domain(name)`: a trust domain's name that is also a DNS
+  name (`keys.authority_trust_domain_invalid`).
+- `AuthorityRequest::new(kind, trust_domains, common_name, lifetime_days,
+  intermediate_lifetime_days, for_development)`: 1 to 10 distinct trust
+  domains, a common name of 1 to 64 characters (` (development)` added for
+  development), a root's lifetime of 1 to 3650 days (1826 by default, none
+  for an intermediate), a bound of 1 to 365 days (30 by default) shorter
+  than the root (`keys.authority_request_invalid`); `profile()`;
+  `with_uri_constraints(bool)`, `true` unless said otherwise, and
+  `uri_constraints()`; `with_additional_dns_names(names)`, at most 10 DNS
+  names, none twice nor a trust domain (`keys.authority_request_invalid`),
+  and `additional_dns_names()` (Decision 0076).
+- `NameConstraints::for_trust_domains(trust_domains, uri_constraints,
+  additional_dns_names)`: each trust domain permitted as a DNS name and,
+  with `uri_constraints`, as a URI host, the additional DNS names permitted
+  after them; `0.0.0.0/0` and `::/0` excluded.
+- `CertificateAuthority::dns_domains()`: its trust domains, then its
+  additional DNS names: what a DNS name of an intermediate's request, its
+  narrowed constraints and an installed certificate's permitted DNS names
+  must fall within, and what an intermediate permits unless narrowed.
+- `AuthorityKey { id, provider, material, public_key }`, `new` (a P-256
+  key or an internal error), `version(now)`: the ES256 `KeyVersion` a
+  provider is given to sign, never stored as one.
+- `CertificateAuthority`: `root`, `intermediate`, `from_snapshot`,
+  `install(facts, sha256, chain, now)` (`keys.authority_not_awaiting_certificate`,
+  `keys.authority_certificate_unsuitable` with the reason, among them URI
+  subtrees on an authority whose snapshot's `uri_constraints` is `false`),
+  `bundle()` (a
+  SPIFFE bundle with its certificate, `spiffe_sequence` the activation time
+  in seconds, refresh hint 300), `name_constraints()`.
+- `to_pem(label, der)`, `hexadecimal(bytes)`.
+- `trust_domain.rs` gains `TrustSource::Authority` (`authority`) and
+  `CheckedSource::Authority(TrustBundle)`.
+- `CertificateAuthority::chain_above()`: its certificate, then the chain
+  above it.
+
+### `intermediate.rs`
+
+- `IntermediateId`; `RequestFacts` (what `CertificateWriter::read_request`
+  reads: the request, its subject and subject public key info in DER, its
+  `RequestKey` (`P256(point)`, `P384`, `Rsa(bits)`, `Other(name)`), what
+  its basic constraints say, its URIs, DNS names and names of other kinds,
+  its subject alternative names' value, its `RequestedConstraints`).
+- `check_request(request, authority) -> IntermediateConstraints`, in order:
+  `keys.intermediate_not_an_authority`,
+  `keys.intermediate_path_length_invalid` (above zero),
+  `keys.intermediate_name_outside_trust_domains` (a URI whose host is not a
+  trust domain, a DNS name not one nor under one, another kind, more than
+  20), `keys.intermediate_constraints_widened` (a permitted DNS name outside,
+  more than 20, addresses or another kind permitted),
+  `keys.intermediate_constraints_unsupported` (URI subtrees, excluded
+  subtrees of another kind, more than 20 excluded),
+  `keys.intermediate_key_unsuitable` (not P-256, P-384 or RSA of 3072 to
+  8192 bits, or the authority's own key); each with the reason as detail.
+  Without a narrowing the permitted DNS names are the authority's trust
+  domains; every address is excluded.
+- `validity(lifetime_days, authority, now)`: the bound unless given, 1 to
+  the bound, ending no later than the authority
+  (`keys.intermediate_lifetime_invalid`); from `now - BACKDATING`.
+- `check_active` (`keys.authority_not_active`), `trust_domains_signed_for`,
+  `check_reason` (`keys.intermediate_reason_invalid`: 1 to 200 printable
+  characters).
+- `SignedIntermediate` over `IntermediateSnapshot`; `IntermediateState {
+  Active, Withdrawn }`; `withdraw(reason, now)`
+  (`keys.intermediate_withdrawn` when it is already).
+
 ### `event.rs`
 
 `KeyEvent` (`Serialize`, untagged) implements `DomainEvent`:
@@ -61,6 +163,29 @@ through `crate::api`.
 | `VersionActivated` | `version_id`, `algorithm`, `replaced_version_id`, `replaced_retire_after` (RFC 3339) | `keys.version_activated` |
 | `VersionRetired` | `version_id`, `algorithm` | `keys.version_retired` |
 | `VersionRevoked` | `version_id`, `algorithm`, `previous_state`, `reason` | `keys.version_revoked` |
+
+`TrustDomainEvent` (`Serialize`, untagged) implements `DomainEvent`:
+
+| Variant | Fields | `event_type()` |
+| --- | --- | --- |
+| `Added` | `trust_domain_id`, `name`, `source`, and a `BundleSummary` unless `mesh` | `keys.trust_domain_added` |
+| `Replaced` | the same | `keys.trust_domain_replaced` |
+| `BundleRefreshed` | `trust_domain_id`, `name`, a `BundleSummary`, `previous_sequence` | `keys.trust_bundle_refreshed` |
+| `RefreshFailed` | `trust_domain_id`, `name`, `reason` | `keys.trust_bundle_refresh_failed` |
+| `Removed` | `trust_domain_id`, `name` | `keys.trust_domain_removed` |
+
+`AuthorityEvent` (`Serialize`, untagged) implements `DomainEvent`:
+
+| Variant | Fields | `event_type()` |
+| --- | --- | --- |
+| `Created` | `authority_id`, `kind`, `trust_domains`, `key_id`, `provider`, `for_development`, `uri_constraints`, `additional_dns_names` | `keys.authority_created` |
+| `Signed` | `authority_id`, `signed` (`certificate`, `certificate_signing_request` or `intermediate_certificate`), `signed_sha256`, `serial_number` for a certificate, `trust_domains`, and for an intermediate `intermediate_id` and `request_sha256` | `keys.authority_signed` |
+| `Activated` | `authority_id`, `serial_number`, `certificate_sha256`, `not_after` (RFC 3339) | `keys.authority_activated` |
+| `IntermediateWithdrawn` | `authority_id`, `intermediate_id`, `serial_number`, `public_key_sha256`, `reason` | `keys.intermediate_withdrawn` |
+| `Removed` | `authority_id`, `key_id` | `keys.authority_removed` |
+
+`BundleSummary` is `bundle_sha256`, `sequence`, `x509_authorities` and
+`jwt_authorities`, flattened into the event.
 
 ## Invariants
 
@@ -80,7 +205,24 @@ through `crate::api`.
   `retire_after = now + overlap`.
 - `KeySet::from_versions` gives `keys.stored_data_invalid` for a version of
   another use or two active versions of one algorithm.
-- Events never carry key material or the public key.
+- Events never carry key material or the public key; trust domain events
+  never carry a bundle endpoint's address or a bundle's keys.
+- `TrustBundle::parse` follows `docs/architecture/contexts/keys.md`,
+  "Reading a bundle": at most 64 kibibytes and 100 elements; an element of
+  an unknown `use` or key type is ignored; a known one with a private part,
+  a short coordinate or modulus, an `alg` that does not fit, an `x509-svid`
+  element with a `kid` or not exactly one DER certificate, or a `jwt-svid`
+  element without a unique `kid` refuses the whole bundle
+  (`keys.trust_bundle_invalid`, the reason as detail).
+- `TrustBundle::may_follow` refuses a fetched bundle without a sequence, or
+  with a smaller one, or the same one with other contents, when the bundle
+  in force has one (`keys.trust_bundle_sequence_invalid`).
+- `TrustDomain::record_fetch` keeps the bundle in force on every failure,
+  records `failing_since` once per run of failures and the reason's code,
+  and makes the next fetch due after the interval in force, at most 5
+  minutes after a failure; it always clears the lease. Each source holds
+  exactly what it needs: a bundle for `uploaded` and `bundle_endpoint`, an
+  address and a next refresh for `bundle_endpoint` only.
 - `RotationPolicy::new` gives `keys.rotation_policy_invalid` for a period
   outside 1 to 730 days, a publication time shorter than `PUBLISHED_FOR` or
   not shorter than the period, or an overlap shorter than

@@ -10,17 +10,21 @@ schema owner (`Command::Migrate` in `src/main.rs`).
 ## Subdirectories & Boundaries
 
 - src: [./src/EGM.md](./src/EGM.md) - the commands `migrate`, `tenant`,
-  `admin bootstrap`, `audit verify`, `provider`, `secrets generate-key`, `secrets reseal`,
-  `policy-agent`, `policy` and `probe`, and the services each one calls.
+  `admin bootstrap`, `audit verify`, `provider`, `user claims`, `secrets generate-key`, `secrets reseal`,
+  `policy-agent`, `policy`, `trust-domain`, `mesh linkerd-policy` and `probe`,
+  and the services each one calls.
 
 ## Dependencies
 
 From `Cargo.toml`: `clap`, `serde_json`, `tokio`, `time`, and the workspace crates
-`hodor-adapters-crypto`, `hodor-adapters-postgres`, `hodor-audit`,
+`hodor-adapters-crypto`, `hodor-adapters-http`, `hodor-adapters-kms`, `hodor-adapters-postgres`, `hodor-audit`,
 `hodor-authorization`, `hodor-credential`, `hodor-federation`,
 `hodor-identity`, `hodor-kernel` and `hodor-tenant`. The tests use
 `hodor-adapters-postgres` and `hodor-authorization-opa` with the `testing`
-feature.
+feature, `hodor-keys` with it for the sample bundles of
+`tests/trust_domain_commands.rs`, and `regex` to check what
+`mesh linkerd-policy` writes against the schemas of Linkerd's custom resource
+definitions kept in `tests/linkerd_policy_crds.json`.
 
 ## Verification
 

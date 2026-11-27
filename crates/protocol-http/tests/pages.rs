@@ -388,7 +388,8 @@ async fn the_console_is_another_application_at_its_own_addresses() {
             .replace("{organization}", "0193f1c2-0000-7000-8000-000000000006")
             .replace("{service_account}", "0193f1c2-0000-7000-8000-000000000007")
             .replace("{agent}", "0193f1c2-0000-7000-8000-000000000008")
-            .replace("{endpoint}", "0193f1c2-0000-7000-8000-000000000009");
+            .replace("{endpoint}", "0193f1c2-0000-7000-8000-000000000009")
+            .replace("{trust_domain}", "0193f1c2-0000-7000-8000-00000000000a");
         assert!(
             !path.contains('{'),
             "{path} names a part the test does not fill"

@@ -2,75 +2,67 @@
 
 use crate::{Database, migrate};
 use hodor_kernel::Secret;
+use hodor_test_containers::{HOST, Started};
 use sqlx::PgPool;
 use sqlx::postgres::PgPoolOptions;
-use testcontainers::runners::AsyncRunner as _;
-use testcontainers::{ContainerAsync, ImageExt as _};
+use std::time::{Duration, Instant};
+use testcontainers::ContainerAsync;
+use testcontainers::ImageExt as _;
+use testcontainers::core::IntoContainerPort as _;
 use testcontainers_modules::postgres::Postgres;
 
 const IMAGE_TAG: &str = "17-alpine";
+const PORT: u16 = 5432;
 const APP_LOGIN: &str = "hodor_app_login";
 const APP_PASSWORD: &str = "app";
 const PLATFORM_LOGIN: &str = "hodor_platform_login";
 const PLATFORM_PASSWORD: &str = "platform";
+/// How long a started container has to accept the first connection.
+const FIRST_CONNECTION_WITHIN: Duration = Duration::from_secs(30);
 
 /// Docker struggles when many containers start at the same instant, which is
-/// what a parallel test run does: a start can fail, and so can asking for the
-/// mapped port or opening the first connection. Starts are limited, and the
-/// whole sequence is retried with a fresh container.
+/// what a parallel test run does. Starts are limited; `hodor-test-containers`
+/// publishes the port on `127.0.0.1` alone and starts a new container when
+/// one fails, and so when the first connection never succeeds.
 static STARTS: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(2);
-const START_ATTEMPTS: u32 = 4;
 
-struct Started {
-    container: ContainerAsync<Postgres>,
-    host: String,
-    port: u16,
-    owner: PgPool,
+/// The address of the owner's database in a container.
+fn owner_url(port: u16) -> String {
+    format!("postgres://postgres:postgres@{HOST}:{port}/postgres")
 }
 
-async fn try_start() -> Result<Started, String> {
-    let container = Postgres::default()
-        .with_tag(IMAGE_TAG)
-        .start()
-        .await
-        .map_err(|e| format!("start: {e}"))?;
-    let host = container
-        .get_host()
-        .await
-        .map_err(|e| format!("host: {e}"))?
-        .to_string();
-    let port = container
-        .get_host_port_ipv4(5432)
-        .await
-        .map_err(|e| format!("port: {e}"))?;
-    let owner = PgPoolOptions::new()
-        .max_connections(2)
-        .connect(&format!(
-            "postgres://postgres:postgres@{host}:{port}/postgres"
-        ))
-        .await
-        .map_err(|e| format!("connect: {e}"))?;
-    Ok(Started {
-        container,
-        host,
-        port,
-        owner,
-    })
-}
-
-async fn start_container() -> Started {
-    let _permit = STARTS.acquire().await.expect("semaphore is never closed");
-    let mut failures = Vec::new();
-    for _ in 0..START_ATTEMPTS {
-        match try_start().await {
-            Ok(started) => return started,
-            Err(failure) => failures.push(failure),
+/// Connects as the owner, trying again for a while: the image says it is
+/// ready once its last server listens, and for a moment afterwards a
+/// connection through the published port may still be closed unanswered.
+async fn first_connection(port: u16) -> Result<PgPool, String> {
+    let deadline = Instant::now() + FIRST_CONNECTION_WITHIN;
+    loop {
+        match PgPoolOptions::new()
+            .max_connections(2)
+            .connect(&owner_url(port))
+            .await
+        {
+            Ok(owner) => return Ok(owner),
+            Err(error) if Instant::now() >= deadline => {
+                return Err(format!(
+                    "no connection within {} seconds: {error}",
+                    FIRST_CONNECTION_WITHIN.as_secs()
+                ));
+            }
+            Err(_) => tokio::time::sleep(Duration::from_millis(200)).await,
         }
     }
-    panic!(
-        "PostgreSQL container could not be started; is Docker running? {}",
-        failures.join("; ")
-    );
+}
+
+async fn start_container() -> (Started<Postgres>, PgPool) {
+    let _permit = STARTS.acquire().await.expect("semaphore is never closed");
+    hodor_test_containers::start_checked(
+        "PostgreSQL",
+        || Postgres::default().with_tag(IMAGE_TAG),
+        &[PORT.tcp()],
+        |started| first_connection(started.port(PORT)),
+    )
+    .await
 }
 
 /// A PostgreSQL container with the schema migrated and two connections: one
@@ -95,12 +87,9 @@ impl TestDatabase {
     /// Panics if Docker is unavailable or the database cannot be prepared;
     /// a test cannot continue without it.
     pub async fn start() -> Self {
-        let Started {
-            container,
-            host,
-            port,
-            owner,
-        } = start_container().await;
+        let (started, owner) = start_container().await;
+        let port = started.port(PORT);
+        let host = HOST;
         migrate(&owner).await.expect("migrations should apply");
 
         // A login role that is a member of the application group role, the
@@ -137,7 +126,7 @@ impl TestDatabase {
             platform,
             app_url,
             platform_url,
-            _container: container,
+            _container: started.into_container(),
         }
     }
 

@@ -67,6 +67,8 @@ export const ptBR: Messages = {
   emailLabel: "Endereço de email",
   sendLink: "Enviar o link",
   alreadyRegistered: "Já tem uma conta?",
+  registerForApplication:
+    "Um aplicativo trouxe você aqui. Depois de escolher sua senha e entrar, você volta para ele.",
   checkMailboxTitle: "Confira sua caixa de entrada",
   checkMailbox: (email) =>
     `Se ${email} puder ser usado, uma mensagem está a caminho. Siga o link da mensagem para continuar.`,
@@ -114,7 +116,7 @@ export const ptBR: Messages = {
   consentLead: "Se você permitir, ele vai poder:",
   consentOffline: "Manter este acesso quando você não estiver usando",
   consentScopeOpenid: "Saber quem você é",
-  consentScopeProfile: "Ver o seu nome e o seu nome de usuário",
+  consentScopeProfile: "Ver o seu nome, o seu nome de usuário e os outros dados do seu perfil",
   consentScopeEmail: "Ver o seu endereço de email",
   consentScopeAddress: "Ver o seu endereço postal",
   consentScopePhone: "Ver o seu número de telefone",
@@ -131,6 +133,76 @@ export const ptBR: Messages = {
   signOutQuestion: (tenant) => `Uma aplicação pediu para você sair de ${tenant}. Sair aqui também?`,
   staySignedIn: "Continuar conectado",
   securityLink: "Segundos fatores e códigos de recuperação",
+  profileLink: "Seu nome, endereços e telefone",
+  profileTitle: "Seus dados",
+  profileLead:
+    "Os aplicativos que você deixou entrar podem ler estes dados quando você permitir. Nada aqui é obrigatório; deixe de fora o que preferir não informar.",
+  profileNamesHeading: "Nomes",
+  profileAboutHeading: "Sobre você",
+  profilePagesHeading: "Páginas e foto",
+  profilePhoneHeading: "Telefone",
+  profileAddressHeading: "Endereço postal",
+  claimLabel: (field: string): string => {
+    switch (field) {
+      case "given_name":
+        return "Nome";
+      case "middle_name":
+        return "Nome do meio";
+      case "family_name":
+        return "Sobrenome";
+      case "nickname":
+        return "Apelido";
+      case "gender":
+        return "Gênero";
+      case "birthdate":
+        return "Data de nascimento";
+      case "zoneinfo":
+        return "Fuso horário";
+      case "profile":
+        return "Sua página em outro lugar";
+      case "picture":
+        return "Endereço da sua foto";
+      case "website":
+        return "Site";
+      case "phone_number":
+        return "Número de telefone";
+      case "address.formatted":
+        return "O endereço inteiro, como numa carta";
+      case "address.street_address":
+        return "Rua e número";
+      case "address.locality":
+        return "Cidade";
+      case "address.region":
+        return "Estado";
+      case "address.postal_code":
+        return "CEP";
+      case "address.country":
+        return "País";
+      default:
+        return field;
+    }
+  },
+  claimHint: (field: string): string | null => {
+    switch (field) {
+      case "birthdate":
+        return "Escrita AAAA-MM-DD, como 1990-04-12, ou só o ano.";
+      case "zoneinfo":
+        return "Como o banco de dados de fusos horários o nomeia, como America/Sao_Paulo.";
+      case "profile":
+      case "picture":
+      case "website":
+        return "Um endereço inteiro, começando com https://.";
+      case "phone_number":
+        return "Com + e o código do país, como +55 11 91234 5678.";
+      default:
+        return null;
+    }
+  },
+  claimInvalid: (label: string) => `${label}: não está escrito de um jeito que possa ser guardado.`,
+  phoneVerified: "Sua organização confirmou este número.",
+  phoneNotVerified: "Ninguém confirmou este número ainda.",
+  profileSave: "Salvar",
+  profileSaved: "Seus dados foram salvos.",
   securityTitle: "Segundos fatores",
   backToAccount: "Voltar para a sua conta",
   signInAgainLead: "Para mudar isto, entre de novo antes. As mudanças ficam liberadas por cinco minutos depois que você entra.",

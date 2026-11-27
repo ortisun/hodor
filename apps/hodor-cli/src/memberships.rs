@@ -196,7 +196,7 @@ pub(crate) fn groups(database: &Database) -> GroupService {
     )
 }
 
-fn organizations(database: &Database) -> OrganizationService {
+pub(crate) fn organizations(database: &Database) -> OrganizationService {
     OrganizationService::new(
         Arc::new(database.clone()),
         Arc::new(PgOrganizationRepository),

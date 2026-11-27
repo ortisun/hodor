@@ -10,11 +10,15 @@
 //! composition root implements.
 
 mod admin;
+mod authority_bundle;
 mod authorization_api;
 mod authorize;
 mod bearer;
+mod claims;
 mod client_address;
 mod consent;
+mod form_post;
+mod forwarded_identity;
 mod health;
 mod interaction;
 mod invitations;
@@ -31,18 +35,21 @@ mod tenant;
 mod token;
 
 pub use admin::{
-    ADMIN_OPENAPI, ADMIN_OPERATIONS, AdminState, CONSOLE_SESSION_HOURS, ConsoleState, admin_routes,
-    console_routes,
+    ADMIN_OPENAPI, ADMIN_OPERATIONS, AdminState, CERTIFICATE_AUTHORITY_AUDIENCE,
+    CONSOLE_SESSION_HOURS, ConsoleState, admin_routes, console_routes,
 };
+pub use authority_bundle::authority_bundle_routes;
 pub use authorization_api::{
     AUTHORIZATION_API_AUDIENCE, AUTHORIZATION_OPENAPI, AUTHORIZATION_OPERATIONS, ApiKeyAccess,
     AuthorizationApiState, EVALUATE_SCOPE, EXPLAIN_SCOPE, SIMULATE_SCOPE, authorization_api_routes,
 };
 pub use authorize::{AuthorizationState, authorization_routes};
 pub use client_address::{
-    AddressRange, ForwardedHeader, InvalidRange, MAX_FORWARDED_HOPS, TrustedProxies, parse_ranges,
+    AddressRange, ForwardedHeader, Ignored, InvalidGateway, InvalidRange, MAX_FORWARDED_HOPS,
+    TrustedProxies, parse_gateways, parse_ranges,
 };
 pub use consent::{ConsentState, consent_routes};
+pub use forwarded_identity::IdentityHeader;
 pub use health::{Health, ReadinessCheck, ops_router};
 pub use interaction::{InteractionState, interaction_routes};
 pub use invitations::{InvitationState, invitation_routes};

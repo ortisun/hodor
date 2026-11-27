@@ -5,6 +5,8 @@
 //! a change to this crate only. See `docs/decisions/0008-cryptography.md`.
 
 mod bundle_signing;
+mod certificate;
+mod certificates;
 mod digest;
 mod hmac;
 mod keys;
@@ -16,6 +18,8 @@ mod signature;
 pub mod testing;
 
 pub use bundle_signing::BundleSigningKey;
+pub use certificate::X509CertificateCheck;
+pub use certificates::{UriConstraints, X509Certificates, check_path, trust_anchor};
 pub use digest::Sha256Digest;
 pub use hmac::{AwsLcHmacSha1, AwsLcHmacSha256};
 pub use keys::LocalKeyProvider;

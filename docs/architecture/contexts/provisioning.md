@@ -25,7 +25,7 @@ flowchart LR
 
 ## Who may call
 
-A SCIM client presents an **access token of the tenant**, issued by [Hodor's token endpoint](oauth.md#token-endpoint-and-client-authentication) and checked exactly as the Authorization API checks one: signed by a published key of the tenant, from the tenant's issuer, not expired, still in force in [the register of access tokens](oauth.md#the-register-of-access-tokens) so that a revoked token is refused at once, issued to an enabled client of an enabled application.
+A SCIM client presents an **access token of the tenant**, issued by [Hodor's token endpoint](oauth.md#token-endpoint-and-client-authentication) and checked exactly as the Authorization API checks one: signed by a published key of the tenant, from the tenant's issuer, not expired, presented with its certificate when it is [bound to one](oauth.md#certificate-bound-access-tokens), still in force in [the register of access tokens](oauth.md#the-register-of-access-tokens) so that a revoked token is refused at once, issued to an enabled client of an enabled application.
 
 - **Its audience must include `urn:hodor:scim`.**
 - **It must hold the scope `scim`.** One scope opens every route: a SCIM client manages the tenant's users and groups or it does not.
@@ -40,7 +40,7 @@ It then gives the SCIM client a client allowed the scope `scim`. Most SCIM clien
 
 | Answer | When |
 |---|---|
-| `401` with `WWW-Authenticate: Bearer` | No token, or a token that is not good here: another tenant's, expired, revoked, of a disabled client, or without the audience `urn:hodor:scim` |
+| `401` with `WWW-Authenticate: Bearer` | No token, or a token that is not good here: another tenant's, expired, revoked, of a disabled client, bound to a certificate the request did not come with, or without the audience `urn:hodor:scim` |
 | `403` with `WWW-Authenticate: Bearer error="insufficient_scope", scope="scim"` | The token is good but lacks the scope `scim` |
 
 Both answers carry a [SCIM error](#errors) as their body. A token of another tenant fails the signature and issuer checks, whatever its body says.
@@ -119,7 +119,11 @@ A SCIM User is a **human user** of the tenant. Service accounts and agents are u
 |---|---|---|
 | `id` | identity | The `UserId`. Read only |
 | `userName` | identity | Required. The user's [userName identifier](#username): a username, or an email address. Unique in the tenant without regard to case |
-| `name.formatted`, `name.givenName`, `name.familyName` | provisioning | Optional |
+| `name.formatted` | provisioning | Optional |
+| `name.givenName`, `name.familyName`, `name.middleName` | identity | Optional. The person's [standard claims](identity.md#standard-claims) `given_name`, `family_name` and `middle_name`, with their rules |
+| `nickName`, `profileUrl`, `timezone` | identity | Optional. The standard claims `nickname`, `profile` and `zoneinfo` |
+| `phoneNumbers` | identity | The person's telephone number, the standard claim `phone_number`; see [telephone numbers and addresses](#telephone-numbers-and-addresses) |
+| `addresses` | identity | The person's postal address, the standard claim `address`; see [telephone numbers and addresses](#telephone-numbers-and-addresses) |
 | `displayName` | identity | The user's display name, at most 200 characters. When the request has no `displayName`, `name.formatted` is the display name; with neither, the user has none |
 | `emails` | identity, and provisioning for `type` | The user's email identifiers, each `{ "value": "…", "type": "work", "primary": true }`. Every address SCIM sets is [verified](#addresses-set-through-scim-are-verified) |
 | `active` | identity | `true` when the user is Active; see [`active`](#active) |
@@ -129,12 +133,12 @@ A SCIM User is a **human user** of the tenant. Service accounts and agents are u
 | `employeeNumber`, `costCenter`, `organization`, `division`, `department` | provisioning | Of the enterprise extension, `urn:ietf:params:scim:schemas:extension:enterprise:2.0:User`. Optional |
 | `manager.value` | provisioning | Of the enterprise extension: the SCIM client's identifier of the person's manager, kept as written |
 
-- **Each attribute the provisioning context keeps is text of 1 to 256 characters** without control characters. An empty string is no value.
+- **Each attribute the provisioning context keeps is text of 1 to 256 characters** without control characters. An empty string is no value. An attribute the identity context keeps has the rule of its [standard claim](identity.md#standard-claims), and one that breaks it is refused with `invalidValue`, whose detail names the claim.
 - **`created`** is when the user was created. **`lastModified`** is the later of when the identity context last changed the user and when the provisioning context last changed what it keeps.
 - **`location`** is `{HODOR_PUBLIC_URL}/t/{slug}/scim/v2/Users/{id}`.
 - **What a request sends that is not an attribute of the schemas is ignored**, and so are the read-only attributes. A `password` is refused with `mutability`.
 - **Booleans may be written as the strings `"true"` and `"false"`**, in any case, as some SCIM clients write `active` and `primary`.
-- **What the user's identity has that SCIM does not name stays as it is**: the locale, credentials, sessions, roles, organizations.
+- **What the user's identity has that SCIM does not name stays as it is**: the locale, the standard claims `picture`, `website`, `gender` and `birthdate`, credentials, sessions, roles, organizations.
 
 ### `userName`
 
@@ -157,6 +161,15 @@ Many SCIM clients send a person's work email address as `userName`; the second r
 #### Addresses set through SCIM are verified
 
 Every address SCIM sets counts as verified, as if the person had followed a link sent to it. The tenant's own system of record asserts it, and the SCIM client holds a token the tenant gave it for exactly that. The trust is the tenant's to give: [the threat model](../../security/threat-model.md#scim) says what it means.
+
+### Telephone numbers and addresses
+
+A person has one telephone number and one postal address ([standard claims](identity.md#standard-claims)), where SCIM's `phoneNumbers` and `addresses` are lists.
+
+- **The value marked `primary`, or with none marked the first, is the person's.** The others are not kept. Two values marked `primary` are refused with `invalidValue`.
+- **A telephone number's `value`** follows the rule of `phone_number`: E.164, with what separates the digits taken out. `type` and `display` are not kept. A number SCIM sets is verified, for the reason an [email address](#addresses-set-through-scim-are-verified) is.
+- **An address's `formatted`, `streetAddress`, `locality`, `region`, `postalCode` and `country`** become the parts of `address`, with their rules. `type` is not kept.
+- **They are answered as a list of one**, marked `primary`: `"phoneNumbers": [{ "value": "+16045551234", "primary": true }]`, and an address with the parts the person has. A request without them removes them.
 
 ### `active`
 
@@ -188,6 +201,8 @@ A request without `active` is read as `active: true`. Creating a user with `acti
   "userName": "bjensen@example.com",
   "name": { "formatted": "Barbara Jensen", "givenName": "Barbara", "familyName": "Jensen" },
   "displayName": "Babs Jensen",
+  "phoneNumbers": [{ "value": "+15555550123", "primary": true }],
+  "addresses": [{ "streetAddress": "100 Universal City Plaza", "locality": "Hollywood", "region": "CA", "postalCode": "91608", "country": "US", "primary": true }],
   "emails": [
     { "value": "bjensen@example.com", "primary": true },
     { "value": "babs@jensen.org", "primary": false }
@@ -507,7 +522,7 @@ The schema `provisioning` holds two tenant tables under row-level security. Each
 |---|---|---|
 | `tenant_id`, `user_id` | `uuid` | Primary key. The user of the identity context |
 | `external_id` | `text` | |
-| `name_formatted`, `given_name`, `family_name` | `text` | |
+| `name_formatted` | `text` | The given and family names it kept until migration 0098 moved them to the identity context |
 | `employee_number`, `cost_center`, `organization`, `division`, `department`, `manager_id` | `text` | The enterprise attributes |
 | `email_types` | `jsonb` | The `type` of each address, by the address in its normalized form: open-ended labels, read only with the user |
 | `removed_at` | `timestamptz` | When a `DELETE` deprovisioned the user under `deactivate`; null otherwise |
@@ -527,7 +542,7 @@ A group deleted through SCIM takes its row with it, in the same transaction. A g
 
 ### Finding with a filter
 
-The PostgreSQL store finds users and groups with one statement over the identity context's tables, `identity."user"`, `identity.user_identifier`, `identity."group"` and `identity.group_member`, and its own. A filter names attributes of both, and only one statement can filter, sort and count over both at once. The statement only reads them; the identity context remains the only one that writes its tables, and nothing refers to them with a foreign key.
+The PostgreSQL store finds users and groups with one statement over the identity context's tables, `identity."user"`, `identity.user_identifier`, `identity."group"` and `identity.group_member`, and its own. `name.givenName` and `name.familyName` are columns of `identity."user"`. A filter names attributes of both, and only one statement can filter, sort and count over both at once. The statement only reads them; the identity context remains the only one that writes its tables, and nothing refers to them with a foreign key.
 
 ## Not built yet
 
@@ -535,7 +550,7 @@ The PostgreSQL store finds users and groups with one statement over the identity
 |---|---|
 | Choosing the attributes of an answer with `attributes` and `excludedAttributes` | Later; they are ignored |
 | Searching with `POST /.search` | Later |
-| Phone numbers, addresses, photos, `locale`, `title`, roles and entitlements of the core schema; filtering on `emails.type` | Later |
+| Photos, `locale`, `preferredLanguage`, `title`, roles and entitlements of the core schema; more than one telephone number or address, and their `type`; filtering on `emails.type`, `phoneNumbers` and `addresses` | Later |
 | Changing a group's members with one lock on the group, so that two changes at the same moment cannot both pass their versions | Later |
 | Removing what the provisioning context keeps of a group deleted outside SCIM | Later; the row is never shown |
 | Synchronizing users and groups from LDAP, the other half of this context in the plan | Not scheduled |

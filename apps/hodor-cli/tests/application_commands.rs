@@ -316,6 +316,89 @@ async fn a_client_is_given_a_back_channel_logout_address_checked_as_the_server_c
     assert_eq!(stored, (Some("http://relay:8080/logout".to_owned()), true));
 }
 
+#[tokio::test]
+async fn a_client_is_given_a_key_set_address_checked_and_not_fetched() {
+    let database = TestDatabase::start().await;
+    let created = run(
+        &database,
+        &["tenant", "create", "--slug", "acme", "--name", "Acme"],
+    );
+    assert!(created.status.success(), "{created:?}");
+    let added = run(
+        &database,
+        &[
+            "application",
+            "add",
+            "--tenant",
+            "acme",
+            "--name",
+            "Billing",
+            "--first-party",
+        ],
+    );
+    let application = value(&added, "application");
+    let client = |method: &str, address: &str, development_hosts: &str| {
+        Command::new(env!("CARGO_BIN_EXE_hodor-cli"))
+            .args([
+                "client",
+                "add",
+                "--tenant",
+                "acme",
+                "--application",
+                &application,
+                "--name",
+                "Billing web site",
+                "--type",
+                "confidential",
+                "--grant",
+                "authorization_code",
+                "--redirect-uri",
+                "https://billing.example.com/callback",
+                "--method",
+                method,
+                "--jwks-uri",
+                address,
+            ])
+            .env("HODOR_DATABASE_URL", database.app_url())
+            .env("HODOR_OUTBOUND_DEVELOPMENT_HOSTS", development_hosts)
+            .output()
+            .expect("the command-line tool should run")
+    };
+
+    let refused = client("private_key_jwt", "https://localhost/jwks", "");
+    assert!(!refused.status.success());
+    assert!(
+        text(&refused.stderr).contains("oauth.client_jwks_uri_forbidden"),
+        "{refused:?}"
+    );
+    let refused = client(
+        "client_secret_basic",
+        "https://billing.example.com/jwks",
+        "",
+    );
+    assert!(!refused.status.success());
+    assert!(
+        text(&refused.stderr).contains("oauth.client_jwks_uri_invalid"),
+        "{refused:?}"
+    );
+    // Nothing listens at the development exception's address: the address
+    // is checked, and not fetched.
+    let made = client("private_key_jwt", "http://127.0.0.1:9/jwks", "127.0.0.1:9");
+    assert!(made.status.success(), "{made:?}");
+    assert!(
+        !text(&made.stdout).contains("secret"),
+        "a client with keys gets no secret: {made:?}"
+    );
+    let id = value(&made, "client");
+    let stored: Option<String> =
+        sqlx::query_scalar("SELECT jwks_uri FROM oauth.client WHERE id = $1::uuid")
+            .bind(&id)
+            .fetch_one(database.owner())
+            .await
+            .expect("client");
+    assert_eq!(stored.as_deref(), Some("http://127.0.0.1:9/jwks"));
+}
+
 /// Answers every request on a port of this machine with `body` as JSON,
 /// as a sector identifier address would; answers the address.
 fn sector_document(body: &'static str) -> String {
@@ -442,4 +525,339 @@ async fn a_client_is_made_pairwise_and_its_sector_identifier_address_fetched() {
         .expect("the command-line tool should run");
     assert!(!unknown.status.success());
     assert!(text(&unknown.stderr).contains("oauth.client_subject_type_invalid"));
+}
+
+#[tokio::test]
+async fn a_client_is_told_how_it_signs_its_request_objects() {
+    let database = TestDatabase::start().await;
+    let created = run(
+        &database,
+        &["tenant", "create", "--slug", "acme", "--name", "Acme"],
+    );
+    assert!(created.status.success(), "{created:?}");
+    let added = run(
+        &database,
+        &[
+            "application",
+            "add",
+            "--tenant",
+            "acme",
+            "--name",
+            "Billing",
+            "--first-party",
+        ],
+    );
+    let application = value(&added, "application");
+    let client = |extra: &[&str]| {
+        let mut arguments = vec![
+            "client",
+            "add",
+            "--tenant",
+            "acme",
+            "--application",
+            &application,
+            "--name",
+            "Billing web site",
+            "--type",
+            "confidential",
+            "--grant",
+            "authorization_code",
+            "--redirect-uri",
+            "https://billing.example.com/callback",
+        ];
+        arguments.extend_from_slice(extra);
+        run(&database, &arguments)
+    };
+    let stored = |id: String| {
+        let database = &database;
+        async move {
+            sqlx::query_scalar::<_, Option<String>>(
+                "SELECT request_object_signing_alg FROM oauth.client WHERE id = $1::uuid",
+            )
+            .bind(id)
+            .fetch_one(database.owner())
+            .await
+            .expect("client")
+        }
+    };
+
+    // None chosen unless given.
+    let plain = client(&[]);
+    assert!(plain.status.success(), "{plain:?}");
+    assert_eq!(stored(value(&plain, "client")).await, None);
+
+    // `none`, as the conformance suite's clients are made.
+    let unsigned = client(&["--request-object-signing-alg", "none"]);
+    assert!(unsigned.status.success(), "{unsigned:?}");
+    assert_eq!(
+        stored(value(&unsigned, "client")).await.as_deref(),
+        Some("none")
+    );
+
+    // An algorithm Hodor does not check is refused with the context's code.
+    let refused = client(&["--request-object-signing-alg", "HS256"]);
+    assert!(!refused.status.success());
+    assert!(
+        text(&refused.stderr).contains("oauth.client_request_object_algorithm_invalid"),
+        "{refused:?}"
+    );
+}
+
+#[tokio::test]
+async fn a_client_is_told_how_its_id_tokens_and_userinfo_answers_are_signed() {
+    let database = TestDatabase::start().await;
+    let created = run(
+        &database,
+        &["tenant", "create", "--slug", "acme", "--name", "Acme"],
+    );
+    assert!(created.status.success(), "{created:?}");
+    let added = run(
+        &database,
+        &[
+            "application",
+            "add",
+            "--tenant",
+            "acme",
+            "--name",
+            "Billing",
+            "--first-party",
+        ],
+    );
+    let application = value(&added, "application");
+    let client = |extra: &[&str]| {
+        let mut arguments = vec![
+            "client",
+            "add",
+            "--tenant",
+            "acme",
+            "--application",
+            &application,
+            "--name",
+            "Billing web site",
+            "--type",
+            "confidential",
+            "--grant",
+            "authorization_code",
+            "--redirect-uri",
+            "https://billing.example.com/callback",
+        ];
+        arguments.extend_from_slice(extra);
+        run(&database, &arguments)
+    };
+    let stored = |id: String| {
+        let database = &database;
+        async move {
+            sqlx::query_as::<_, (String, Option<String>)>(
+                "SELECT id_token_algorithm, userinfo_signed_response_alg
+                 FROM oauth.client WHERE id = $1::uuid",
+            )
+            .bind(id)
+            .fetch_one(database.owner())
+            .await
+            .expect("client")
+        }
+    };
+
+    // ES256 and answers in JSON unless given.
+    let plain = client(&[]);
+    assert!(plain.status.success(), "{plain:?}");
+    assert_eq!(
+        stored(value(&plain, "client")).await,
+        ("ES256".to_owned(), None)
+    );
+
+    for (id_token, userinfo) in [
+        ("RS256", "PS256"),
+        ("PS256", "EdDSA"),
+        ("EdDSA", "ES256"),
+        ("ES256", "RS256"),
+    ] {
+        let made = client(&[
+            "--id-token-algorithm",
+            id_token,
+            "--userinfo-signed-response-alg",
+            userinfo,
+        ]);
+        assert!(made.status.success(), "{made:?}");
+        assert_eq!(
+            stored(value(&made, "client")).await,
+            (id_token.to_owned(), Some(userinfo.to_owned()))
+        );
+    }
+
+    // An algorithm no tenant signs with is refused with the context's code,
+    // and nothing is made.
+    for (option, name, code) in [
+        (
+            "--id-token-algorithm",
+            "HS256",
+            "oauth.client_id_token_algorithm_invalid",
+        ),
+        (
+            "--userinfo-signed-response-alg",
+            "none",
+            "oauth.client_userinfo_algorithm_invalid",
+        ),
+        (
+            "--userinfo-signed-response-alg",
+            "ES384",
+            "oauth.client_userinfo_algorithm_invalid",
+        ),
+    ] {
+        let refused = client(&[option, name]);
+        assert!(!refused.status.success(), "{option} {name}");
+        assert!(text(&refused.stderr).contains(code), "{refused:?}");
+    }
+    let count: i64 = sqlx::query_scalar("SELECT count(*) FROM oauth.client")
+        .fetch_one(database.owner())
+        .await
+        .expect("count");
+    assert_eq!(count, 5, "the refused clients were not made");
+}
+
+#[tokio::test]
+async fn a_client_is_made_to_push_its_requests() {
+    let database = TestDatabase::start().await;
+    let created = run(
+        &database,
+        &["tenant", "create", "--slug", "acme", "--name", "Acme"],
+    );
+    assert!(created.status.success(), "{created:?}");
+    let added = run(
+        &database,
+        &[
+            "application",
+            "add",
+            "--tenant",
+            "acme",
+            "--name",
+            "Billing",
+            "--first-party",
+        ],
+    );
+    let application = value(&added, "application");
+    let client = |extra: &[&str]| {
+        let mut arguments = vec![
+            "client",
+            "add",
+            "--tenant",
+            "acme",
+            "--application",
+            &application,
+            "--name",
+            "Billing web site",
+            "--type",
+            "confidential",
+            "--grant",
+            "authorization_code",
+            "--redirect-uri",
+            "https://billing.example.com/callback",
+        ];
+        arguments.extend_from_slice(extra);
+        run(&database, &arguments)
+    };
+    let stored = |id: String| {
+        let database = &database;
+        async move {
+            sqlx::query_scalar::<_, bool>(
+                "SELECT require_pushed_authorization_requests FROM oauth.client WHERE id = $1::uuid",
+            )
+            .bind(id)
+            .fetch_one(database.owner())
+            .await
+            .expect("client")
+        }
+    };
+    let plain = client(&[]);
+    assert!(plain.status.success(), "{plain:?}");
+    assert!(!stored(value(&plain, "client")).await, "not unless asked");
+    let strict = client(&["--require-pushed-authorization-requests"]);
+    assert!(strict.status.success(), "{strict:?}");
+    assert!(stored(value(&strict, "client")).await);
+}
+
+#[tokio::test]
+async fn a_client_is_given_request_object_addresses_checked_as_the_server_checks_them() {
+    let database = TestDatabase::start().await;
+    let created = run(
+        &database,
+        &["tenant", "create", "--slug", "acme", "--name", "Acme"],
+    );
+    assert!(created.status.success(), "{created:?}");
+    let added = run(
+        &database,
+        &[
+            "application",
+            "add",
+            "--tenant",
+            "acme",
+            "--name",
+            "Billing",
+            "--first-party",
+        ],
+    );
+    let application = value(&added, "application");
+    let client = |addresses: &[&str], development_hosts: &str| {
+        let mut arguments = vec![
+            "client",
+            "add",
+            "--tenant",
+            "acme",
+            "--application",
+            &application,
+            "--name",
+            "Billing web site",
+            "--type",
+            "confidential",
+            "--grant",
+            "authorization_code",
+            "--redirect-uri",
+            "https://billing.example.com/callback",
+        ];
+        for address in addresses {
+            arguments.extend_from_slice(&["--request-uri", address]);
+        }
+        Command::new(env!("CARGO_BIN_EXE_hodor-cli"))
+            .args(arguments)
+            .env("HODOR_DATABASE_URL", database.app_url())
+            .env("HODOR_OUTBOUND_DEVELOPMENT_HOSTS", development_hosts)
+            .output()
+            .expect("the command-line tool should run")
+    };
+
+    // An address on this machine is refused, unless it is one of the
+    // development exception, as the server has it; one without a path is
+    // refused whatever it leads to.
+    let refused = client(&["https://localhost/requests/"], "");
+    assert!(!refused.status.success());
+    assert!(
+        text(&refused.stderr).contains("oauth.client_request_uri_forbidden"),
+        "{refused:?}"
+    );
+    let refused = client(&["http://relay:8080"], "relay:8080");
+    assert!(
+        text(&refused.stderr).contains("oauth.client_request_uri_invalid"),
+        "{refused:?}"
+    );
+    let made = client(
+        &[
+            "http://relay:8080/requests/",
+            "http://relay:8080/object.jwt",
+        ],
+        "relay:8080",
+    );
+    assert!(made.status.success(), "{made:?}");
+    let stored: Vec<String> =
+        sqlx::query_scalar("SELECT request_uris FROM oauth.client WHERE id = $1::uuid")
+            .bind(value(&made, "client"))
+            .fetch_one(database.owner())
+            .await
+            .expect("client");
+    assert_eq!(
+        stored,
+        [
+            "http://relay:8080/requests/",
+            "http://relay:8080/object.jwt"
+        ]
+    );
 }

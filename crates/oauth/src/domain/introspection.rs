@@ -189,6 +189,11 @@ pub fn active_access_token(issuer: &str, token: &ReadAccessToken) -> Value {
     if let Some(act) = &token.act {
         answer["act"] = act.clone();
     }
+    // For the resource server to compare with the certificate its caller
+    // presented (RFC 8705, section 3.2).
+    if let Some(confirmation) = &token.confirmation {
+        answer["cnf"] = confirmation.clone();
+    }
     answer
 }
 
@@ -284,6 +289,34 @@ mod tests {
         }
         let error = TokenQuery::parse(None, pairs(&[("token", "t")])).expect_err("no client");
         assert_eq!(error.error, "invalid_client");
+    }
+
+    #[test]
+    fn an_active_bound_token_is_answered_with_its_cnf() {
+        use crate::domain::binding::CertificateThumbprint;
+        let thumbprint = CertificateThumbprint::from_bytes([9; 32]);
+        let mut token = ReadAccessToken {
+            token_id: "token-1".to_owned(),
+            client_id: "a-client".to_owned(),
+            subject: "a-client".to_owned(),
+            scopes: vec!["read".to_owned()],
+            audience: json!("https://api.example.com"),
+            audiences: vec!["https://api.example.com".to_owned()],
+            issued_at: 1_700_000_000,
+            expires_at: Timestamp::from_unix_timestamp(1_700_000_300).expect("a time"),
+            principal_kind: None,
+            act: None,
+            auth_time: None,
+            acr: None,
+            amr: None,
+            organization: None,
+            confirmation: Some(thumbprint.confirmation()),
+        };
+        let answer = active_access_token("https://hodor.example.com/t/acme", &token);
+        assert_eq!(answer["cnf"], json!({ "x5t#S256": thumbprint.as_x5t() }));
+        token.confirmation = None;
+        let answer = active_access_token("https://hodor.example.com/t/acme", &token);
+        assert!(answer.get("cnf").is_none());
     }
 
     #[test]

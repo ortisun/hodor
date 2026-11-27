@@ -1,0 +1,181 @@
+# The workloads of the demonstration of Milestone 11, in both clusters. The script makes the namespaces:
+# shop in the mesh, outside not.
+#
+# shop/orders, the protected application: it answers every request with the headers it received, the
+# identity Linkerd's proxy read from the caller among them. Its identity is
+# spiffe://cluster.local/ns/shop/sa/orders in Istio and orders.shop.serviceaccount.identity.linkerd.cluster.local
+# in Linkerd.
+# shop/web, a workload whose service account holds a role on Orders, and shop/stranger, one whose service
+# account holds none: both call Orders and Hodor from inside the mesh.
+# outside/visitor-a and outside/visitor-b, two clients outside the mesh, each at an address of its own,
+# that reach Hodor and Orders through the ingress gateway.
+#
+# Every client runs deploy/demo/service-mesh/client.py with Python.
+#
+#   python3 deploy/demo/service_mesh.py applies it; see docs/operations/quick-start.md.
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: orders
+  namespace: shop
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: orders
+  namespace: shop
+  labels:
+    app: orders
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: orders
+  template:
+    metadata:
+      labels:
+        app: orders
+    spec:
+      serviceAccountName: orders
+      automountServiceAccountToken: false
+      containers:
+        - name: app
+          image: traefik/whoami:v1.11.0
+          args: ["--port", "8080"]
+          ports:
+            - name: http
+              containerPort: 8080
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: orders
+  namespace: shop
+spec:
+  selector:
+    app: orders
+  ports:
+    - name: http
+      port: 8080
+      targetPort: http
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: web
+  namespace: shop
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: web
+  namespace: shop
+  labels:
+    app: web
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: web
+  template:
+    metadata:
+      labels:
+        app: web
+    spec:
+      serviceAccountName: web
+      automountServiceAccountToken: false
+      containers:
+        - name: app
+          image: python:3.13.9-alpine
+          command: ["sleep", "infinity"]
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: stranger
+  namespace: shop
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: stranger
+  namespace: shop
+  labels:
+    app: stranger
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: stranger
+  template:
+    metadata:
+      labels:
+        app: stranger
+    spec:
+      serviceAccountName: stranger
+      automountServiceAccountToken: false
+      containers:
+        - name: app
+          image: python:3.13.9-alpine
+          command: ["sleep", "infinity"]
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: visitor-a
+  namespace: outside
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: visitor-a
+  namespace: outside
+  labels:
+    app: visitor-a
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: visitor-a
+  template:
+    metadata:
+      labels:
+        app: visitor-a
+    spec:
+      serviceAccountName: visitor-a
+      automountServiceAccountToken: false
+      containers:
+        - name: app
+          image: python:3.13.9-alpine
+          command: ["sleep", "infinity"]
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: visitor-b
+  namespace: outside
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: visitor-b
+  namespace: outside
+  labels:
+    app: visitor-b
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: visitor-b
+  template:
+    metadata:
+      labels:
+        app: visitor-b
+    spec:
+      serviceAccountName: visitor-b
+      automountServiceAccountToken: false
+      containers:
+        - name: app
+          image: python:3.13.9-alpine
+          command: ["sleep", "infinity"]

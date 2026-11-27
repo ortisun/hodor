@@ -15,6 +15,7 @@ The specification proposes 26 crates. This design has 24: four merges and two ad
 | — | `adapters-policy-check` (new) | Runs the `opa` binary for the policy lifecycle ([Decision 0026](../decisions/0026-policy-checks-in-a-sandbox.md)). A separate crate so that starting processes stays out of the Open Policy Agent engine, which is a context extension |
 | — | `adapters-smtp` (new) | Delivers email for the notification context. A separate crate so that the mail library and its dependencies stay out of every binary that sends no mail |
 | — | `webhooks` (new) | Endpoints, subscriptions and deliveries of webhooks. A base context of its own rather than part of `notification`, which writes messages to people ([Decision 0032](../decisions/0032-webhooks.md)) |
+| — | `tests/containers` (new) | How the integration tests start containers and reach their ports, in one place ([containers in tests](testing.md#containers-in-tests)). Test support, in no layer |
 
 ```text
 hodor/
@@ -24,7 +25,9 @@ hodor/
 ├── apps/
 │   ├── hodor-server/          # HTTP composition root
 │   ├── hodor-worker/          # jobs composition root
-│   └── hodor-cli/
+│   ├── hodor-cli/
+│   ├── hodor-ext-authz/       # Milestone 11: Envoy's external authorization, over the Authorization API; no context crate
+│   └── hodor-cert-manager-issuer/  # Milestone 12, optional: cert-manager's outside issuer; no context crate
 ├── crates/
 │   ├── kernel/
 │   ├── tenant/
@@ -48,7 +51,7 @@ hodor/
 │   ├── adapters-postgres/
 │   ├── adapters-redis/
 │   ├── adapters-crypto/
-│   ├── adapters-kms/
+│   ├── adapters-kms/           # Milestone 12: OpenBao; Phase 9: the cloud's key management services
 │   ├── adapters-http/          # Phase 3
 │   ├── adapters-ldap/          # Milestone 2: directories over LDAP
 │   ├── adapters-policy-check/  # Milestone 5: the opa binary, for the policy lifecycle
@@ -58,7 +61,7 @@ hodor/
 ├── migrations/
 ├── deploy/{docker,kubernetes,helm}/
 ├── docs/
-└── tests/{architecture,integration,security,conformance,performance}/
+└── tests/{architecture,containers,integration,security,conformance,performance}/
 ```
 
 A crate is created only when the phase that uses it starts. Milestone 1 creates `kernel`, `tenant`, `identity`, `credential`, `session`, `authentication`, `authorization`, `audit`, `notification`, `protocol-http`, `adapters-postgres`, `adapters-crypto`, `adapters-smtp`, `observability` and the three apps.
@@ -104,6 +107,8 @@ flowchart BT
     server["hodor-server"] --> protocolHttp & adaptersPostgres & redis & crypto & adaptersKeyService & adaptersHttp & authorizationNative & authorizationPolicyAgent & observability
     worker["hodor-worker"] --> adaptersPostgres & adaptersSmtp & adaptersPolicyCheck & redis & crypto & adaptersKeyService & adaptersHttp & authorizationPolicyAgent & observability & notification & audit & webhooks & oauth & tenant
     commandLineTool["hodor-cli"] --> adaptersPostgres & crypto & adaptersHttp
+    extAuthz["hodor-ext-authz"] --> observability
+    certManagerIssuer["hodor-cert-manager-issuer"] --> observability
 ```
 
 ## Layers and allowed edges
@@ -115,7 +120,9 @@ flowchart BT
 | 2 — Orchestrating contexts | `authentication`, `oauth`, `provisioning`, `saml` | Layers 0 and 1 (edges listed in the graph) |
 | 3 — Context extensions | `federation`, `authorization-native`, `authorization-opa`, `plugin-runtime` | Layers 0 to 2 (edges listed) |
 | 4 — Adapters | `adapters-*`, `protocol-http`, `observability` | Layers 0 to 3; **never** another adapter |
-| 5 — Apps | `apps/*` | Everything |
+| 5 — Apps | `apps/*` | Everything, but `hodor-ext-authz` and `hodor-cert-manager-issuer`: `hodor-observability` alone |
+
+The crates in `tests/` support tests and are in no layer. `hodor-architecture-tests` depends on no workspace crate. `hodor-test-containers`, which starts the containers of the integration tests, depends on none either; any crate may use it in its development dependencies, and an adapter only behind its `testing` feature, as `adapters-postgres` and `adapters-ldap` do for `TestDatabase` and `TestDirectory`.
 
 Explicit prohibitions:
 
@@ -124,6 +131,8 @@ Explicit prohibitions:
 - `authorization` does not depend on `identity`.
 - No context depends on `audit`.
 - `protocol-http` does not depend on `adapters-*`.
+- `hodor-ext-authz` depends on no crate of the workspace but `hodor-observability`. It asks Hodor over the Authorization API like any application, so it holds no decision of its own and is released, scaled and upgraded apart ([Decision 0058](../decisions/0058-hodor-ext-authz.md#what-hodor-ext-authz-does)).
+- `hodor-cert-manager-issuer` depends on no crate of the workspace but `hodor-observability`. It reaches Hodor over its token endpoint and the signing operation of the administration interface, as any program of the tenant would, and is released and run apart, in the clusters of the meshes ([Decision 0074](../decisions/0074-hodor-cert-manager-issuer.md)).
 - Only `saml` depends on an XML library. It holds what Hodor does with SAML as computation on text, with no input or output: reading and checking a response, writing a request and metadata. When Hodor becomes a SAML identity provider, in Phase 6, that side is added to it.
 
 `federation`, `authorization-opa`, `webhooks` and `oauth` need outbound HTTP, the last to send logout tokens. They use the `HttpClient` port defined in `kernel`, and `webhooks` and `oauth` also its `DestinationCheck`; `adapters-http` is its only implementation and enforces SSRF protection, timeouts and response size limits in one place.
@@ -158,3 +167,6 @@ Each one is evaluated (maintenance, audits, open advisories, license) before it 
 | LDAP | `ldap3` | Phase 6 |
 | SAML | `xml-sec`, behind a narrow profile of Hodor's own | [Decision 0019](../decisions/0019-saml-signature-verification.md). Only `hodor-saml` may depend on it, or on any other XML library |
 | WebAssembly | `wasmtime` (component model) | Phase 8 |
+| X.509 certificate paths | `rustls-webpki`, with `x509-parser` to read a certificate's names | [Decision 0056](../decisions/0056-forwarded-client-identity.md). Only `adapters-crypto` checks a path, behind the OAuth context's `CertificateCheck` port |
+| gRPC, Envoy's external authorization | `tonic`, `prost`, and `envoy-types` for Envoy's generated types | [Decision 0058](../decisions/0058-hodor-ext-authz.md). `envoy-types` ships the types compiled from Envoy's `.proto` files under the Apache License 2.0, so no build needs `protoc` or the network. Only `hodor-ext-authz` depends on them, and the server's tests, which call it |
+| Kubernetes | `kube` and `k8s-openapi`, the Kubernetes client for Rust, with its controller runtime | [Decision 0074](../decisions/0074-hodor-cert-manager-issuer.md). Only `hodor-cert-manager-issuer` depends on them. cert-manager's resources are read as JSON of its own types, with no generated code |

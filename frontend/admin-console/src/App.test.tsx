@@ -6,6 +6,13 @@ import { placeOf, type Screen } from "./address";
 import { App } from "./App";
 import { en } from "./messages/en";
 import {
+  bundleBody,
+  CLUSTER,
+  KEYS,
+  meshTrustDomainBody,
+  PROD,
+  STAGING,
+  trustDomainBody,
   ACME,
   ANA,
   apiKeyBody,
@@ -183,6 +190,38 @@ describe("the page of a user", () => {
     expect(await screen.findByText(en.suspendedBecause("left the company"))).toBeTruthy();
     expect(sent.find((request) => request.method === "POST")?.body).toEqual({ reason: "left the company" });
     expect(screen.queryByRole("button", { name: en.suspendUser })).toBeNull();
+  });
+
+  it("shows the standard claims the person has, the telephone number with whether it is verified", async () => {
+    show(`/t/acme/console/users/${BIA}`, {
+      ...script(),
+      [`GET /console/api/users/${BIA}`]: [
+        json(
+          200,
+          userBody(BIA, "bia@example.com", {
+            display_name: "Bia Souza",
+            claims: {
+              given_name: "Bia",
+              phone_number: "+5581999999999",
+              phone_number_verified: true,
+              address: { locality: "Recife", country: "BR" },
+            },
+          }),
+        ),
+      ],
+    });
+    expect(await screen.findByText(en.standardClaims)).toBeTruthy();
+    expect(screen.getByText(en.claimLabel("given_name"))).toBeTruthy();
+    expect(screen.getByText("Bia")).toBeTruthy();
+    expect(screen.getByText("+5581999999999")).toBeTruthy();
+    expect(screen.getByText(en.claimLabel("address.locality"))).toBeTruthy();
+    expect(screen.getByText("Recife")).toBeTruthy();
+    expect(screen.queryByText(en.claimLabel("birthdate"))).toBeNull();
+  });
+
+  it("says when the person has no standard claims", async () => {
+    show(`/t/acme/console/users/${BIA}`, script());
+    expect(await screen.findByText(en.noStandardClaims)).toBeTruthy();
   });
 
   it("ends a session after a confirmation that names the consequence", async () => {
@@ -483,6 +522,7 @@ describe("the applications", () => {
       redirect_uris: ["https://billing.example.com/callback"],
       post_logout_redirect_uris: ["https://billing.example.com/signed-out"],
       allowed_scopes: ["openid"],
+      tls_client_certificate_bound_access_tokens: false,
     });
     await user.click(screen.getByRole("button", { name: en.secretKept }));
     await waitFor(() => expect(go).toHaveBeenCalledWith({ name: "client", id: WEB }));
@@ -588,6 +628,148 @@ describe("the page of a client", () => {
     await user.click(within(removing).getByRole("button", { name: en.removeKey }));
     await waitFor(() => expect(sent.at(-2)?.path).toBe(`/console/api/clients/${WEB}/keys/2026%2F11`));
     expect(sent.some((request) => request.path.endsWith("/keys") && request.method === "POST")).toBe(false);
+  });
+
+  it("shows the identity it is bound to, and whether its access tokens are bound to a certificate", async () => {
+    show(`/t/acme/console/clients/${WEB}`, {
+      "GET /console/api/me": [json(200, meBody())],
+      [`GET /console/api/clients/${WEB}`]: [
+        json(
+          200,
+          clientBody({
+            authentication_method: "spiffe_jwt",
+            grant_types: ["client_credentials"],
+            redirect_uris: [],
+            secrets: [],
+            principal: EXPORT,
+            spiffe_id: "spiffe://prod.example.com/ns/payroll/sa/nightly-export",
+            tls_client_certificate_bound_access_tokens: true,
+          }),
+        ),
+      ],
+    });
+    expect(await screen.findByText("spiffe://prod.example.com/ns/payroll/sa/nightly-export")).toBeTruthy();
+    expect(screen.getByText(en.methods["spiffe_jwt"] ?? "")).toBeTruthy();
+    expect(screen.getByText(en.certificateBound)).toBeTruthy();
+    expect(screen.queryByText(en.linkerdIdentityLabel)).toBeNull();
+    expect(screen.queryByRole("button", { name: en.rotateSecret })).toBeNull();
+  });
+
+  it("is created with a workload's identity: its service account, the identity its method takes, and no secret", async () => {
+    const SPIFFE_ID = "spiffe://prod.example.com/ns/payroll/sa/nightly-export";
+    const { sent, go, user } = show(`/t/acme/console/applications/${BILLING}`, {
+      "GET /console/api/me": [json(200, meBody())],
+      [`GET /console/api/applications/${BILLING}`]: [json(200, applicationBody())],
+      [`GET /console/api/applications/${BILLING}/clients`]: [json(200, { items: [] })],
+      "GET /console/api/resource-servers": [json(200, { items: [] })],
+      [`POST /console/api/applications/${BILLING}/clients`]: [
+        problem(409, "oauth.client_spiffe_id_taken"),
+        json(
+          201,
+          clientBody({
+            authentication_method: "spiffe_jwt",
+            grant_types: ["client_credentials"],
+            redirect_uris: [],
+            secrets: [],
+            principal: EXPORT,
+            spiffe_id: SPIFFE_ID,
+          }),
+        ),
+      ],
+    });
+    await user.click(await screen.findByRole("button", { name: en.addClient }));
+    const dialog = await screen.findByRole("dialog");
+    await user.type(within(dialog).getByLabelText(en.clientNameLabel), "Nightly export");
+    expect(within(dialog).queryByLabelText(en.spiffeIdLabel)).toBeNull();
+    await user.click(within(dialog).getByRole("radio", { name: en.methods["spiffe_jwt"] ?? "" }));
+    expect(within(dialog).getByText(en.workloadMethodLead)).toBeTruthy();
+    // Only client credentials, and no address to send a person back to.
+    expect(within(dialog).queryByText(en.grants["authorization_code"] ?? "")).toBeNull();
+    expect(within(dialog).queryByLabelText(en.redirectUrisLabel)).toBeNull();
+    expect(within(dialog).queryByLabelText(en.linkerdIdentityLabel)).toBeNull();
+    const create = within(dialog).getByRole("button", { name: en.addClient });
+    expect(create.getAttribute("aria-disabled")).toBe("true");
+    await user.type(within(dialog).getByLabelText(en.principalServiceAccountLabel), "Nightly export");
+    await user.type(within(dialog).getByLabelText(en.spiffeIdLabel), SPIFFE_ID);
+    await user.click(create);
+    expect(await within(dialog).findByText(en.principalNotAnIdentifier)).toBeTruthy();
+    expect(sent.some((request) => request.method === "POST")).toBe(false);
+
+    const principal = within(dialog).getByLabelText(en.principalServiceAccountLabel);
+    await user.clear(principal);
+    await user.type(principal, EXPORT);
+    await user.click(create);
+    expect(await within(dialog).findByText(en.spiffeIdTaken)).toBeTruthy();
+    await user.click(create);
+    // No secret to show: the client's page opens at once.
+    await waitFor(() => expect(go).toHaveBeenCalledWith({ name: "client", id: WEB }));
+    expect(screen.queryByTestId("shown-once")).toBeNull();
+    expect(sent.at(-1)?.body).toEqual({
+      name: "Nightly export",
+      type: "confidential",
+      authentication_method: "spiffe_jwt",
+      grant_types: ["client_credentials"],
+      redirect_uris: [],
+      post_logout_redirect_uris: [],
+      allowed_scopes: ["openid"],
+      principal: EXPORT,
+      spiffe_id: SPIFFE_ID,
+      tls_client_certificate_bound_access_tokens: false,
+    });
+  });
+
+  it("is changed to a forwarded certificate naming a Linkerd identity, and a client of a Linkerd identity binds no token", async () => {
+    const LINKERD = "web.shop.serviceaccount.identity.linkerd.cluster.local";
+    const { sent, user } = show(`/t/acme/console/clients/${WEB}`, {
+      "GET /console/api/me": [json(200, meBody())],
+      [`GET /console/api/clients/${WEB}`]: [json(200, clientBody())],
+      [`PATCH /console/api/clients/${WEB}`]: [
+        problem(422, "oauth.client_principal_invalid"),
+        json(
+          200,
+          clientBody({
+            authentication_method: "tls_client_auth",
+            grant_types: ["client_credentials"],
+            redirect_uris: [],
+            secrets: [],
+            principal: EXPORT,
+            linkerd_identity: LINKERD,
+            tls_client_certificate_bound_access_tokens: true,
+          }),
+        ),
+      ],
+    });
+    await user.click(await screen.findByRole("button", { name: en.changeSettings }));
+    const dialog = await screen.findByRole("dialog");
+    expect(within(dialog).getByRole("switch", { name: en.certificateBoundLabel })).toBeTruthy();
+    await user.click(within(dialog).getByRole("radio", { name: en.methods["linkerd_identity"] ?? "" }));
+    expect(within(dialog).getByLabelText(en.linkerdIdentityLabel)).toBeTruthy();
+    expect(within(dialog).queryByRole("switch", { name: en.certificateBoundLabel })).toBeNull();
+
+    await user.click(within(dialog).getByRole("radio", { name: en.methods["tls_client_auth"] ?? "" }));
+    expect(within(dialog).getByLabelText(en.spiffeIdLabel)).toBeTruthy();
+    await user.click(within(dialog).getByRole("radio", { name: en.linkerdIdentityLabel }));
+    expect(within(dialog).queryByLabelText(en.spiffeIdLabel)).toBeNull();
+    await user.type(within(dialog).getByLabelText(en.linkerdIdentityLabel), LINKERD);
+    await user.type(within(dialog).getByLabelText(en.principalServiceAccountLabel), EXPORT);
+    await user.click(within(dialog).getByRole("switch", { name: en.certificateBoundLabel }));
+    const save = within(dialog).getByRole("button", { name: en.saveClient });
+    await user.click(save);
+    expect(await within(dialog).findByText(en.valueInvalid["oauth.client_principal_invalid"] ?? "")).toBeTruthy();
+    await user.click(save);
+    expect(await screen.findByText(LINKERD)).toBeTruthy();
+    expect(screen.getByText(en.certificateBound)).toBeTruthy();
+    expect(sent.at(-1)?.body).toEqual({
+      name: "Billing web site",
+      authentication_method: "tls_client_auth",
+      grant_types: ["client_credentials"],
+      redirect_uris: [],
+      post_logout_redirect_uris: [],
+      allowed_scopes: ["openid"],
+      principal: EXPORT,
+      linkerd_identity: LINKERD,
+      tls_client_certificate_bound_access_tokens: true,
+    });
   });
 });
 
@@ -1531,6 +1713,213 @@ describe("webhooks", () => {
     show(`/t/acme/console/webhooks/${HOOK}`, page({}, ["webhooks:read"]));
     expect(await screen.findByText(en.answeredWith(503))).toBeTruthy();
     for (const label of [en.changeSubscriptions, en.rotateEndpointSecret, en.removeEndpoint, en.redeliver]) {
+      expect(screen.queryByRole("button", { name: label })).toBeNull();
+    }
+  });
+});
+
+describe("trust domains", () => {
+  const BUNDLE = { spiffe_sequence: 1, keys: [{ use: "jwt-svid", kty: "EC", crv: "P-256", kid: "jwt-1", x: "x", y: "y" }] };
+  const failing = () =>
+    trustDomainBody({
+      id: STAGING,
+      name: "staging.example.com",
+      refresh: {
+        fetched_at: null,
+        next_at: "2026-11-25T15:08:11Z",
+        failing_since: "2026-11-25T14:58:11Z",
+        last_error: "keys.bundle_endpoint_unreachable",
+      },
+    });
+  const page = (script: Parameters<typeof scripted>[0], permissions = KEYS) => ({
+    "GET /console/api/me": [json(200, meBody(permissions))],
+    [`GET /console/api/trust-domains/${PROD}`]: [json(200, trustDomainBody())],
+    ...script,
+  });
+
+  it("are under Security for whoever may read them, a page at a time, and an auditor may not add one", async () => {
+    const { go } = show("/t/acme/console", {
+      "GET /console/api/me": [json(200, meBody(["keys:read"], ["tenant_auditor"]))],
+      "GET /console/api/trust-domains?limit=50": [json(200, { items: [] })],
+    });
+    await waitFor(() => expect(go).toHaveBeenCalledWith({ name: "trustDomains" }));
+    expect(screen.getByText(en.security)).toBeTruthy();
+    expect(screen.getByRole("link", { name: en.trustDomains }).getAttribute("href")).toBe("/t/acme/console/trust-domains");
+    cleanup();
+
+    const { user } = show("/t/acme/console/trust-domains", {
+      "GET /console/api/me": [json(200, meBody(["keys:read"], ["tenant_auditor"]))],
+      "GET /console/api/trust-domains?limit=50": [
+        json(200, { items: [trustDomainBody(), meshTrustDomainBody()], next_cursor: "2" }),
+      ],
+      "GET /console/api/trust-domains?limit=50&cursor=2": [
+        json(200, { items: [trustDomainBody({ id: STAGING, name: "partner.example.com", source: "uploaded", bundle_endpoint_url: undefined, refresh: undefined }), failing()] }),
+      ],
+    });
+    const prod = await screen.findByRole("link", { name: "prod.example.com" });
+    expect(prod.getAttribute("href")).toBe(`/t/acme/console/trust-domains/${PROD}`);
+    expect(screen.getByRole("link", { name: "cluster.local" }).getAttribute("href")).toBe(
+      `/t/acme/console/trust-domains/${CLUSTER}`,
+    );
+    expect(screen.getByText(en.bundleInForce)).toBeTruthy();
+    expect(screen.getByText(en.noBundle)).toBeTruthy();
+    expect(screen.getByText(en.meshHasNoBundle)).toBeTruthy();
+    expect(screen.getByText(en.nothingToFetch)).toBeTruthy();
+    expect(screen.getByText(/^Fetched /)).toBeTruthy();
+    expect(screen.queryByRole("button", { name: en.addTrustDomain })).toBeNull();
+    await user.click(screen.getByRole("button", { name: en.loadMore }));
+    expect(await screen.findByText(en.bundleFailing)).toBeTruthy();
+    expect(screen.getByText(en.trustDomainSources["uploaded"] ?? "")).toBeTruthy();
+    expect(screen.getByText(en.replacedByHand)).toBeTruthy();
+    expect(screen.getByText(en.neverFetched)).toBeTruthy();
+    expect(screen.getByText(en.bundleFailures["keys.bundle_endpoint_unreachable"] ?? "", { exact: false })).toBeTruthy();
+  });
+
+  it("are added with each of the three sources, and every refusal is said in words", async () => {
+    const { sent, go, user } = show("/t/acme/console/trust-domains", {
+      "GET /console/api/me": [json(200, meBody(KEYS))],
+      "GET /console/api/trust-domains?limit=50": [json(200, { items: [] })],
+      "POST /console/api/trust-domains": [
+        problem(422, "keys.bundle_endpoint_unreachable"),
+        problem(409, "keys.trust_domain_name_taken"),
+        json(201, trustDomainBody()),
+        json(201, trustDomainBody({ id: STAGING, name: "partner.example.com", source: "uploaded" })),
+        json(201, meshTrustDomainBody()),
+      ],
+    });
+    expect(await screen.findByText(en.noTrustDomains)).toBeTruthy();
+    const posted = () => sent.filter((request) => request.method === "POST");
+
+    // A bundle endpoint, fetched by the server before anything is kept.
+    await user.click(screen.getByRole("button", { name: en.addTrustDomain }));
+    let dialog = await screen.findByRole("dialog");
+    expect(within(dialog).getByText(en.level(1), { exact: false })).toBeTruthy();
+    expect(within(dialog).getByText(en.addTrustDomainConsequence)).toBeTruthy();
+    let add = within(dialog).getByRole("button", { name: en.addTrustDomain });
+    expect(add.getAttribute("aria-disabled")).toBe("true");
+    await user.type(within(dialog).getByLabelText(en.nameLabel), "prod.example.com");
+    await user.type(within(dialog).getByLabelText(en.bundleEndpointLabel), "https://spire.example.com/bundle");
+    await user.click(add);
+    expect(await within(dialog).findByText(en.valueInvalid["keys.bundle_endpoint_unreachable"] ?? "")).toBeTruthy();
+    await user.click(add);
+    expect(await within(dialog).findByText(en.trustDomainNameTaken)).toBeTruthy();
+    await user.click(add);
+    await waitFor(() => expect(go).toHaveBeenCalledWith({ name: "trustDomain", id: PROD }));
+    expect(posted().at(-1)?.body).toEqual({
+      name: "prod.example.com",
+      source: "bundle_endpoint",
+      bundle_endpoint_url: "https://spire.example.com/bundle",
+    });
+
+    // A bundle given here, refused before asking when it is not JSON.
+    await user.click(screen.getByRole("button", { name: en.addTrustDomain }));
+    dialog = await screen.findByRole("dialog");
+    await user.type(within(dialog).getByLabelText(en.nameLabel), "partner.example.com");
+    await user.click(within(dialog).getByRole("radio", { name: en.trustDomainSources["uploaded"] ?? "" }));
+    expect(within(dialog).queryByLabelText(en.bundleEndpointLabel)).toBeNull();
+    const bundle = within(dialog).getByLabelText(en.bundleLabel);
+    await user.click(bundle);
+    await user.paste("keys: none");
+    add = within(dialog).getByRole("button", { name: en.addTrustDomain });
+    await user.click(add);
+    expect(await within(dialog).findByText(en.bundleNotJson)).toBeTruthy();
+    expect(posted().length).toBe(3);
+    await user.clear(bundle);
+    await user.click(bundle);
+    await user.paste(JSON.stringify(BUNDLE));
+    await user.click(add);
+    await waitFor(() => expect(go).toHaveBeenCalledWith({ name: "trustDomain", id: STAGING }));
+    expect(posted().at(-1)?.body).toEqual({ name: "partner.example.com", source: "uploaded", bundle: BUNDLE });
+
+    // The mesh, with no bundle.
+    await user.click(screen.getByRole("button", { name: en.addTrustDomain }));
+    dialog = await screen.findByRole("dialog");
+    await user.type(within(dialog).getByLabelText(en.nameLabel), "cluster.local");
+    await user.click(within(dialog).getByRole("radio", { name: en.trustDomainSources["mesh"] ?? "" }));
+    expect(within(dialog).queryByLabelText(en.bundleLabel)).toBeNull();
+    await user.click(within(dialog).getByRole("button", { name: en.addTrustDomain }));
+    await waitFor(() => expect(go).toHaveBeenCalledWith({ name: "trustDomain", id: CLUSTER }));
+    expect(posted().at(-1)?.body).toEqual({ name: "cluster.local", source: "mesh" });
+  });
+
+  it("show the bundle in force summarized, and the refresh with why it fails in words", async () => {
+    show(
+      `/t/acme/console/trust-domains/${STAGING}`,
+      page({
+        [`GET /console/api/trust-domains/${STAGING}`]: [
+          json(200, { ...failing(), bundle: bundleBody({ spiffe_refresh_hint: undefined }) }),
+        ],
+      }),
+    );
+    expect(await screen.findByRole("heading", { name: "staging.example.com" })).toBeTruthy();
+    expect(screen.getByText("https://spire.example.com/bundle")).toBeTruthy();
+    expect(screen.getByText("12")).toBeTruthy();
+    expect(screen.getByText(en.notGiven)).toBeTruthy();
+    expect(screen.getByText(en.x509AuthoritiesLabel)).toBeTruthy();
+    expect(screen.getAllByText("1").length).toBe(2);
+    expect(screen.getByText(en.bundleFailing)).toBeTruthy();
+    expect(screen.getByText(en.neverFetched)).toBeTruthy();
+    expect(screen.getByText(en.bundleFailures["keys.bundle_endpoint_unreachable"] ?? "")).toBeTruthy();
+    // The keys themselves are never shown.
+    expect(screen.queryByText(/x-of-the-key|MIIB/)).toBeNull();
+    cleanup();
+
+    show(`/t/acme/console/trust-domains/${CLUSTER}`, {
+      "GET /console/api/me": [json(200, meBody(KEYS))],
+      [`GET /console/api/trust-domains/${CLUSTER}`]: [json(200, meshTrustDomainBody())],
+    });
+    expect(await screen.findByText(en.meshLead)).toBeTruthy();
+    expect(screen.queryByText(en.refreshTitle)).toBeNull();
+    expect(screen.queryByText(en.sequenceLabel)).toBeNull();
+  });
+
+  it("replace their source with a form, and are removed only with the name typed in full", async () => {
+    const { sent, go, user } = show(
+      `/t/acme/console/trust-domains/${PROD}`,
+      page({
+        [`PUT /console/api/trust-domains/${PROD}`]: [
+          problem(422, "keys.trust_bundle_invalid"),
+          json(200, trustDomainBody({ source: "uploaded", bundle_endpoint_url: undefined, refresh: undefined, bundle: BUNDLE })),
+        ],
+        [`DELETE /console/api/trust-domains/${PROD}`]: [empty(204)],
+      }),
+    );
+    await user.click(await screen.findByRole("button", { name: en.replaceTrustDomain }));
+    const dialog = await screen.findByRole("dialog");
+    expect(within(dialog).getByText(en.replaceTrustDomainConsequence)).toBeTruthy();
+    // The name never changes, so it is not asked for.
+    expect(within(dialog).queryByLabelText(en.nameLabel)).toBeNull();
+    expect((within(dialog).getByLabelText(en.bundleEndpointLabel) as HTMLInputElement).value).toBe(
+      "https://spire.example.com/bundle",
+    );
+    await user.click(within(dialog).getByRole("radio", { name: en.trustDomainSources["uploaded"] ?? "" }));
+    await user.click(within(dialog).getByLabelText(en.bundleLabel));
+    await user.paste(JSON.stringify(BUNDLE));
+    const save = within(dialog).getByRole("button", { name: en.saveTrustDomain });
+    await user.click(save);
+    expect(await within(dialog).findByText(en.valueInvalid["keys.trust_bundle_invalid"] ?? "")).toBeTruthy();
+    await user.click(save);
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    // A bundle given here is not fetched, so the page no longer says how it is refreshed.
+    expect(screen.queryByText(en.refreshTitle)).toBeNull();
+    expect(screen.getAllByText(en.trustDomainSources["uploaded"] ?? "").length).toBeGreaterThan(0);
+    expect(sent.find((request) => request.method === "PUT")?.body).toEqual({ source: "uploaded", bundle: BUNDLE });
+
+    await user.click(screen.getByRole("button", { name: en.removeTrustDomain }));
+    const removing = await screen.findByRole("dialog");
+    const confirm = within(removing).getByRole("button", { name: en.removeTrustDomain });
+    expect(confirm.getAttribute("aria-disabled")).toBe("true");
+    expect(within(removing).getByText(en.removeTrustDomainWorkloadsValue)).toBeTruthy();
+    await user.type(within(removing).getByLabelText(en.typeToConfirm("prod.example.com")), "prod.example.com");
+    await user.click(confirm);
+    await waitFor(() => expect(go).toHaveBeenCalledWith({ name: "trustDomains" }));
+    expect(sent.at(-1)?.method).toBe("DELETE");
+  });
+
+  it("offer an auditor nothing to change", async () => {
+    show(`/t/acme/console/trust-domains/${PROD}`, page({}, ["keys:read"]));
+    expect(await screen.findByRole("heading", { name: "prod.example.com" })).toBeTruthy();
+    for (const label of [en.replaceTrustDomain, en.removeTrustDomain]) {
       expect(screen.queryByRole("button", { name: label })).toBeNull();
     }
   });

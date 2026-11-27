@@ -22,14 +22,28 @@ deliveries made when a session ends and the logout tokens the worker signs
 and sends; and Issue-98: pairwise subject identifiers, with the subject
 type and sector identifier address of clients, the tenant's pairwise
 secret, and every token and answer naming the person as the client's
-sector knows them. Storage,
+sector knows them; Issue-106: a client of a service account bound to
+one SPIFFE identifier, proving who it is with a JWT-SVID (`spiffe_jwt`,
+draft-ietf-oauth-spiffe-client-auth-03) checked against its trust domain's
+bundle, read from the keys context; Issue-120: request objects by
+value at the authorization endpoint, checked with the client's keys or,
+for a client that chose `none`, unsigned; Issue-123: a person's
+standard claims at UserInfo, under the scopes `profile`, `address` and
+`phone`, and as attributes a claim mapper reads, their names reserved; and
+Issue-132: the client registration settings of a tenant, its registration
+policy and its initial access tokens, with the admission the registration
+endpoint asks for; and Issue-124: the `claims` parameter, which puts a
+person's claims in the ID token or at UserInfo as asked when a scope
+consented to for the client covers them, reads an essential `acr` as
+`acr_values` and a `sub` with a value as the person expected. Storage,
 randomness, hashing, signature checking and time are reached through ports
 and kernel traits.
 
 ## Interface
 
 - Source and public surface: [src](./src/EGM.md).
-- Ports implemented elsewhere: `ApplicationStore`, `ClientStore` and
+- Ports implemented elsewhere: `CertificateCheck`, by
+  `X509CertificateCheck` in `crates/adapters-crypto/src/certificate.rs`; `ApplicationStore`, `ClientStore` and
   `ResourceServerStore`, by `PgApplicationStore`, `PgClientStore` and
   `PgResourceServerStore` in `crates/adapters-postgres/src/oauth.rs`;
   `AuthorizationRequestStore`, `GrantStore` and `AuthorizationCodeStore`,
@@ -43,6 +57,9 @@ and kernel traits.
   `crates/adapters-postgres/src/oauth_access_token.rs`;
   `ConsentStore`, by `PgConsentStore` in
   `crates/adapters-postgres/src/oauth_consent.rs`;
+  `ClientRegistrationStore` and `InitialAccessTokenStore`, by
+  `PgClientRegistrationStore` and `PgInitialAccessTokenStore` in
+  `crates/adapters-postgres/src/oauth_registration.rs`;
   `PersonStanding`, by `ServerStanding` in `apps/hodor-server/src/standing.rs`;
   `SessionClients`, `LogoutDeliveryStore` and `DueLogoutDeliveries`, by
   `PgSessionClients`, `PgLogoutDeliveryStore` and `PgDueLogoutDeliveries`
@@ -109,6 +126,10 @@ and kernel traits.
   that comes back is read through its record in the register, never
   through its `sub`. The pairwise secret is made once per tenant, sealed,
   and never replaced; one that does not open is an error.
+- A JWT-SVID is checked only against the bundle of the client's own trust
+  domain in the client's own tenant, found by the name in the client's
+  SPIFFE identifier, never by anything the JWT-SVID says; its `aud` must be
+  the tenant's issuer alone, and it is used once.
 - Every store call is scoped to the tenant of the unit of work (see
   [application](./src/application/EGM.md)).
 
@@ -122,7 +143,8 @@ and kernel traits.
   `HttpClient`: posts logout tokens, and fetches a sector identifier
   document when a client is saved with one. Through
   `KeyService`: signs access, ID and logout tokens, and lists the
-  published keys. Through `SecretBox`: seals and opens the secrets of
+  published keys. Through `TrustDomainService`: reads the tenant's trust
+  domain of a name and its bundle, to check a JWT-SVID. Through `SecretBox`: seals and opens the secrets of
   refresh token families and the pairwise secret. Through `IdentityService`: reads people. Through
   `UnitOfWork::record_event`: records the `oauth.*` events.
 
@@ -139,4 +161,5 @@ and kernel traits.
   `cargo test -p hodor-worker --test backchannel_logout` for back-channel
   logout; `cargo test -p hodor-oauth --test pairwise` and
   `cargo test -p hodor-server --test pairwise` for pairwise subject
-  identifiers.
+  identifiers; `cargo test -p hodor-oauth --test spiffe` and
+  `cargo test -p hodor-server --test spiffe_jwt` for JWT-SVIDs.

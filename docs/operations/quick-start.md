@@ -19,7 +19,7 @@ The stack uses the ports 8080, 9090, 8025, 8428, 9400, 9500 and 10428 on `localh
 
 ## 0. Get the code
 
-The branch `main` holds the latest release, 0.3.0, whose [changelog](https://github.com/ortisun/hodor/blob/main/CHANGELOG.md#030---2026-11-25) says what it holds and what it is not ready for; the work towards the next one happens on `develop`. Clone the release and run every command of this page from the root of the checkout:
+The branch `main` holds the latest release, 0.4.0, whose [changelog](https://github.com/ortisun/hodor/blob/main/CHANGELOG.md#040---2026-11-27) says what it holds and what it is not ready for; the work towards the next one happens on `develop`. Clone the release and run every command of this page from the root of the checkout:
 
 ```bash
 git clone https://github.com/ortisun/hodor.git
@@ -43,6 +43,7 @@ The first run builds the image, which takes several minutes. The command returns
 | The messages Hodor sends, in a development mail server that delivers none | <http://localhost:8025> |
 | Metrics, in VictoriaMetrics | <http://localhost:8428/vmui> |
 | Traces, in VictoriaTraces | <http://localhost:10428/select/vmui> |
+| OpenBao, in development mode, root token `development-root-token`. The tenants' signing keys are made there when the stack is started with `HODOR_KEY_PROVIDER=openbao`: [keys in OpenBao](keys-in-openbao.md#in-the-development-stack) | <http://localhost:8200> |
 
 The database is migrated and the system tenant is created as part of starting.
 
@@ -293,7 +294,7 @@ python3 deploy/demo/workloads.py
 | An agent acts for a person | An agent, with a client allowed the token exchange grant and one exchange rule: a token for the agent's own interface, the assistant, may be exchanged for one for Payroll. A person signs in to the assistant, which gets a token with `payroll:read`. The agent's client exchanges the person's token, with the agent's own token as the actor, for a token for Payroll: checked against the tenant's key set, it names the person in `sub` and the agent in `act`, and comes without a refresh token |
 | A wider exchange refused | Asking for a scope the person's token does not hold is refused with `invalid_scope`, and asking for an audience no rule allows with `invalid_target` |
 | A webhook endpoint | With `hodor-cli webhook add`, an endpoint at the stack's receiver, `webhook-receiver`, subscribed to `session.started`; its secret is printed once, and `hodor-cli webhook list` never shows it. The person signs in again and the receiver gets the event. The script checks its `webhook-signature` with the secret, as Standard Webhooks say, and reads the tenant and the session in its body |
-| Retries, set aside, delivered again | The receiver is stopped. The next sign-in's delivery is tried three times and set aside, as the administration interface and `hodor-cli webhook deliveries --status set_aside` show. The receiver is started again, the administration interface delivers the delivery again, and the event arrives with the same `webhook-id`, signed |
+| Retries, set aside, delivered again | The receiver is stopped. The next sign-in's delivery is tried three times and set aside, as the administration interface and `hodor-cli webhook deliveries --status set_aside` show. The receiver is started again, the administration interface delivers the delivery again, the event arrives with the same `webhook-id`, signed, and the delivery is recorded as delivered. Should it not be, the demonstration shows what each delivery of the endpoint became |
 | Tenants apart | The second tenant's Authorization API and administration interface refuse the first tenant's key, and the second tenant's administrator finds neither the endpoint nor its deliveries |
 | The audit log | The log of the first tenant holds the key made, the exchange done by the agent for the person, the endpoint registered, the delivery set aside and the request to deliver it again |
 
@@ -325,6 +326,149 @@ python3 deploy/demo/what_was_left_out.py
 The applications are played by the script, as in [the demonstration of Milestone 4](#the-demonstration-of-milestone-4): they register redirect addresses nobody listens on, and read where the browser is sent. Their back-channel logout addresses are paths of `webhook-receiver`, which keeps the logout tokens the worker posts as it keeps webhooks.
 
 It ends with `The demonstration of Milestone 9 passed.` It can be run again and again, and runs in continuous integration after the demonstration of Milestone 8 and before that of Milestone 6, whose second worker removes the delivered messages this one reads. The variables of [the first demonstration](#the-demonstration) tell it where the stack is, and `HODOR_WEBHOOK_RECEIVER_URL` where the receiver is, `http://localhost:9600` unless given.
+
+## The demonstration of Milestone 10
+
+[Milestone 10](../product/epics.md#milestone-10-workloads-prove-who-they-are-with-their-certificates) lets a service account prove who it is with the identity its service mesh or SPIRE already gave it, and no secret: a JWT-SVID, or the certificate its sidecar presents, which the proxy in front of Hodor forwards; and binds its tokens to that certificate. Its demonstration needs a cluster, not the development stack: it makes a [kind](https://kind.sigs.k8s.io/) cluster with Istio and SPIRE, installs Hodor in the mesh with [its chart](install-on-kubernetes.md), and plays an operator and two workloads:
+
+```bash
+python3 deploy/demo/workload_identity.py
+```
+
+It needs Docker, kind, `kubectl`, Helm and OpenSSL besides Python 3, and about 2 GiB of memory for Docker besides what it already runs. It never changes the current context of `kubectl` or the repositories of Helm: it gives both files of their own, in a temporary directory.
+
+| Step | What it shows |
+|---|---|
+| A kind cluster with Hodor's image | The cluster `hodor-milestone-10`, made the first time and taken as it is after. The image `hodor:milestone-10`, built from the checkout when Docker does not have it, and loaded into the cluster |
+| Istio | Istio 1.30.8, installed with its charts, whose trust domain is `cluster.local`: a workload's certificate names it `spiffe://cluster.local/ns/<namespace>/sa/<service account>`. Its sidecars are Kubernetes's own sidecar containers, which start before the pod's other containers |
+| SPIRE | SPIRE 1.15.5: a server of the trust domain `workloads.example.org`, with its SPIFFE bundle endpoint at `https://spire-server.spire.svc:8443`, and an agent on the node, which gives the pods of the service account `payroll` the identity `spiffe://workloads.example.org/ns/payroll/sa/payroll`. A second server, of `elsewhere.example.org`, which no tenant trusts. The bundle endpoint's certificate is made by the script with OpenSSL, under an authority of its own |
+| Hodor in the mesh | The chart, with the stand-ins of [trying the chart](install-on-kubernetes.md#trying-the-chart-on-a-cluster-of-your-own), in a namespace Istio injects its sidecar into: the sidecar named as the trusted proxy and `X-Forwarded-Client-Cert` as the identity header, as [the identity of a workload](install-on-kubernetes.md#the-identity-of-a-workload) says, and the demonstration's authority in `outboundAuthorities`. Two workloads: `payroll`, in the mesh and under SPIRE, and `outsider`, in neither |
+| Two tenants, and their administrators | Made with the command-line tool, in the server's pod |
+| Two trust domains | `hodor-cli trust-domain add` gives the tenant SPIRE's trust domain by its bundle endpoint, which Hodor fetches at once, and `cluster.local` as checked by the mesh. The bundle Hodor keeps holds the keys SPIRE signs JWT-SVIDs with |
+| A service account and its two clients | A Payroll resource server whose `approver` role may approve invoices, and a service account that holds it. `hodor-cli client add` binds one of its clients to its SPIRE identity with `spiffe_jwt`, and another to its identity in the mesh with `spiffe_x509` and bound tokens; neither has a secret |
+| A token with a JWT-SVID | `payroll` asks the SPIRE agent for a JWT-SVID for the tenant's issuer, which the script checks against the bundle Hodor fetched, and gets a token with it as its client assertion. The token names the service account and is signed by the tenant; the Authorization API allows the service account to approve an invoice with it |
+| A token with no credential at all | `payroll` asks for a token with its `client_id` alone. Its sidecar presents its certificate to Hodor's, which forwards its identity and its `Hash`; the token's `cnf` holds `x5t#S256`, which the script checks is the SHA-256 of the certificate the sidecar holds. The Authorization API takes the token from `payroll`, and introspection answers it with its `cnf` |
+| The bound token without its certificate | Presented by `outsider`, which has no sidecar, and from the script's machine: `401` with `invalid_token` |
+| JWT-SVIDs refused | The first JWT-SVID presented again; one minted by the SPIRE server of `elsewhere.example.org`; one the agent gives `payroll` for the second tenant's issuer: each `invalid_client` |
+| `X-Forwarded-Client-Cert` from outside the mesh | `outsider` asks for a token for the mesh's client with a header naming `payroll`'s identity, and the script does the same from its machine: each `invalid_client`. Hodor's sidecar takes the header away from a caller without a certificate, and Hodor reads it from no one but its sidecar |
+| The worker keeps the bundle current | The worker fetches SPIRE's bundle again after the refresh hint SPIRE gives, a minute, as `hodor-cli trust-domain show` says |
+| Tenants apart | The second tenant trusts no trust domain and finds none of the first's; it refuses the bound token, even with its certificate, and gives `payroll`'s certificate no token |
+| The audit log | The first tenant's log holds both trust domains added and the clients, and its chain is intact |
+
+The script reaches Hodor at `http://localhost:18080` through `kubectl port-forward`, from outside the mesh, as an operator does; the workloads reach it at `http://hodor.hodor.svc:8080`, the address every tenant's issuer starts with. The bundle endpoint is at a private address of the cluster, under the demonstration's own authority: the chart's settings name it in `HODOR_OUTBOUND_DEVELOPMENT_HOSTS` and the authority in `outboundAuthorities`, which nowhere real does for a private address. They are in `deploy/demo/workload-identity/`, with the manifests of SPIRE and of the workloads.
+
+It ends with `The demonstration of Milestone 10 passed.` It can be run again and again against the same cluster, making two new tenants each time, and runs in continuous integration, in a job of its own, against the image built from the pull request. `HODOR_KIND_CLUSTER`, `HODOR_IMAGE` and `HODOR_PORT` choose another cluster, image or port. The cluster is left running; to remove it:
+
+```bash
+kind delete cluster --name hodor-milestone-10
+```
+
+## The demonstration of Milestone 11
+
+[Milestone 11](../product/epics.md#milestone-11-hodor-in-a-service-mesh) lets a service mesh's proxies check Hodor's tokens and ask Hodor's decisions, and runs Hodor inside the mesh with every client still limited apart. Its demonstration needs clusters, not the development stack: it makes a [kind](https://kind.sigs.k8s.io/) cluster with Istio and one with Linkerd, installs Hodor and `hodor-ext-authz` in each mesh with [its chart](install-on-kubernetes.md), and does what [the service mesh guide](service-mesh.md) says an operator does:
+
+```bash
+python3 deploy/demo/service_mesh.py
+```
+
+It needs Docker, kind, `kubectl`, Helm and OpenSSL besides Python 3, and about 3 GiB of memory for Docker for each cluster besides what it already runs. It never changes the current context of `kubectl` or the repositories of Helm: it gives both files of their own, in a temporary directory. It runs Istio's cluster first, then Linkerd's; `HODOR_MESH=istio` or `HODOR_MESH=linkerd` runs one.
+
+| Step | What it shows |
+|---|---|
+| A kind cluster with Hodor's images | The cluster `hodor-milestone-11-istio` or `hodor-milestone-11-linkerd`, made the first time and taken as it is after. The images `hodor:milestone-11` and `hodor-ext-authz:milestone-11`, built from the checkout when Docker does not have them, and loaded into the cluster |
+| The mesh and its gateway | Istio 1.30.8 with native sidecars, `hodor-ext-authz` named as a provider in its mesh configuration, and its ingress gateway from the chart `gateway`, which runs as `spiffe://cluster.local/ns/istio-system/sa/istio-ingressgateway`. Or Envoy Gateway 1.10.0, then Linkerd edge-26.11.1 with a trust anchor and an identity issuer the script makes with OpenSSL, and Envoy Gateway's proxies meshed by Linkerd, their listeners' ports left out of the proxy, as `edge-gateway.envoy-gateway-system.serviceaccount.identity.linkerd.cluster.local`. Envoy Gateway serves Orders over TLS, with a certificate the script makes for `orders.example.com` |
+| The workloads | In the namespace `shop`, in the mesh: `orders`, the protected application, which answers with the headers it received; `web`, whose service account will hold Orders' role; `stranger`, whose service account will hold none. In `outside`, out of it: `visitor-a` and `visitor-b`, two clients at two addresses. Each client runs `deploy/demo/service-mesh/client.py` in its own pod |
+| Hodor in the mesh by `mesh.provider` | The chart, with the stand-ins of [trying the chart](install-on-kubernetes.md#trying-the-chart-on-a-cluster-of-your-own), in a namespace with no label: `mesh.provider` gives the server, the worker and the migration job their proxy, and the stand-in database and mail server stay out of the mesh. The gateway is named in `gatewayIdentities`, and the network policy lets in only the gateway's namespace and `shop` |
+| A tenant, its administrator, and the mesh's trust domain | Made with the command-line tool, in the server's pod; `cluster.local` as checked by the mesh |
+| Orders in Hodor | The Authorization API; Orders' resource server, `https://orders.example.com`, whose role `reader` may read an order; a service account for `hodor-ext-authz` and its client bound to the adapter's identity in the mesh, `spiffe_x509` or `linkerd_identity`; the service accounts of `web` and `stranger`, each with a client bound to its identity, `web`'s holding `reader`; and Orders' own client for people |
+| Two people | Ana and Bruno register through the link Hodor mails to the stand-in's mailbox, and sign in; Ana is given `reader` |
+| `hodor-ext-authz`, beside Hodor and in the mesh with it | The chart again, with `extAuthz` for the tenant: Orders' entry names its destination, its client, its audience and the route `GET /orders/{id}`. Its pods get their proxy from `mesh.provider` |
+| Orders protected | With Istio, a `RequestAuthentication` at the ingress gateway that writes the token's claims, one at Orders for the tenant's issuer and audience, and an `AuthorizationPolicy` of action `CUSTOM` naming `hodor-ext-authz`, as the guide writes them: a sidecar asks external authorization before it checks a token. With Linkerd, Envoy Gateway's `SecurityPolicy` that checks the token, its key set inline, and asks `hodor-ext-authz` |
+| Through the gateway | From `visitor-a`, `GET /orders/42` at `orders.example.com` through the gateway, with Ana's access token, is let through; with Bruno's, `403`. With no token, `403` from Istio, whose check names the gateway's identity, which Hodor knows as nobody, and `401` from Envoy Gateway. A token of a second tenant for the same audience, `401`. Behind Envoy Gateway, the caller sends the claims of its token in `x-hodor-token-claims`, and Ana's token with Bruno's claims beside it is `403` |
+| Both decisions in Hodor's record | `GET /decisions` holds Ana's `allow` and Bruno's `deny`, reading order 42 on Orders' resource server |
+| Hodor stopped | With the server scaled to nothing, Ana's request is `403`: `hodor-ext-authz` denies when Hodor cannot answer. The server is started again |
+| Two clients behind the gateway, limited apart | `visitor-a` fails passwords through the gateway, each for another identifier, until its address is locked out after about fifty; Ana's own password is then refused from `visitor-a` and signs her in from `visitor-b`, and Hodor knows that session by `visitor-b`'s own address |
+| A forwarded address ignored | Bruno signs in from `web`, which writes `X-Forwarded-For: 198.51.100.7` and is not the gateway: Hodor knows that session by the address of its own proxy, `127.0.0.6` with Istio and the pod's own address with Linkerd |
+| Linkerd's policies (Linkerd only) | `stranger` reaches Orders, whose proxy names it in `l5d-client-id`. The script applies a `Server` for Orders' port, runs `hodor-cli mesh linkerd-policy` in a pod of its own with the server's settings, checks that the file names `web`'s identity and not `stranger`'s, and applies it: Linkerd refuses `stranger` with `403` and lets `web` in |
+| The audit log | The tenant's chain is intact |
+
+The script reaches Hodor at `http://localhost:18111` and the stand-in's mailbox at `http://localhost:18112` through `kubectl port-forward`, from outside the mesh, as an operator does; the workloads reach Hodor at `http://hodor.hodor.svc:8080`, the address every tenant's issuer starts with. Its files are in `deploy/demo/service-mesh/`: the values of each mesh and of the chart, the routes and policies of each gateway, and the workloads.
+
+It ends with `The demonstration of Milestone 11 passed.` It can be run again and again against the same clusters, making new tenants each time, and runs in continuous integration, one job for each mesh, against the images built from the pull request. `HODOR_KIND_ISTIO_CLUSTER`, `HODOR_KIND_LINKERD_CLUSTER`, `HODOR_IMAGE`, `HODOR_EXT_AUTHZ_IMAGE`, `HODOR_PORT` and `HODOR_MAIL_PORT` choose other clusters, images or ports. The clusters are left running; to remove them:
+
+```bash
+kind delete cluster --name hodor-milestone-11-istio
+kind delete cluster --name hodor-milestone-11-linkerd
+```
+
+## The demonstration of Milestone 12
+
+[Milestone 12](../product/epics.md#milestone-12-an-optional-certificate-authority-per-tenant) gives a tenant that turns it on a certificate authority of its own, whose key OpenBao holds, which signs the intermediates of the tenant's meshes, by hand or through cert-manager, so that every mesh of the tenant trusts one root and Hodor trusts what it signed. Its demonstration needs two clusters: it makes a [kind](https://kind.sigs.k8s.io/) cluster with Istio, where Hodor runs in the mesh with [its chart](install-on-kubernetes.md) beside OpenBao, and another with Linkerd, and plays an operator, an administrator, cert-manager and the workloads of both meshes:
+
+```bash
+python3 deploy/demo/certificate_authority.py
+```
+
+It needs Docker, kind, `kubectl`, Helm and OpenSSL besides Python 3, and about 3 GiB of memory for Docker besides what it already runs. It never changes the current context of `kubectl` or the repositories of Helm: it gives both files of their own, in a temporary directory.
+
+| Step | What it shows |
+|---|---|
+| Two new kind clusters with Hodor's images | `hodor-milestone-12-istio` and `hodor-milestone-12-linkerd`, made for each run after removing those a run before left, their pods and services on addresses of their own. The images `hodor:milestone-12` and `hodor-cert-manager-issuer:milestone-12`, built from the checkout when Docker does not have them, and loaded into the clusters |
+| Istio | Istio 1.30.8, installed with its charts, whose trust domain is `east.acme.example`: a workload's certificate names it `spiffe://east.acme.example/ns/<namespace>/sa/<service account>`, for an ECDSA key, since Linkerd's proxy takes no RSA client certificate. It starts on a root of its own |
+| cert-manager in both clusters | cert-manager 1.21.3, its controller run with the feature gate `UseCertificateRequestBasicConstraints`, so that the requests it writes ask for an authority, as [cert-manager's issuer](hodor-cert-manager-issuer.md#what-it-signs) says |
+| Hodor in the Istio mesh, the authority off | The chart, with the stand-ins of [trying the chart](install-on-kubernetes.md#trying-the-chart-on-a-cluster-of-your-own), in a namespace Istio injects its sidecar into, the sidecar named as the trusted proxy and `X-Forwarded-Client-Cert` as the identity header. The sidecar in front of Hodor's server writes the caller's certificate and its chain into the header, which Istio does not do unless told: the tenant's trust domains of the authority have a bundle, and Hodor checks the certificate against it. A Service on a port of the node, where the Linkerd cluster reaches Hodor. A workload in the mesh, `payroll`, whose sidecar writes the certificate it holds into a volume its container shares |
+| Two tenants, and their administrators | Made with the command-line tool, in the server's pod |
+| With the authority off, nothing of it | The administration interface's document names none of its operations, `POST /certificate-authority` is no route, no bundle is published, the tenant's discovery document does not mention it, and `hodor-cli authority` refuses with `keys.authority_setting_invalid` |
+| Turned on, on the local key provider | The chart's `certificateAuthority.enabled`: the document names the authority's eight operations, and creating an authority is refused with `keys.authority_provider_unsuitable` |
+| OpenBao | OpenBao 2.7.2 in development mode, prepared as [keys in OpenBao](keys-in-openbao.md#preparing-openbao) says: Transit at `hodor-transit`, Hodor's policy, and Kubernetes authentication for Hodor's service account. The chart's `keyProvider` points Hodor at it, and the tenant's next signing key is made there |
+| The tenant's authority | A root for `east.acme.example` and `west.acme.example`, its key made in OpenBao, not exportable and with no plaintext backup, as OpenBao itself says. Its name constraints, as Hodor answers them and as OpenSSL reads them in its certificate: the DNS names of both trust domains and `istio-system.svc` (`additional_dns_names`), where istiod serves under Istio's intermediate, and no address. URIs are left unconstrained (`uri_constraints` `false`), since Linkerd's proxy refuses every SPIFFE identity under an authority that constrains them ([Decision 0076](../decisions/0076-names-an-authority-leaves-to-its-meshes.md)). Its bundle is published under the tenant's issuer, and Hodor trusts it for both trust domains |
+| A service account that signs | The audience `urn:hodor:certificate-authority` opened, a service account given `certificate_signer` with `hodor-cli admin grant`, and a client of it for each cluster's issuer, proving who it is with `private_key_jwt` and a key the script makes, whose public part `hodor-cert-manager-issuer jwk` prints |
+| `hodor-cert-manager-issuer` in both clusters | The chart alone (`certManagerIssuer.only`) in each cluster's `cert-manager` namespace, cert-manager's own approver allowed to approve for Hodor's kinds. The Istio cluster's reaches Hodor at its Service, the Linkerd cluster's at the port of the Istio cluster's node |
+| Istio on the tenant's root | A `HodorIssuer` and the `Certificate` of [cert-manager's issuer](hodor-cert-manager-issuer.md#for-linkerd-and-istio), whose request Hodor signs: `cacerts` holds the intermediate, which OpenSSL verifies under the tenant's root, the root as `ca.crt`, and the key cert-manager made. `hodor-cli authority intermediates` lists it. istiod is restarted to sign with it, and every pod of the mesh to take a certificate under it: `payroll`'s sidecar then trusts the tenant's root and holds a certificate of `spiffe://east.acme.example/ns/payroll/sa/payroll` signed by that intermediate |
+| Linkerd on the tenant's root | A `HodorIssuer` and the `Certificate` of Linkerd's identity issuer, `linkerd-identity-issuer`, signed through Hodor; Linkerd edge-26.10.2 installed with its charts, `identity.externalCA`, the trust domain `west.acme.example`, and its trust anchors in `linkerd-identity-trust-roots` from the bundle Hodor publishes. A workload in the mesh, `ledger`, which answers with the headers of each request, on a port of the node |
+| Renewed with no one acting | The identity issuer's `Certificate` lives two days and is renewed 47 hours and 58 minutes before it expires, two minutes after it is signed: cert-manager renews it through Hodor with a new key, and Hodor has signed two intermediates for `identity.linkerd.west.acme.example`. It is then renewed 25 hours before it expires, as a real cluster would |
+| Across the two meshes, over mutual TLS | `payroll`, in the Istio cluster, calls `ledger`, in the Linkerd cluster, with the certificate, the key and the root its sidecar holds, naming `ledger.ledger.serviceaccount.identity.linkerd.west.acme.example`. Linkerd's proxy takes `payroll`'s Istio certificate under the tenant's root and tells `ledger` its identity in `l5d-client-id`; `payroll` takes `ledger`'s certificate, signed by an identity issuer Hodor signed, with Istio's root, the same one |
+| Requests refused | With `hodor-cli authority sign`: an intermediate for `spiffe://west.globex.example/…`, the second tenant's trust domain, `keys.intermediate_name_outside_trust_domains`, which the second tenant's own authority then signs; a certificate that is not an authority, `keys.intermediate_not_an_authority`; one for 31 days, past the bound of 30, `keys.intermediate_lifetime_invalid`. Through cert-manager, a `Certificate` of 100 days, whose request the issuer marks `Failed` with Hodor's code and reason |
+| An intermediate withdrawn | `payroll` gets a token with its `client_id` alone, its sidecar presenting its certificate, which Hodor checks up to the tenant's root through Istio's intermediate. `hodor-cli authority withdraw` withdraws that intermediate, and `payroll`'s next request is refused. Istio keeps signing with it until it expires: no revocation list is published |
+| Tenants apart | The second tenant publishes a bundle of its own, trusts its own trust domain alone, and finds none of the first tenant's intermediates |
+| The audit log | The authority's creation, with its provider and its choice of URI constraints; its own certificate and every intermediate the issuers had signed, the issuers' service account the actor, for both trust domains; the withdrawal and its reason; the chain intact |
+
+The script reaches Hodor at `http://localhost:18080` through `kubectl port-forward`, from outside the mesh, as an operator does, starting it again whenever Hodor's server is replaced. The workloads and the issuers name Hodor by `http://hodor.hodor.svc:8080`, the address every tenant's issuer starts with. Everything it installs besides the charts is in `deploy/demo/certificate-authority/`: the clusters, Istio's and Hodor's values, OpenBao, what Hodor's sidecar forwards, the Service on the node, the workloads and the two `Certificate`s. OpenBao keeps everything in memory and Hodor is reached over plain HTTP between the clusters, as nowhere real does.
+
+It ends with `The demonstration of Milestone 12 passed`, and the minutes it took. It runs in continuous integration, in a job of its own, against the images built from the pull request. On a development machine it takes seven to eight minutes from nothing, the images already built. `HODOR_KIND_ISTIO_CLUSTER`, `HODOR_KIND_LINKERD_CLUSTER`, `HODOR_IMAGE`, `HODOR_ISSUER_IMAGE` and `HODOR_PORT` choose other clusters, images or port. The clusters are left running; to remove them:
+
+```bash
+kind delete cluster --name hodor-milestone-12-istio
+kind delete cluster --name hodor-milestone-12-linkerd
+```
+
+## The demonstration of Milestone 13
+
+[Milestone 13](../product/epics.md#milestone-13-requests-that-say-what-they-need) lets an application say what it needs in a signed request, by value, pushed to Hodor first or kept at an address of its own, and ask for exactly the claims it wants; a person has the standard claims of OpenID Connect, and every parameter of a request is honored. Its demonstration plays an administrator, three applications and two people, against the development stack:
+
+```bash
+python3 deploy/demo/requests_and_claims.py
+```
+
+| Step | What it shows |
+|---|---|
+| Two tenants, their administrators, and two people | Two tenants, each with a signing key and a first administrator made with the command-line tool; Ana and Bruno in the first, each choosing a password through a recovery link |
+| What discovery says a request may say | Request objects by value, signed with `ES256` among others; the pushed request endpoint, which the tenant does not require; request objects at a client's address, which must be registered; the `claims` parameter; the scopes `address` and `phone` |
+| Her standard claims, on the account page | Ana signs in and gives, as the profile page does, a given name, a family name, a telephone number and a postal address. The number is kept as E.164, `+5511912345678`, and not verified: she cannot vouch for it herself |
+| Two applications that sign their requests | Through the administration interface, Billing and Payroll, each of the tenant's own, each with a client that proves who it is with `private_key_jwt`, signs its request objects with `ES256`, keeps them under an address of its own at the stack's receiver, and has a P-256 key the script makes |
+| A request object, signed | Billing sends Ana's browser with its request as a request object signed with its key, asking through `claims` for her names, her number and her address in the ID token. It gets a code at once, redeems it with an assertion signed by the same key, and the ID token, checked against the tenant's key set, holds each claim under its own name |
+| A pushed request | Billing pushes its request, proving who it is with its key, and gets a reference that lives 60 seconds. The browser brought with the reference alone gets a code, whose ID token carries the pushed `nonce`; brought again, the reference is `invalid_request_uri` |
+| A request object at the application's own address | Billing keeps a signed object at its address at the receiver, and sends the browser with that address and the SHA-256 of the object after `#`. Hodor fetches it once and it is the request. An address under Payroll's, which Billing did not register, is `invalid_request_uri` and never fetched; Billing's own address with the hash of other content is `invalid_request_uri` |
+| What must be refused, refused | Billing's request signed by Payroll's key is `invalid_request_object`. A reference Payroll pushed, brought for Billing, and a reference the second tenant's own application pushed there, brought to the first tenant for Billing, are each `invalid_request_uri`. Each is answered at Billing's redirect address, never with a code |
+| A claim of a scope she did not agree to | Travel, an application of another company, asks for the scope `openid` alone and, through `claims`, for her email address as essential, in the ID token and at UserInfo. The consent page asks about `openid` alone; she agrees, and neither the ID token nor UserInfo holds her address |
+| An essential `acr` steps her up | Ana sets up an authenticator application. Billing asks, in a signed request object, for `acr` as essential with the multi-factor level: the session of her password is not enough, only the application's code is asked for, and the ID token says `urn:hodor:acr:mfa` with `pwd`, `otp` and `mfa` |
+| The ID token of another person, as a hint | Billing sends Ana's ID token as `id_token_hint` with `prompt=none`: in her own browser it is answered with a code, asking nothing; in a browser signed in as Bruno it is answered `login_required` |
+
+The applications are played by the script, as in [the demonstration of Milestone 4](#the-demonstration-of-milestone-4): they register redirect addresses nobody listens on, and read where the browser is sent. Their keys are P-256 keys made by the script, with the arithmetic done by hand, for the demonstration only. The address where Billing and Payroll keep their request objects is a path of the stack's receiver of webhooks, `http://webhook-receiver:9600/request-objects/…`, which answers what the script puts there and tells what Hodor fetched ([the development receiver](../development/local-setup.md#the-development-receiver-of-webhooks)); its host is named in the server's `HODOR_OUTBOUND_DEVELOPMENT_HOSTS`, so it may be plain HTTP and inside the stack. Nowhere real has either.
+
+The OpenID conformance suite's Basic plan, the last part of the milestone's demonstration script, is run by [the conformance job](conformance.md) rather than here: every test of the Basic and Config plans passes, but three that keep a screenshot for review ([expected results](conformance.md#expected-results)), and none is skipped.
+
+It ends with `The demonstration of Milestone 13 passed.` It can be run again and again, and runs in continuous integration after the demonstration of Milestone 9 and before that of Milestone 6, whose second worker removes the delivered messages this one reads. The variables of [the first demonstration](#the-demonstration) tell it where the stack is, and `HODOR_WEBHOOK_RECEIVER_URL` where the receiver is, `http://localhost:9600` unless given.
 
 ## Stop
 

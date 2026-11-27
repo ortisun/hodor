@@ -15,6 +15,7 @@ use serde_json::{Value, json};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
+pub mod certificates;
 pub mod webauthn;
 
 /// The client the test provider knows.

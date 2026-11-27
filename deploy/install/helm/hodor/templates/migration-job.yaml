@@ -1,3 +1,4 @@
+{{- if include "hodor.installsHodor" . }}
 {{- if .Values.migration.enabled }}
 # Runs before the servers and workers of an install or an upgrade exist: first the migrations, as the
 # owner of the schema, then the system tenant, as the server's role, created only when it is missing.
@@ -20,6 +21,12 @@ spec:
       labels:
         {{- include "hodor.labels" . | nindent 8 }}
         app.kubernetes.io/component: migration
+        {{- with include "hodor.meshLabels" (list . .Values.mesh.injectMigration) }}
+        {{- . | nindent 8 }}
+        {{- end }}
+      {{- with include "hodor.podAnnotations" (list . .Values.mesh.injectMigration dict) }}
+      {{- . | nindent 6 }}
+      {{- end }}
     spec:
       restartPolicy: Never
       # The service account of the release does not exist yet when this runs for the first time, and the
@@ -55,4 +62,6 @@ spec:
             {{- include "hodor.secretEnvironment" (list . "HODOR_DATABASE_URL" .Values.secret.keys.serverDatabaseUrl) | nindent 12 }}
           resources:
             {{- toYaml .Values.migration.resources | nindent 12 }}
+{{- end }}
+
 {{- end }}

@@ -14,6 +14,7 @@
 //! request that is refused learns nothing about what it asked for, which
 //! is why bodies and queries are read only after the check.
 
+use crate::claims::ClaimsBody;
 use crate::interaction::{
     CSRF_HEADER, SESSION_COOKIE, cookie, csrf_token, refuse_other_origins, same,
 };
@@ -31,9 +32,9 @@ use hodor_authentication::api::FactorService;
 use hodor_authorization::api::{AuthorizationService, DecisionLog, Permission};
 use hodor_credential::api::{AccessTokenService, ApiKey, ApiKeyService, looks_like_api_key};
 use hodor_federation::api::{
-    ChangeProvider, CreateProvider, DirectorySettings, FederationService, IdentityProvider,
-    ProviderId, ProviderKind, ProviderSettings, ProviderStatus, SamlSettings, callback_address,
-    saml_metadata_address,
+    ChangeProvider, ClaimAttributes, CreateProvider, DirectorySettings, FederationService,
+    IdentityProvider, ProviderId, ProviderKind, ProviderSettings, ProviderStatus, SamlSettings,
+    callback_address, saml_metadata_address,
 };
 use hodor_identity::api::{CreateUser, IdentifierKind, IdentityService, Profile, User, UserKind};
 use hodor_kernel::{
@@ -45,7 +46,7 @@ use hodor_oauth::api::{ApplicationService, ClientId, ConsentActor, ConsentServic
 use hodor_session::api::{Session, SessionId, SessionService};
 use hodor_tenant::api::{
     AssuranceLevel, AssuranceLevels, AssuranceRequirement, Deprovisioning, EmailSignInPolicy,
-    TenantService,
+    PushedRequestPolicy, TenantService,
 };
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
@@ -55,13 +56,18 @@ use time::format_description::well_known::Rfc3339;
 mod access_lists;
 mod applications;
 mod authorization;
+mod certificate_authority;
 mod claim_mappers;
+mod client_registration;
 mod decisions;
 mod factors;
 mod groups;
 mod organizations;
+mod trust_domains;
 mod webhooks;
 mod workloads;
+
+pub use certificate_authority::CERTIFICATE_AUTHORITY_AUDIENCE;
 
 /// The OpenAPI document of the interface, as served at `/openapi.json`.
 pub const ADMIN_OPENAPI: &str = include_str!("../openapi/admin-v1.json");
@@ -75,6 +81,7 @@ pub const ADMIN_OPERATIONS: &[(&str, &str, Permission)] = &[
     ("GET", "/users", Permission::UsersRead),
     ("GET", "/users/{user_id}", Permission::UsersRead),
     ("POST", "/users/{user_id}:suspend", Permission::UsersWrite),
+    ("PUT", "/users/{user_id}/claims", Permission::UsersWrite),
     ("GET", "/users/{user_id}/sessions", Permission::SessionsRead),
     ("GET", "/users/{user_id}/consents", Permission::UsersRead),
     (
@@ -149,6 +156,63 @@ pub const ADMIN_OPERATIONS: &[(&str, &str, Permission)] = &[
         "POST",
         "/keys/{key_set}/versions/{version_id}:revoke",
         Permission::KeysWrite,
+    ),
+    ("GET", "/trust-domains", Permission::KeysRead),
+    ("POST", "/trust-domains", Permission::KeysWrite),
+    (
+        "GET",
+        "/trust-domains/{trust_domain_id}",
+        Permission::KeysRead,
+    ),
+    (
+        "PUT",
+        "/trust-domains/{trust_domain_id}",
+        Permission::KeysWrite,
+    ),
+    (
+        "DELETE",
+        "/trust-domains/{trust_domain_id}",
+        Permission::KeysWrite,
+    ),
+    (
+        "GET",
+        "/certificate-authority",
+        Permission::CertificateAuthorityRead,
+    ),
+    (
+        "POST",
+        "/certificate-authority",
+        Permission::CertificateAuthorityWrite,
+    ),
+    (
+        "POST",
+        "/certificate-authority:install",
+        Permission::CertificateAuthorityWrite,
+    ),
+    (
+        "DELETE",
+        "/certificate-authority",
+        Permission::CertificateAuthorityWrite,
+    ),
+    (
+        "POST",
+        "/certificate-authority/intermediates",
+        Permission::CertificateAuthoritySign,
+    ),
+    (
+        "GET",
+        "/certificate-authority/intermediates",
+        Permission::CertificateAuthorityRead,
+    ),
+    (
+        "GET",
+        "/certificate-authority/intermediates/{intermediate_id}",
+        Permission::CertificateAuthorityRead,
+    ),
+    (
+        "POST",
+        "/certificate-authority/intermediates/{intermediate_id}:withdraw",
+        Permission::CertificateAuthorityWrite,
     ),
     ("GET", "/applications", Permission::ApplicationsRead),
     ("POST", "/applications", Permission::ApplicationsWrite),
@@ -243,6 +307,28 @@ pub const ADMIN_OPERATIONS: &[(&str, &str, Permission)] = &[
         "/clients/{client_id}/claim-mappers/{claim_mapper_id}",
         Permission::ApplicationsWrite,
     ),
+    ("GET", "/client-registration", Permission::ApplicationsRead),
+    ("PUT", "/client-registration", Permission::ApplicationsWrite),
+    (
+        "GET",
+        "/client-registration/initial-access-tokens",
+        Permission::ApplicationsRead,
+    ),
+    (
+        "POST",
+        "/client-registration/initial-access-tokens",
+        Permission::ApplicationsWrite,
+    ),
+    (
+        "GET",
+        "/client-registration/initial-access-tokens/{token_id}",
+        Permission::ApplicationsRead,
+    ),
+    (
+        "DELETE",
+        "/client-registration/initial-access-tokens/{token_id}",
+        Permission::ApplicationsWrite,
+    ),
     ("GET", "/resource-servers", Permission::ApplicationsRead),
     ("POST", "/resource-servers", Permission::ApplicationsWrite),
     (
@@ -259,6 +345,16 @@ pub const ADMIN_OPERATIONS: &[(&str, &str, Permission)] = &[
     ("PUT", "/scim-deprovisioning", Permission::UsersWrite),
     ("GET", "/email-sign-in", Permission::UsersRead),
     ("PUT", "/email-sign-in", Permission::UsersWrite),
+    (
+        "GET",
+        "/pushed-authorization-requests",
+        Permission::ApplicationsRead,
+    ),
+    (
+        "PUT",
+        "/pushed-authorization-requests",
+        Permission::ApplicationsWrite,
+    ),
     ("GET", "/assurance-levels", Permission::AssuranceLevelsRead),
     ("PUT", "/assurance-levels", Permission::AssuranceLevelsWrite),
     ("GET", "/decision-log", Permission::DecisionsRead),
@@ -595,10 +691,24 @@ pub struct AdminState {
     pub keys: Option<KeyService>,
     /// How long a replaced signing key stays when it is rotated by hand.
     pub key_rotation: RotationPolicy,
+    /// The SPIFFE trust domains of the tenant and their bundles.
+    pub trust_domains: hodor_keys::api::TrustDomainService,
+    /// The tenant's certificate authority. `None` unless the installation
+    /// turns the authority on: its operations are then not routed, not in
+    /// the OpenAPI document, and its permissions not listed.
+    pub authority: Option<hodor_keys::api::AuthorityService>,
+    /// Checks the access tokens a client presents to sign intermediates,
+    /// for the audience of the certificate authority. `None` unless the
+    /// installation turns the authority on and has keys to check tokens
+    /// with; the signing operation then takes no such token.
+    pub certificate_signing: Option<hodor_oauth::api::ResourceAccessService>,
     /// The applications, their clients and resource servers.
     pub applications: ApplicationService,
     /// The claim mappers of clients.
     pub claim_mappers: hodor_oauth::api::ClaimMapperService,
+    /// Client registration: the tenant's settings and initial access
+    /// tokens.
+    pub client_registration: hodor_oauth::api::ClientRegistrationService,
     /// The tenant, for its assurance levels.
     pub tenants: TenantService,
     /// The users' second factors, which an administrator sees and removes.
@@ -690,6 +800,7 @@ fn shared_routes() -> Router<Shared> {
         // `POST /users/{user_id}:suspend` arrives here as well: the action
         // is part of the last segment.
         .route("/users/{user}", get(get_user).post(user_action))
+        .route("/users/{user}/claims", put(replace_user_claims))
         .route("/users/{user}/sessions", get(list_user_sessions))
         .route("/users/{user}/consents", get(list_user_consents))
         .route(
@@ -735,8 +846,13 @@ fn shared_routes() -> Router<Shared> {
             "/email-sign-in",
             get(read_email_sign_in).put(set_email_sign_in),
         )
+        .route(
+            "/pushed-authorization-requests",
+            get(read_pushed_requests).put(set_pushed_requests),
+        )
         .merge(applications::routes())
         .merge(claim_mappers::routes())
+        .merge(client_registration::routes())
         .merge(factors::routes())
         .merge(decisions::routes())
         .merge(authorization::routes())
@@ -745,6 +861,7 @@ fn shared_routes() -> Router<Shared> {
         .merge(organizations::routes())
         .merge(workloads::routes())
         .merge(webhooks::routes())
+        .merge(trust_domains::routes())
 }
 
 /// One assurance level, as the interface writes it.
@@ -948,10 +1065,90 @@ async fn set_email_sign_in(
     )
 }
 
+/// The tenant's pushed authorization request policy, as the interface
+/// writes it: both fields, always.
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PushedRequestsBody {
+    lifetime_seconds: u16,
+    required: bool,
+}
+
+impl From<PushedRequestPolicy> for PushedRequestsBody {
+    fn from(policy: PushedRequestPolicy) -> Self {
+        Self {
+            lifetime_seconds: policy.lifetime_seconds,
+            required: policy.required,
+        }
+    }
+}
+
+async fn read_pushed_requests(
+    State(state): State<Shared>,
+    Extension(tenant): Extension<TenantContext>,
+    headers: HeaderMap,
+) -> Response {
+    respond(
+        async {
+            authorize(
+                &state,
+                &tenant,
+                &headers,
+                "GET",
+                "/pushed-authorization-requests",
+            )
+            .await?;
+            let found = state.tenants.get(&tenant).await.map_err(failed)?;
+            Ok(Json(PushedRequestsBody::from(
+                found.snapshot().settings.pushed_requests,
+            ))
+            .into_response())
+        }
+        .await,
+    )
+}
+
+async fn set_pushed_requests(
+    State(state): State<Shared>,
+    Extension(tenant): Extension<TenantContext>,
+    headers: HeaderMap,
+    bytes: Bytes,
+) -> Response {
+    respond(
+        async {
+            let caller = authorize(
+                &state,
+                &tenant,
+                &headers,
+                "PUT",
+                "/pushed-authorization-requests",
+            )
+            .await?;
+            let asked: PushedRequestsBody = body(&bytes)?;
+            let found = state.tenants.get(&tenant).await.map_err(failed)?;
+            let mut settings = found.snapshot().settings.clone();
+            settings.pushed_requests = PushedRequestPolicy {
+                lifetime_seconds: asked.lifetime_seconds,
+                required: asked.required,
+            };
+            let changed = state
+                .tenants
+                .change_settings(&tenant, settings, caller)
+                .await
+                .map_err(failed)?;
+            Ok(Json(PushedRequestsBody::from(
+                changed.snapshot().settings.pushed_requests,
+            ))
+            .into_response())
+        }
+        .await,
+    )
+}
+
 /// The routes of the administration interface, to be mounted under a
 /// tenant at `/api/v1/admin`.
 pub fn admin_routes(state: AdminState) -> Router {
-    shared_routes()
+    with_authority(shared_routes(), &state)
         .route("/openapi.json", get(openapi))
         .with_state(Shared {
             administration: state,
@@ -962,7 +1159,7 @@ pub fn admin_routes(state: AdminState) -> Router {
 /// The routes of the console interface, to be mounted under a tenant at
 /// `/console/api`: those of the administration interface, and `/me`.
 pub fn console_routes(state: ConsoleState) -> Router {
-    shared_routes()
+    with_authority(shared_routes(), &state.administration)
         .route("/me", get(me))
         // Cookies are sent by the browser whoever asks, so a request that
         // changes something must come from this origin.
@@ -976,13 +1173,62 @@ pub fn console_routes(state: ConsoleState) -> Router {
         })
 }
 
-async fn openapi() -> Response {
+/// The operations of the certificate authority, routed only when the
+/// installation turns it on.
+fn with_authority(routes: Router<Shared>, state: &AdminState) -> Router<Shared> {
+    if state.authority.is_some() {
+        routes.merge(certificate_authority::routes())
+    } else {
+        routes
+    }
+}
+
+/// Whether an operation or a permission belongs to the certificate
+/// authority, which an installation that does not turn it on never
+/// mentions.
+fn of_the_authority(name: &str) -> bool {
+    name.starts_with("/certificate-authority") || name.starts_with("certificate-authority:")
+}
+
+/// The OpenAPI document without the certificate authority: its operations
+/// and the schemas only they use.
+fn document_without_authority() -> &'static str {
+    static DOCUMENT: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    DOCUMENT.get_or_init(|| {
+        let Ok(mut document) = serde_json::from_str::<serde_json::Value>(ADMIN_OPENAPI) else {
+            return ADMIN_OPENAPI.to_owned();
+        };
+        if let Some(paths) = document["paths"].as_object_mut() {
+            paths.retain(|path, _| !of_the_authority(path));
+        }
+        if let Some(schemas) = document["components"]["schemas"].as_object_mut() {
+            for schema in [
+                "CertificateAuthority",
+                "NewCertificateAuthority",
+                "CertificateAuthorityCertificate",
+                "Intermediate",
+                "NewIntermediate",
+                "IntermediateWithdrawal",
+            ] {
+                schemas.remove(schema);
+            }
+        }
+        serde_json::to_string_pretty(&document).unwrap_or_else(|_| ADMIN_OPENAPI.to_owned())
+    })
+}
+
+async fn openapi(State(state): State<Shared>) -> Response {
+    let document = if state.authority.is_some() {
+        ADMIN_OPENAPI
+    } else {
+        document_without_authority()
+    };
     (
         [(
             header::CONTENT_TYPE,
             HeaderValue::from_static("application/json"),
         )],
-        ADMIN_OPENAPI,
+        document,
     )
         .into_response()
 }
@@ -1264,6 +1510,7 @@ struct UserBody {
     display_name: Option<String>,
     locale: Option<String>,
     identifiers: Vec<IdentifierBody>,
+    claims: ClaimsBody,
     created_at: String,
     updated_at: String,
 }
@@ -1289,6 +1536,7 @@ impl From<&User> for UserBody {
                     primary: identifier.primary,
                 })
                 .collect(),
+            claims: ClaimsBody::of(&state.claims, state.kind == UserKind::Human),
             created_at: written(state.created_at),
             updated_at: written(state.updated_at),
         }
@@ -1367,6 +1615,7 @@ impl<T> From<Page<T>> for PageBody<T> {
 #[derive(Deserialize)]
 struct NewUserBody {
     email: String,
+    username: Option<String>,
     display_name: Option<String>,
     locale: Option<String>,
 }
@@ -1409,6 +1658,7 @@ async fn me(
                 .into_iter()
                 .filter(|permission| roles.iter().any(|role| role.allows(*permission)))
                 .map(Permission::as_str)
+                .filter(|name| state.authority.is_some() || !of_the_authority(name))
                 .collect();
             Ok(Json(MeBody {
                 user: UserBody::from(&person.user),
@@ -1440,9 +1690,14 @@ async fn create_user(
         async {
             let caller = authorize(&state, &tenant, &headers, "POST", "/users").await?;
             let new: NewUserBody = body(&bytes)?;
+            let mut identifiers = vec![(IdentifierKind::Email, new.email)];
+            identifiers.extend(
+                new.username
+                    .map(|username| (IdentifierKind::Username, username)),
+            );
             let command = CreateUser {
                 kind: UserKind::Human,
-                identifiers: vec![(IdentifierKind::Email, new.email)],
+                identifiers,
                 profile: Profile {
                     display_name: new.display_name,
                     locale: new.locale,
@@ -1492,6 +1747,31 @@ async fn get_user(
             authorize(&state, &tenant, &headers, "GET", "/users/{user_id}").await?;
             let id: UserId = parameter(&parameters, "user").ok_or_else(user_not_found)?;
             let user = state.identity.get(&tenant, id).await.map_err(failed)?;
+            Ok(Json(UserBody::from(&user)).into_response())
+        }
+        .await,
+    )
+}
+
+/// `PUT /users/{user_id}/claims`: replaces a person's standard claims.
+async fn replace_user_claims(
+    State(state): State<Shared>,
+    Extension(tenant): Extension<TenantContext>,
+    headers: HeaderMap,
+    parameters: RawPathParams,
+    bytes: Bytes,
+) -> Response {
+    respond(
+        async {
+            let caller =
+                authorize(&state, &tenant, &headers, "PUT", "/users/{user_id}/claims").await?;
+            let id: UserId = parameter(&parameters, "user").ok_or_else(user_not_found)?;
+            let claims: ClaimsBody = body(&bytes)?;
+            let user = state
+                .identity
+                .change_claims(&tenant, id, claims.into_claims(), caller)
+                .await
+                .map_err(failed)?;
             Ok(Json(UserBody::from(&user)).into_response())
         }
         .await,
@@ -1757,12 +2037,14 @@ fn provider_body(provider: &IdentityProvider, public_url: &str, slug: &str) -> P
                 subject_attribute: directory.subject_attribute.clone(),
                 email_attribute: directory.email_attribute.clone(),
                 name_attribute: directory.name_attribute.clone(),
+                claim_attributes: directory.claim_attributes.clone(),
             }),
         saml: state.settings.saml.as_ref().map(|saml| SamlBody {
             single_sign_on_address: saml.single_sign_on_address.clone(),
             certificate: saml.certificate.clone(),
             email_attribute: saml.email_attribute.clone(),
             name_attribute: saml.name_attribute.clone(),
+            claim_attributes: saml.claim_attributes.clone(),
         }),
         metadata_address: (state.kind == ProviderKind::Saml)
             .then(|| saml_metadata_address(public_url, slug, state.alias.as_str())),
@@ -1779,6 +2061,7 @@ struct DirectoryBody {
     subject_attribute: String,
     email_attribute: String,
     name_attribute: String,
+    claim_attributes: ClaimAttributes,
 }
 
 /// A directory's settings as given: what is left out is the usual, or,
@@ -1791,6 +2074,7 @@ struct DirectoryInput {
     subject_attribute: Option<String>,
     email_attribute: Option<String>,
     name_attribute: Option<String>,
+    claim_attributes: Option<ClaimAttributes>,
 }
 
 impl DirectoryInput {
@@ -1802,6 +2086,7 @@ impl DirectoryInput {
             subject_attribute: self.subject_attribute.unwrap_or(on.subject_attribute),
             email_attribute: self.email_attribute.unwrap_or(on.email_attribute),
             name_attribute: self.name_attribute.unwrap_or(on.name_attribute),
+            claim_attributes: self.claim_attributes.unwrap_or(on.claim_attributes),
         }
     }
 }
@@ -1813,6 +2098,7 @@ struct SamlBody {
     certificate: String,
     email_attribute: String,
     name_attribute: String,
+    claim_attributes: ClaimAttributes,
 }
 
 /// A SAML identity provider's settings as given: what is left out is the
@@ -1824,6 +2110,7 @@ struct SamlInput {
     certificate: Option<String>,
     email_attribute: Option<String>,
     name_attribute: Option<String>,
+    claim_attributes: Option<ClaimAttributes>,
 }
 
 impl SamlInput {
@@ -1836,6 +2123,7 @@ impl SamlInput {
             certificate: self.certificate.unwrap_or(on.certificate),
             email_attribute: self.email_attribute.unwrap_or(on.email_attribute),
             name_attribute: self.name_attribute.unwrap_or(on.name_attribute),
+            claim_attributes: self.claim_attributes.unwrap_or(on.claim_attributes),
         }
     }
 }
@@ -2292,7 +2580,7 @@ async fn key_set_action(
                     problem(
                         StatusCode::UNPROCESSABLE_ENTITY,
                         "keys.algorithm_unsuitable",
-                        "the algorithm does not sign: ES256, RS256 or PS256",
+                        "the algorithm does not sign: ES256, RS256, PS256 or EdDSA",
                     )
                 })?,
             };

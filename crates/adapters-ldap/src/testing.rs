@@ -1,11 +1,11 @@
 //! A directory for tests: OpenLDAP in a container, with people in it.
 //! Never use outside tests.
 
+use hodor_test_containers::HOST;
 use ldap3::{LdapConnAsync, Mod};
 use std::collections::HashSet;
 use std::time::Duration;
 use testcontainers::core::{IntoContainerPort as _, WaitFor};
-use testcontainers::runners::AsyncRunner as _;
 use testcontainers::{ContainerAsync, GenericImage, ImageExt as _};
 
 /// Where people are, in the test directory.
@@ -57,24 +57,29 @@ impl TestDirectory {
     pub async fn start() -> Self {
         // The directory sets itself up, stops, and starts for good: only
         // that last start says `slapd starting`.
-        let container = GenericImage::new("osixia/openldap", "1.5.0")
-            .with_exposed_port(389.tcp())
-            .with_wait_for(WaitFor::message_on_either_std("slapd starting"))
-            .with_env_var("LDAP_ORGANISATION", "Example")
-            .with_env_var("LDAP_DOMAIN", "example.org")
-            .with_env_var("LDAP_ADMIN_PASSWORD", ADMIN_PASSWORD)
-            .with_env_var("LDAP_READONLY_USER", "true")
-            .with_env_var("LDAP_READONLY_USER_USERNAME", "readonly")
-            .with_env_var("LDAP_READONLY_USER_PASSWORD", BIND_PASSWORD)
-            .with_env_var("LDAP_TLS", "false")
-            .start()
-            .await
-            .expect("start the directory");
-        let port = container.get_host_port_ipv4(389).await.expect("port");
+        let started = hodor_test_containers::start(
+            "the directory",
+            || {
+                GenericImage::new("osixia/openldap", "1.5.0")
+                    .with_exposed_port(389.tcp())
+                    .with_wait_for(WaitFor::message_on_either_std("slapd starting"))
+                    .with_env_var("LDAP_ORGANISATION", "Example")
+                    .with_env_var("LDAP_DOMAIN", "example.org")
+                    .with_env_var("LDAP_ADMIN_PASSWORD", ADMIN_PASSWORD)
+                    .with_env_var("LDAP_READONLY_USER", "true")
+                    .with_env_var("LDAP_READONLY_USER_USERNAME", "readonly")
+                    .with_env_var("LDAP_READONLY_USER_PASSWORD", BIND_PASSWORD)
+                    .with_env_var("LDAP_TLS", "false")
+            },
+            &[389.tcp()],
+        )
+        .await;
+        let port = started.port(389);
+        let container = started.into_container();
         let directory = Self {
             _container: container,
-            address: format!("ldap://127.0.0.1:{port}"),
-            host: format!("127.0.0.1:{port}"),
+            address: format!("ldap://{HOST}:{port}"),
+            host: format!("{HOST}:{port}"),
         };
         // The directory takes a few seconds to set itself up: it is ready
         // when both its admin and the account Hodor uses are accepted.

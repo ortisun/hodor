@@ -7,7 +7,9 @@ side: the outbox dispatch loop, which turns every outbox event into an audit
 record, the published ones into webhook deliveries and `session.revoked`
 into logout deliveries, the mail delivery loop, which sends queued messages
 over SMTP, the webhook loop, which sends webhook deliveries many at once,
-the logout loop, which signs and sends logout tokens many at once, four
+the logout loop, which signs and sends logout tokens many at once, the
+trust bundle loop, which fetches the bundles of trust domains from their
+endpoints again, four
 cleanup loops, one removing pending authorizations that expired, one
 removing the records of access tokens that expired, one maintaining the
 record of decisions, and one removing every other kind of row that stopped
@@ -53,6 +55,7 @@ Configuration (`Config`, clap, command name `hodor-worker`):
 | `--webhook-in-flight-per-endpoint` | `HODOR_WEBHOOK_IN_FLIGHT_PER_ENDPOINT` | 4, from 1 to 32 |
 | `--webhook-concurrency` | `HODOR_WEBHOOK_CONCURRENCY` | 32, from 1 to 256 |
 | `--webhook-poll-interval-ms` | `HODOR_WEBHOOK_POLL_INTERVAL_MS` | 1000 |
+| `--trust-bundle-poll-interval-ms` | `HODOR_TRUST_BUNDLE_POLL_INTERVAL_MS` | 5000 |
 | `--public-url` | `HODOR_PUBLIC_URL` | unset: no logout token is sent |
 | `--backchannel-logout-max-attempts` | `HODOR_BACKCHANNEL_LOGOUT_MAX_ATTEMPTS` | 8, from 1 to 20 |
 | `--backchannel-logout-first-retry-ms` | `HODOR_BACKCHANNEL_LOGOUT_FIRST_RETRY_MS` | 30000 |
@@ -91,7 +94,11 @@ Symbols:
   person and the session as it knows them), and, with
   `HODOR_OPEN_POLICY_AGENT_BINARY`, `OpaProcessChecker::verified` (the worker
   does not start with a binary it refuses) and
-  `PolicyCheckJob::new(platform, policy_service(database), checker)`; then
+  `PolicyCheckJob::new(platform, policy_service(database), checker)`, and,
+  whatever the keys, `bundle_refresher` (a `BundleRefresher` over a
+  `TrustDomainService` of `PgTrustDomainStore`, `Sha256Digest` and a
+  `GuardedHttpClient` limited to `FETCH_TIME_LIMIT` and
+  `MAX_BUNDLE_BYTES`, with `PgDueRefreshes::new(platform)`); then
   serves `ops_router(health)` and joins the loops.
 - `webhook_settings` reads and bounds the `HODOR_WEBHOOK_*` settings into
   `DeliverySettings`; a value out of bounds stops the worker.
@@ -195,6 +202,12 @@ Symbols:
   an `ExpiredKind`), `hodor.policy.check.passes`
   (attribute `outcome`) and `hodor.policy.check.done` (attribute `kind`:
   `version`, `simulation`).
+- Fetches the bundles of trust domains from their bundle endpoints, through
+  `GuardedHttpClient`, eight at once on leases (`sending_loop` with
+  `TRUST_BUNDLES`), and records what each fetch did; counts them in
+  `hodor.keys.trust_bundle.fetches` (attribute `outcome`: `changed`,
+  `unchanged`, `failed`, `skipped`) and `hodor.keys.trust_bundle.passes`
+  (attribute `outcome`: `ok`, `error`).
 - Sends webhook deliveries over HTTPS, through `GuardedHttpClient`, to the
   endpoints tenants registered, and records each attempt
   (`sending_loop`); counts them in `hodor.webhooks.attempts` (attribute

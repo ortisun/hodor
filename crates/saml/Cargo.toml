@@ -6,6 +6,7 @@ edition.workspace = true
 rust-version.workspace = true
 publish.workspace = true
 repository.workspace = true
+license.workspace = true
 
 [features]
 # An identity provider with keys of its own, which signs real responses, for

@@ -51,6 +51,7 @@ fn world() -> World {
         grants: Arc::new(grants.clone()),
         codes: Arc::new(codes),
         memberships: Arc::new(MembershipsOf::default()),
+        verifier: Arc::new(hodor_oauth::testing::FakeVerifier),
         digest: Arc::new(FakeDigest),
         random: Arc::new(DistinctRandom),
         clock: clock.clone(),
@@ -173,7 +174,12 @@ async fn checked(
     );
     world
         .codes
-        .check(tenant, &parameters)
+        .check(
+            tenant,
+            "https://hodor.example.com/t/acme",
+            &parameters,
+            &hodor_oauth::api::PushedRequestPolicy::default(),
+        )
         .await
         .expect("storage")
         .expect("accepted")

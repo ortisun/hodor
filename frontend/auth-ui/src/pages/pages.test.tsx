@@ -12,6 +12,7 @@ import { AskPage } from "./AskPage";
 import { ComingBackPage } from "./ComingBackPage";
 import { ConsentPage } from "./ConsentPage";
 import { FinishPage } from "./FinishPage";
+import { ProfilePage } from "./ProfilePage";
 import { SecurityPage } from "./SecurityPage";
 import { SignInLinkPage } from "./SignInLinkPage";
 import { SignInPage } from "./SignInPage";
@@ -703,6 +704,33 @@ describe("the page that asks for a link", () => {
     await user.click(screen.getByRole("button", { name: en.sendLink }));
     expect(sent).toEqual([]);
   });
+
+  it("says that a registration an application asked for goes back to it, and signs in for it", async () => {
+    const { props, user } = page({ "POST /registration": [json(202, { status: "accepted" })] });
+    render(<AskPage {...props} purpose="registration" forApplication />);
+    expect(screen.getByText(en.registerForApplication)).toBeTruthy();
+    const signIn = `${pathOf("acme", "sign-in")}?continue=authorization`;
+    expect(screen.getByRole("link", { name: en.signIn }).getAttribute("href")).toBe(signIn);
+    await user.type(screen.getByLabelText(en.emailLabel), "ana@example.com{Enter}");
+    await screen.findByRole("heading", { name: en.checkMailboxTitle });
+    expect(screen.getByRole("link", { name: en.backToSignIn }).getAttribute("href")).toBe(signIn);
+  });
+
+  it("says it in Brazilian Portuguese too", () => {
+    const { props } = page({});
+    render(<AskPage {...props} text={ptBR} purpose="registration" forApplication />);
+    expect(screen.getByText(ptBR.registerForApplication)).toBeTruthy();
+    expect(screen.getByRole("link", { name: ptBR.signIn }).getAttribute("href")).toBe(
+      `${pathOf("acme", "sign-in")}?continue=authorization`,
+    );
+  });
+
+  it("is the plain registration page without an application", () => {
+    const { props } = page({});
+    render(<AskPage {...props} purpose="registration" />);
+    expect(screen.queryByText(en.registerForApplication)).toBeNull();
+    expect(screen.getByRole("link", { name: en.signIn }).getAttribute("href")).toBe(pathOf("acme", "sign-in"));
+  });
 });
 
 describe("the page that finishes", () => {
@@ -829,6 +857,103 @@ describe("the account page", () => {
     const { props } = page({ "GET /session": [session], "GET /consents": [json(200, { consents: [] })] });
     render(<AccountPage {...props} />);
     expect(await screen.findByText(en.givenConsentsNone)).toBeTruthy();
+  });
+});
+
+describe("the profile page", () => {
+  const session = () =>
+    json(200, {
+      user_id: "u",
+      session_id: "s",
+      signed_in_at: "2026-11-20T14:03:11Z",
+      expires_at: "2026-11-20T15:03:11Z",
+      csrf_token: "of-the-session",
+    });
+  const ana = (claims: Record<string, unknown> = {}) =>
+    json(200, {
+      display_name: "Ana Lima",
+      claims: { given_name: "Ana", phone_number_verified: false, ...claims },
+    });
+
+  it("sends a person who is not signed in to sign in", async () => {
+    const { props, go } = page({ "GET /session": [nobody] });
+    render(<ProfilePage {...props} />);
+    await waitFor(() => expect(go).toHaveBeenCalledWith("sign-in"));
+  });
+
+  it("shows the person's details and saves what they change, removing what they empty", async () => {
+    const { props, sent, user } = page({
+      "GET /session": [session],
+      "GET /profile": [
+        ana({
+          phone_number: "+5511912345678",
+          phone_number_verified: true,
+          address: { locality: "São Paulo", country: "BR" },
+        }),
+      ],
+      "PUT /profile": [
+        ana({ family_name: "Lima", address: { locality: "São Paulo" }, phone_number: "+5511912345678" }),
+      ],
+    });
+    render(<ProfilePage {...props} />);
+    const given = await screen.findByLabelText(en.claimLabel("given_name"));
+    expect((given as HTMLInputElement).value).toBe("Ana");
+    expect(screen.getByText(en.phoneVerified)).toBeTruthy();
+    expect((screen.getByLabelText(en.claimLabel("address.locality")) as HTMLInputElement).value).toBe(
+      "São Paulo",
+    );
+
+    await user.type(screen.getByLabelText(en.claimLabel("family_name")), "Lima");
+    await user.clear(screen.getByLabelText(en.claimLabel("address.country")));
+    await user.click(screen.getByRole("button", { name: en.profileSave }));
+
+    expect(await screen.findByText(en.profileSaved)).toBeTruthy();
+    expect(sent.at(-1)).toMatchObject({
+      method: "PUT",
+      path: "/profile",
+      csrfToken: "of-the-session",
+      body: {
+        display_name: "Ana Lima",
+        claims: {
+          given_name: "Ana",
+          family_name: "Lima",
+          phone_number: "+5511912345678",
+          address: { locality: "São Paulo" },
+        },
+      },
+    });
+    const body = sent.at(-1)?.body as { claims: Record<string, unknown> };
+    expect(body.claims).not.toHaveProperty("phone_number_verified");
+    expect(screen.getByText(en.phoneNotVerified)).toBeTruthy();
+  });
+
+  it("says which detail was refused, next to its field", async () => {
+    const { props, user } = page({
+      "GET /session": [session],
+      "GET /profile": [ana()],
+      "PUT /profile": [
+        json(422, {
+          code: "identity.claim_invalid",
+          status: 422,
+          detail: "birthdate is YYYY-MM-DD, 0000-MM-DD or YYYY, a day of the calendar not after today",
+        }),
+      ],
+    });
+    render(<ProfilePage {...props} />);
+    await user.type(await screen.findByLabelText(en.claimLabel("birthdate")), "12/04/1990");
+    await user.click(screen.getByRole("button", { name: en.profileSave }));
+
+    const field = screen.getByLabelText(en.claimLabel("birthdate"));
+    await waitFor(() => expect(field.getAttribute("aria-invalid")).toBe("true"));
+    expect(screen.getByText(en.claimInvalid(en.claimLabel("birthdate")))).toBeTruthy();
+    expect(screen.queryByText(en.profileSaved)).toBeNull();
+  });
+
+  it("speaks Brazilian Portuguese", async () => {
+    const { props } = page({ "GET /session": [session], "GET /profile": [ana()] });
+    render(<ProfilePage {...props} text={ptBR} />);
+    expect(await screen.findByLabelText(ptBR.claimLabel("family_name"))).toBeTruthy();
+    expect(screen.getByRole("button", { name: ptBR.profileSave })).toBeTruthy();
   });
 });
 
@@ -1563,6 +1688,26 @@ describe("signing in by email on the sign-in page", () => {
       expect(sent.filter((request) => request.path === "/sign-in/steps/email_code/send")).toHaveLength(2),
     );
     expect(screen.queryByText(en.rejected, { exact: false })).toBeNull();
+  });
+
+  it("asks for a code once, and asks where the sign-in stands when the server says it moved on", async () => {
+    // Asking keeps nothing in the sign-in, so the server does not refuse it
+    // for another request; a second ask would send a second message.
+    const { props, sent, user } = page({
+      "GET /sign-in/alternatives": [offered(["email_code"]), offered(["email_code"])],
+      "GET /session": [nobody, nobody],
+      "GET /sign-in": [pending("identifier"), pending("identifier")],
+      "POST /sign-in/steps/email_code/send": [problem(409, "authentication.transaction_modified_concurrently")],
+    });
+    render(<SignInPage {...props} notice={null} />);
+    await user.type(await screen.findByLabelText(en.identifierLabel), "ana@example.com");
+    await user.click(await screen.findByRole("button", { name: en.emailMeACode }));
+
+    await waitFor(() =>
+      expect(sent.filter((request) => request.method === "GET" && request.path === "/sign-in")).toHaveLength(2),
+    );
+    expect(sent.filter((request) => request.path === "/sign-in/steps/email_code/send")).toHaveLength(1);
+    expect(screen.queryByText(en.emailCodeSent("ana@example.com"))).toBeNull();
   });
 
   it("asks for a link and says to open it in this browser", async () => {

@@ -5,56 +5,10 @@ use hodor_adapters_postgres::{PgTenantDirectory, PgTenantRepository};
 use hodor_kernel::clock::testing::FixedClock;
 use hodor_kernel::{Actor, CorrelationId, TenantContext, Timestamp};
 use hodor_tenant::api::{Caller, CreateTenant, TenantService};
-use std::net::TcpListener;
-use std::process::{Child, Command, Stdio};
 use std::sync::Arc;
-use std::time::Duration;
 
-struct Server {
-    process: Child,
-    base: String,
-}
-
-impl Drop for Server {
-    fn drop(&mut self) {
-        let _ = self.process.kill();
-        let _ = self.process.wait();
-    }
-}
-
-fn free_port() -> u16 {
-    TcpListener::bind("127.0.0.1:0")
-        .and_then(|listener| listener.local_addr())
-        .expect("a free port")
-        .port()
-}
-
-async fn start_server(database: &TestDatabase) -> Server {
-    let (public, ops) = (free_port(), free_port());
-    let process = Command::new(env!("CARGO_BIN_EXE_hodor-server"))
-        .env("HODOR_DATABASE_URL", database.app_url())
-        .env("HODOR_LISTEN_ADDR", format!("127.0.0.1:{public}"))
-        .env("HODOR_OPS_ADDR", format!("127.0.0.1:{ops}"))
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()
-        .expect("the server should start");
-    let server = Server {
-        process,
-        base: format!("http://127.0.0.1:{public}"),
-    };
-    let ready = format!("http://127.0.0.1:{ops}/readyz");
-    for _ in 0..100 {
-        if reqwest::get(&ready)
-            .await
-            .is_ok_and(|r| r.status().is_success())
-        {
-            return server;
-        }
-        tokio::time::sleep(Duration::from_millis(100)).await;
-    }
-    panic!("the server did not become ready");
-}
+mod support;
+use support::{Server, start_server};
 
 async fn answer(server: &Server, path: &str) -> (u16, String) {
     let response = reqwest::get(format!("{}{path}", server.base))

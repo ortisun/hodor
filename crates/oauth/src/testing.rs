@@ -5,7 +5,7 @@ use crate::api::{
     Application, ApplicationId, ApplicationSettings, ApplicationSnapshot, ApplicationStore,
     Audience, Client, ClientId, ClientKey, ClientSecret, ClientSettings, ClientSnapshot,
     ClientStore, ClientType, GrantType, ResourceServer, ResourceServerId, ResourceServerSettings,
-    ResourceServerSnapshot, ResourceServerStore, ScopeDefinition, Status,
+    ResourceServerSnapshot, ResourceServerStore, ScopeDefinition, Status, WorkloadIdentity,
 };
 use hodor_kernel::{
     DomainError, RandomSource, TenantContext, TenantId, Timestamp, UnitOfWork, UnitOfWorkFactory,
@@ -21,6 +21,8 @@ mod consent;
 mod pairwise;
 mod refresh;
 mod register;
+mod registration;
+mod request_uri;
 mod token;
 pub use authorization::{
     AuthorizationStorePorts, InMemoryAuthorizationCodes, InMemoryAuthorizationRequests,
@@ -44,6 +46,11 @@ pub use refresh::{
 pub use register::{
     AccessTokenRecordStorePorts, InMemoryAccessTokenRecords, run_access_token_record_contract,
 };
+pub use registration::{
+    ClientRegistrationStorePorts, InMemoryClientRegistrations, InMemoryInitialAccessTokens,
+    client_registration_service, run_client_registration_contract,
+};
+pub use request_uri::{AddressAnswer, RequestObjectAddresses};
 pub use token::{
     AssertionStorePorts, FakeVerifier, InMemoryClientAssertions, fake_signature,
     run_assertion_contract,
@@ -151,6 +158,57 @@ impl InMemoryClients {
     }
 }
 
+/// Whether a client of `tenant` acting as another principal than `client`
+/// is bound to its SPIFFE identifier, as the store's check under its lock
+/// finds it: an identity binds the clients of one service account.
+fn spiffe_id_taken(
+    rows: &BTreeMap<(TenantId, ClientId), Client>,
+    tenant: TenantId,
+    client: &Client,
+) -> bool {
+    let Some(bound) = &client.snapshot().settings.spiffe_id else {
+        return false;
+    };
+    rows.iter().any(|((owner, id), other)| {
+        *owner == tenant
+            && *id != client.id()
+            && other.snapshot().settings.spiffe_id.as_ref() == Some(bound)
+            && other.principal() != client.principal()
+    })
+}
+
+/// Whether a client of `tenant` acting as another principal than `client`
+/// is bound to its Linkerd identity.
+fn linkerd_identity_taken(
+    rows: &BTreeMap<(TenantId, ClientId), Client>,
+    tenant: TenantId,
+    client: &Client,
+) -> bool {
+    let Some(bound) = &client.snapshot().settings.linkerd_identity else {
+        return false;
+    };
+    rows.iter().any(|((owner, id), other)| {
+        *owner == tenant
+            && *id != client.id()
+            && other.snapshot().settings.linkerd_identity.as_ref() == Some(bound)
+            && other.principal() != client.principal()
+    })
+}
+
+fn linkerd_identity_conflict() -> DomainError {
+    DomainError::conflict(
+        "oauth.client_linkerd_identity_taken",
+        "a client of the tenant acting as another principal is bound to this Linkerd identity",
+    )
+}
+
+fn spiffe_id_conflict() -> DomainError {
+    DomainError::conflict(
+        "oauth.client_spiffe_id_taken",
+        "a client of the tenant acting as another principal is bound to this SPIFFE identifier",
+    )
+}
+
 #[async_trait::async_trait]
 impl ClientStore for InMemoryClients {
     async fn insert(&self, uow: &mut dyn UnitOfWork, client: &Client) -> Result<(), DomainError> {
@@ -161,7 +219,14 @@ impl ClientStore for InMemoryClients {
                 "there is no such application",
             ));
         }
-        lock(&self.rows).insert((tenant, client.id()), client.clone());
+        let mut rows = lock(&self.rows);
+        if spiffe_id_taken(&rows, tenant, client) {
+            return Err(spiffe_id_conflict());
+        }
+        if linkerd_identity_taken(&rows, tenant, client) {
+            return Err(linkerd_identity_conflict());
+        }
+        rows.insert((tenant, client.id()), client.clone());
         Ok(())
     }
 
@@ -171,6 +236,12 @@ impl ClientStore for InMemoryClients {
         let version = client.snapshot().version;
         match rows.get(&key) {
             Some(stored) if stored.snapshot().version == version => {
+                if spiffe_id_taken(&rows, key.0, client) {
+                    return Err(spiffe_id_conflict());
+                }
+                if linkerd_identity_taken(&rows, key.0, client) {
+                    return Err(linkerd_identity_conflict());
+                }
                 rows.insert(
                     key,
                     Client::from_snapshot(ClientSnapshot {
@@ -192,6 +263,24 @@ impl ClientStore for InMemoryClients {
         Ok(lock(&self.rows)
             .get(&(uow.tenant().tenant_id(), id))
             .cloned())
+    }
+
+    async fn bound_to(
+        &self,
+        uow: &mut dyn UnitOfWork,
+        identity: &WorkloadIdentity,
+    ) -> Result<Vec<Client>, DomainError> {
+        let tenant = uow.tenant().tenant_id();
+        let mut found: Vec<Client> = lock(&self.rows)
+            .iter()
+            .filter(|((owner, _), client)| {
+                *owner == tenant
+                    && client.snapshot().settings.workload_identity().as_ref() == Some(identity)
+            })
+            .map(|(_, client)| client.clone())
+            .collect();
+        found.sort_by_key(|client| (client.snapshot().created_at, client.id()));
+        Ok(found)
     }
 
     async fn list_for_application(
@@ -310,6 +399,20 @@ impl ResourceServerStore for InMemoryResourceServers {
             .map(|(_, server)| server.clone()))
     }
 
+    async fn find_by_application(
+        &self,
+        uow: &mut dyn UnitOfWork,
+        application_id: ApplicationId,
+    ) -> Result<Option<ResourceServer>, DomainError> {
+        let tenant = uow.tenant().tenant_id();
+        Ok(lock(&self.rows)
+            .iter()
+            .find(|((owner, _), server)| {
+                *owner == tenant && server.snapshot().application_id == application_id
+            })
+            .map(|(_, server)| server.clone()))
+    }
+
     async fn list(&self, uow: &mut dyn UnitOfWork) -> Result<Vec<ResourceServer>, DomainError> {
         let tenant = uow.tenant().tenant_id();
         let mut found: Vec<ResourceServer> = lock(&self.rows)
@@ -413,6 +516,8 @@ fn client(application_id: ApplicationId, at: Timestamp) -> Client {
     settings.backchannel_logout_uri = Some("https://payroll.example.com/backchannel".to_owned());
     settings.backchannel_logout_session_required = true;
     settings.allowed_scopes = vec!["openid".to_owned(), "payroll:read".to_owned()];
+    // Stored and read back as every other setting.
+    settings.certificate_bound_access_tokens = true;
     Client::create(
         application_id,
         ClientType::Confidential,
@@ -483,6 +588,9 @@ pub async fn run_contract(ports: Ports<'_>) {
     a_client_change_replaces_its_secrets_and_keys(ports).await;
     a_client_belongs_to_an_application_of_its_tenant(ports).await;
     a_stale_client_is_not_stored(ports).await;
+    a_spiffe_identifier_is_bound_to_one_service_account_of_its_tenant(ports).await;
+    a_linkerd_identity_is_bound_to_one_service_account_of_its_tenant(ports).await;
+    an_identity_binds_the_clients_of_one_service_account(ports).await;
     resource_servers_are_found_by_exact_audience(ports).await;
     an_audience_and_an_application_have_one_resource_server(ports).await;
 }
@@ -665,12 +773,30 @@ async fn a_client_change_replaces_its_secrets_and_keys(ports: Ports<'_>) {
     let mut keyed = stored.clone();
     let mut settings = keyed.snapshot().settings.clone();
     settings.authentication_method = AuthenticationMethod::PrivateKeyJwt;
-    // And its ID tokens are now signed with RS256, which is kept too.
+    // And its ID tokens are now signed with RS256, and its UserInfo answers
+    // with EdDSA, both kept too.
     settings.id_token_algorithm = crate::api::IdTokenAlgorithm::Rs256;
+    settings.userinfo_algorithm = Some(crate::api::IdTokenAlgorithm::EdDsa);
+    // And it signs its request objects with PS256 only, which is kept.
+    settings.request_object_algorithm = Some(crate::api::RequestObjectAlgorithm::Ps256);
+    // And it must push its requests, which is kept.
+    settings.require_pushed_requests = true;
+    // And it keeps request objects at two addresses, kept in their order.
+    settings.request_uris = vec![
+        "https://requests.example.org/web/".to_owned(),
+        "https://requests.example.org/".to_owned(),
+    ];
     // And it becomes pairwise, its redirect addresses of two hosts put in
     // one sector by its sector identifier address, both kept.
     settings.subject_type = crate::api::SubjectType::Pairwise;
     settings.sector_identifier_uri = Some("https://sector.example.org/uris.json".to_owned());
+    // And it has defaults for a sign-in, kept in order.
+    settings.default_max_age = Some(600);
+    settings.default_acr_values = vec![
+        "urn:hodor:acr:mfa".to_owned(),
+        "urn:hodor:acr:single-factor".to_owned(),
+    ];
+    settings.require_auth_time = true;
     keyed.change(settings, later).expect("changed");
     for kid in ["second", "first"] {
         let key = ClientKey::parse(
@@ -699,9 +825,55 @@ async fn a_client_change_replaces_its_secrets_and_keys(ports: Ports<'_>) {
         stored.snapshot().settings.id_token_algorithm,
         crate::api::IdTokenAlgorithm::Rs256
     );
+    assert_eq!(
+        stored.snapshot().settings.request_object_algorithm,
+        Some(crate::api::RequestObjectAlgorithm::Ps256)
+    );
+    assert_eq!(
+        stored.snapshot().settings.userinfo_algorithm,
+        Some(crate::api::IdTokenAlgorithm::EdDsa)
+    );
+    assert!(stored.snapshot().settings.require_pushed_requests);
+    assert_eq!(
+        stored.snapshot().settings.request_uris,
+        [
+            "https://requests.example.org/web/",
+            "https://requests.example.org/"
+        ]
+    );
     assert_eq!(stored.subject_type(), crate::api::SubjectType::Pairwise);
     assert_eq!(stored.sector().as_deref(), Some("sector.example.org"));
+    assert_eq!(stored.default_max_age(), Some(600));
+    assert_eq!(
+        stored.default_acr_values().as_deref(),
+        Some("urn:hodor:acr:mfa urn:hodor:acr:single-factor")
+    );
+    assert!(stored.snapshot().settings.require_auth_time);
     assert_eq!(stored.snapshot().version, 2);
+
+    // None chosen again is kept as none.
+    let mut cleared = stored.clone();
+    let mut settings = cleared.snapshot().settings.clone();
+    settings.request_object_algorithm = None;
+    settings.userinfo_algorithm = None;
+    settings.id_token_algorithm = crate::api::IdTokenAlgorithm::Ps256;
+    cleared.change(settings, later).expect("changed");
+    let mut uow = ports.units_of_work.begin(&tenant).await.expect("begin");
+    ports
+        .clients
+        .update(uow.as_mut(), &cleared)
+        .await
+        .expect("update");
+    uow.commit().await.expect("commit");
+    let stored = load_client(ports, &tenant, original.id())
+        .await
+        .expect("stored");
+    assert_eq!(stored.snapshot().settings.request_object_algorithm, None);
+    assert_eq!(stored.snapshot().settings.userinfo_algorithm, None);
+    assert_eq!(
+        stored.snapshot().settings.id_token_algorithm,
+        crate::api::IdTokenAlgorithm::Ps256
+    );
 }
 
 async fn a_client_belongs_to_an_application_of_its_tenant(ports: Ports<'_>) {
@@ -754,10 +926,337 @@ async fn a_stale_client_is_not_stored(ports: Ports<'_>) {
     assert!(!stored.is_enabled());
 }
 
+/// A client of a service account bound to `spiffe_id`, of `application_id`.
+fn workload_client(application_id: ApplicationId, spiffe_id: &str) -> Client {
+    use crate::api::{AuthenticationMethod, SpiffeId};
+    use hodor_kernel::UserId;
+    use hodor_kernel::random::testing::FakeDigest;
+    let mut settings = ClientSettings::new(
+        "Nightly export",
+        ClientType::Confidential,
+        vec![GrantType::ClientCredentials],
+        Vec::new(),
+    );
+    settings.authentication_method = AuthenticationMethod::SpiffeJwt;
+    settings.principal = Some(UserId::generate());
+    settings.spiffe_id = Some(SpiffeId::parse(spiffe_id).expect("identifier"));
+    Client::create(
+        application_id,
+        ClientType::Confidential,
+        settings,
+        ClientSecret::DEFAULT_LIFETIME,
+        MOMENT,
+        &DistinctRandom,
+        &FakeDigest,
+    )
+    .expect("valid client")
+    .0
+}
+
+async fn a_spiffe_identifier_is_bound_to_one_service_account_of_its_tenant(ports: Ports<'_>) {
+    use crate::api::{AuthenticationMethod, SpiffeId};
+    const EXPORT: &str = "spiffe://cluster.local/ns/payroll/sa/export";
+    let tenant = tenant();
+    let owner = application("Payroll", MOMENT);
+    store_application(ports, &tenant, &owner).await;
+    let export = workload_client(owner.id(), EXPORT);
+    store_client(ports, &tenant, &export).await;
+    let stored = load_client(ports, &tenant, export.id())
+        .await
+        .expect("stored");
+    assert_eq!(stored, export, "kept with its SPIFFE identifier");
+
+    // A client of another service account may not take the identifier.
+    let twin = workload_client(owner.id(), EXPORT);
+    let mut uow = ports.units_of_work.begin(&tenant).await.expect("begin");
+    assert_eq!(
+        ports
+            .clients
+            .insert(uow.as_mut(), &twin)
+            .await
+            .expect_err("taken")
+            .code(),
+        "oauth.client_spiffe_id_taken"
+    );
+    drop(uow);
+
+    // Nor by a change.
+    let mut other = workload_client(owner.id(), "spiffe://cluster.local/ns/payroll/sa/import");
+    store_client(ports, &tenant, &other).await;
+    let mut settings = other.snapshot().settings.clone();
+    settings.spiffe_id = Some(SpiffeId::parse(EXPORT).expect("identifier"));
+    other.change(settings, MOMENT).expect("changed");
+    let mut uow = ports.units_of_work.begin(&tenant).await.expect("begin");
+    assert_eq!(
+        ports
+            .clients
+            .update(uow.as_mut(), &other)
+            .await
+            .expect_err("taken")
+            .code(),
+        "oauth.client_spiffe_id_taken"
+    );
+    drop(uow);
+
+    // Once the first client lets it go, the identifier is free.
+    let mut released = stored.clone();
+    let mut settings = released.snapshot().settings.clone();
+    settings.authentication_method = AuthenticationMethod::PrivateKeyJwt;
+    settings.spiffe_id = None;
+    released.change(settings, MOMENT).expect("changed");
+    let mut uow = ports.units_of_work.begin(&tenant).await.expect("begin");
+    ports
+        .clients
+        .update(uow.as_mut(), &released)
+        .await
+        .expect("released");
+    uow.commit().await.expect("commit");
+    let stale = load_client(ports, &tenant, other.id())
+        .await
+        .expect("other");
+    let mut settings = stale.snapshot().settings.clone();
+    settings.spiffe_id = Some(SpiffeId::parse(EXPORT).expect("identifier"));
+    let mut taking = stale.clone();
+    taking.change(settings, MOMENT).expect("changed");
+    let mut uow = ports.units_of_work.begin(&tenant).await.expect("begin");
+    ports
+        .clients
+        .update(uow.as_mut(), &taking)
+        .await
+        .expect("free now");
+    uow.commit().await.expect("commit");
+
+    // Another tenant binds the same identifier to a client of its own.
+    let elsewhere = self::tenant();
+    let theirs = application("Payroll", MOMENT);
+    store_application(ports, &elsewhere, &theirs).await;
+    let same = workload_client(theirs.id(), EXPORT);
+    store_client(ports, &elsewhere, &same).await;
+    assert_eq!(
+        load_client(ports, &elsewhere, same.id())
+            .await
+            .expect("stored")
+            .snapshot()
+            .settings
+            .spiffe_id,
+        same.snapshot().settings.spiffe_id
+    );
+}
+
+/// A client of a service account using `method`, bound to `spiffe_id` or
+/// `linkerd_identity`, of `application_id`.
+fn forwarded_client(
+    application_id: ApplicationId,
+    method: crate::api::AuthenticationMethod,
+    spiffe_id: Option<&str>,
+    linkerd_identity: Option<&str>,
+) -> Client {
+    use crate::api::{LinkerdIdentity, SpiffeId};
+    use hodor_kernel::UserId;
+    use hodor_kernel::random::testing::FakeDigest;
+    let mut settings = ClientSettings::new(
+        "Shop web",
+        ClientType::Confidential,
+        vec![GrantType::ClientCredentials],
+        Vec::new(),
+    );
+    settings.authentication_method = method;
+    settings.principal = Some(UserId::generate());
+    settings.spiffe_id = spiffe_id.map(|id| SpiffeId::parse(id).expect("identifier"));
+    settings.linkerd_identity =
+        linkerd_identity.map(|id| LinkerdIdentity::parse(id).expect("identity"));
+    Client::create(
+        application_id,
+        ClientType::Confidential,
+        settings,
+        ClientSecret::DEFAULT_LIFETIME,
+        MOMENT,
+        &DistinctRandom,
+        &FakeDigest,
+    )
+    .expect("valid client")
+    .0
+}
+
+async fn a_linkerd_identity_is_bound_to_one_service_account_of_its_tenant(ports: Ports<'_>) {
+    use crate::api::AuthenticationMethod;
+    const WEB: &str = "web.shop.serviceaccount.identity.linkerd.cluster.local";
+    let tenant = tenant();
+    let owner = application("Shop", MOMENT);
+    store_application(ports, &tenant, &owner).await;
+    // Each method of a forwarded identity is kept with its identity.
+    for client in [
+        forwarded_client(
+            owner.id(),
+            AuthenticationMethod::LinkerdIdentity,
+            None,
+            Some(WEB),
+        ),
+        forwarded_client(
+            owner.id(),
+            AuthenticationMethod::SpiffeX509,
+            Some("spiffe://cluster.local/ns/shop/sa/web"),
+            None,
+        ),
+        forwarded_client(
+            owner.id(),
+            AuthenticationMethod::TlsClientAuth,
+            Some("spiffe://cluster.local/ns/shop/sa/api"),
+            None,
+        ),
+    ] {
+        store_client(ports, &tenant, &client).await;
+        assert_eq!(
+            load_client(ports, &tenant, client.id())
+                .await
+                .expect("stored"),
+            client,
+            "kept with its identity"
+        );
+    }
+    // A client of another service account may not take the Linkerd
+    // identity.
+    let twin = forwarded_client(
+        owner.id(),
+        AuthenticationMethod::TlsClientAuth,
+        None,
+        Some(WEB),
+    );
+    let mut uow = ports.units_of_work.begin(&tenant).await.expect("begin");
+    assert_eq!(
+        ports
+            .clients
+            .insert(uow.as_mut(), &twin)
+            .await
+            .expect_err("taken")
+            .code(),
+        "oauth.client_linkerd_identity_taken"
+    );
+    drop(uow);
+    // Another tenant binds the same identity to a client of its own.
+    let elsewhere = self::tenant();
+    let theirs = application("Shop", MOMENT);
+    store_application(ports, &elsewhere, &theirs).await;
+    let same = forwarded_client(
+        theirs.id(),
+        AuthenticationMethod::LinkerdIdentity,
+        None,
+        Some(WEB),
+    );
+    store_client(ports, &elsewhere, &same).await;
+}
+
+/// The clients of the tenant bound to `identity`, as the store finds them.
+async fn bound(
+    ports: Ports<'_>,
+    tenant: &TenantContext,
+    identity: &WorkloadIdentity,
+) -> Vec<ClientId> {
+    let mut uow = ports.units_of_work.begin(tenant).await.expect("begin");
+    ports
+        .clients
+        .bound_to(uow.as_mut(), identity)
+        .await
+        .expect("bound")
+        .iter()
+        .map(Client::id)
+        .collect()
+}
+
+async fn an_identity_binds_the_clients_of_one_service_account(ports: Ports<'_>) {
+    use crate::api::{AuthenticationMethod, LinkerdIdentity, SpiffeId};
+    const ADAPTER: &str = "spiffe://cluster.local/ns/hodor/sa/hodor-ext-authz";
+    const LINKERD_ADAPTER: &str =
+        "hodor-ext-authz.hodor.serviceaccount.identity.linkerd.cluster.local";
+    let tenant = tenant();
+    let orders = application("Orders", MOMENT);
+    let invoices = application("Invoices", MOMENT);
+    store_application(ports, &tenant, &orders).await;
+    store_application(ports, &tenant, &invoices).await;
+    let identity = WorkloadIdentity::Spiffe(SpiffeId::parse(ADAPTER).expect("identifier"));
+    let linkerd =
+        WorkloadIdentity::Linkerd(LinkerdIdentity::parse(LINKERD_ADAPTER).expect("identity"));
+    assert!(bound(ports, &tenant, &identity).await.is_empty());
+
+    // One service account holds a client in each application, all bound
+    // to its one identity, whichever method each uses.
+    let first = forwarded_client(
+        orders.id(),
+        AuthenticationMethod::SpiffeX509,
+        Some(ADAPTER),
+        None,
+    );
+    let mut settings = first.snapshot().settings.clone();
+    settings.authentication_method = AuthenticationMethod::TlsClientAuth;
+    let second = Client::create(
+        invoices.id(),
+        ClientType::Confidential,
+        settings,
+        ClientSecret::DEFAULT_LIFETIME,
+        MOMENT,
+        &DistinctRandom,
+        &hodor_kernel::random::testing::FakeDigest,
+    )
+    .expect("valid client")
+    .0;
+    store_client(ports, &tenant, &first).await;
+    store_client(ports, &tenant, &second).await;
+    let found = bound(ports, &tenant, &identity).await;
+    assert_eq!(found.len(), 2, "both clients are bound");
+    assert!(found.contains(&first.id()) && found.contains(&second.id()));
+    assert!(
+        bound(ports, &tenant, &linkerd).await.is_empty(),
+        "a Linkerd identity is another identity"
+    );
+
+    // A client of another service account may not join them, by creation
+    // or by a change.
+    let intruder = forwarded_client(
+        invoices.id(),
+        AuthenticationMethod::SpiffeX509,
+        Some(ADAPTER),
+        None,
+    );
+    let mut uow = ports.units_of_work.begin(&tenant).await.expect("begin");
+    assert_eq!(
+        ports
+            .clients
+            .insert(uow.as_mut(), &intruder)
+            .await
+            .expect_err("another service account")
+            .code(),
+        "oauth.client_spiffe_id_taken"
+    );
+    drop(uow);
+    let mut moved = load_client(ports, &tenant, second.id())
+        .await
+        .expect("stored");
+    let mut settings = moved.snapshot().settings.clone();
+    settings.principal = Some(hodor_kernel::UserId::generate());
+    moved.change(settings, MOMENT).expect("changed");
+    let mut uow = ports.units_of_work.begin(&tenant).await.expect("begin");
+    assert_eq!(
+        ports
+            .clients
+            .update(uow.as_mut(), &moved)
+            .await
+            .expect_err("another service account")
+            .code(),
+        "oauth.client_spiffe_id_taken"
+    );
+    drop(uow);
+
+    // Another tenant sees none of them.
+    let elsewhere = self::tenant();
+    assert!(bound(ports, &elsewhere, &identity).await.is_empty());
+}
+
 async fn resource_servers_are_found_by_exact_audience(ports: Ports<'_>) {
     let tenant = tenant();
     let owner = application("Payroll", MOMENT);
     store_application(ports, &tenant, &owner).await;
+    let without = application("Expenses", MOMENT);
+    store_application(ports, &tenant, &without).await;
     let audience = format!("https://api-{}.example.com/payroll", owner.id());
     let payroll = server(owner.id(), &audience);
     let mut uow = ports.units_of_work.begin(&tenant).await.expect("begin");
@@ -785,6 +1284,24 @@ async fn resource_servers_are_found_by_exact_audience(ports: Ports<'_>) {
             .await
             .expect("find"),
         Some(payroll.clone())
+    );
+    assert_eq!(
+        ports
+            .resource_servers
+            .find_by_application(uow.as_mut(), owner.id())
+            .await
+            .expect("find"),
+        Some(payroll.clone()),
+        "found by its application, with its scopes"
+    );
+    assert_eq!(
+        ports
+            .resource_servers
+            .find_by_application(uow.as_mut(), without.id())
+            .await
+            .expect("find"),
+        None,
+        "an application without a resource server"
     );
     for near in [
         format!("{audience}/"),
@@ -856,6 +1373,14 @@ async fn resource_servers_are_found_by_exact_audience(ports: Ports<'_>) {
         ports
             .resource_servers
             .find_by_audience(uow.as_mut(), payroll.audience())
+            .await
+            .expect("find"),
+        None
+    );
+    assert_eq!(
+        ports
+            .resource_servers
+            .find_by_application(uow.as_mut(), owner.id())
             .await
             .expect("find"),
         None

@@ -4,7 +4,7 @@
 //! Specified in `docs/architecture/contexts/provisioning.md`, "`userName`",
 //! "`emails`" and "`active`".
 
-use crate::domain::resource::UserRequest;
+use crate::domain::resource::{UserRequest, with_scim_claims};
 use hodor_identity::api::{IdentifierId, IdentifierKind, Profile, User, UserEvent, UserStatus};
 use hodor_kernel::{DomainError, Timestamp};
 
@@ -20,8 +20,8 @@ pub struct Replaced {
 }
 
 /// Changes `user` to what `request` says: its login identifiers, the
-/// primary one of each kind, its display name, and its status when
-/// `active` is `true`.
+/// primary one of each kind, the standard claims SCIM names, its display
+/// name, and its status when `active` is `true`.
 ///
 /// The `userName` is added first, so that the user never loses its last
 /// identifier, and what the request does not name is removed before the
@@ -73,16 +73,22 @@ pub fn replace_user(
             events.extend(user.choose_primary(id, now)?);
         }
     }
+    // The display name and the claims are the person's profile: one event
+    // when either changes, or both.
+    let claims = with_scim_claims(&user.snapshot().claims, &request.claims);
+    let mut profile_changed = user.change_claims(claims, now)?;
     let profile = user.snapshot().profile.clone();
     if profile.display_name != request.display_name {
-        events.push(user.change_profile(
+        let changed = user.change_profile(
             Profile {
                 display_name: request.display_name.clone(),
                 locale: profile.locale,
             },
             now,
-        )?);
+        )?;
+        profile_changed.get_or_insert(changed);
     }
+    events.extend(profile_changed);
     let mut deprovision = false;
     match (user.status(), request.active) {
         (UserStatus::Pending, true) => events.push(user.activate(now)?),

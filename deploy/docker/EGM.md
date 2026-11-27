@@ -2,7 +2,7 @@
 
 ## Overview
 
-The container image of Hodor and the local development stack that runs it. `Dockerfile` builds one image holding the three binaries (`hodor-server`, `hodor-worker`, `hodor-cli`), the hosted pages and the administration console. `compose.yaml` runs that image beside PostgreSQL, a mail server that delivers nothing, VictoriaMetrics, VictoriaTraces and three development identity providers. `postgres-init.sql` creates the database roles the migrations expect.
+The container images of Hodor and the local development stack that runs it. `ext-authz.Dockerfile` builds the image of `hodor-ext-authz` alone. `cert-manager-issuer.Dockerfile` builds the image of `hodor-cert-manager-issuer` alone. `Dockerfile` builds one image holding the three binaries (`hodor-server`, `hodor-worker`, `hodor-cli`), the hosted pages and the administration console. `compose.yaml` runs that image beside PostgreSQL, a mail server that delivers nothing, VictoriaMetrics, VictoriaTraces, OpenBao and three development identity providers. `postgres-init.sql` creates the database roles the migrations expect.
 
 The header comment of `compose.yaml` states the scope: "Not for production: credentials are placeholders and nothing is persisted outside named volumes."
 
@@ -20,6 +20,14 @@ Three stages:
 
 The final image runs as `nonroot:nonroot`, exposes `8080` and `9090`, sets `HODOR_LISTEN_ADDR=0.0.0.0:8080`, `HODOR_OPS_ADDR=0.0.0.0:9090`, `HODOR_PAGES_DIRECTORY` and `HODOR_CONSOLE_DIRECTORY`, and has `ENTRYPOINT ["/usr/local/bin/hodor-server"]`. The worker and the command-line tool run by overriding the entrypoint. The build context is the repository root (`compose.yaml` service `migrate`, `build.context: ../..`).
 
+### `ext-authz.Dockerfile`
+
+The image of `hodor-ext-authz` alone (Issue-110, Decision 0058). Two stages: `build` (`rust:1.98-bookworm`, `cargo build --release --locked --package hodor-ext-authz --bin hodor-ext-authz`, with the same cache mounts and touch as `Dockerfile`) and the final `gcr.io/distroless/cc-debian12:nonroot` with the binary in `/usr/local/bin/`. It runs as `nonroot:nonroot`, exposes `9191` (gRPC) and `9090` (operations), sets `HODOR_EXT_AUTHZ_LISTEN_ADDR=0.0.0.0:9191`, `HODOR_OPS_ADDR=0.0.0.0:9090` and `HODOR_EXT_AUTHZ_CONFIG=/etc/hodor-ext-authz/config.json`, and has `ENTRYPOINT ["/usr/local/bin/hodor-ext-authz"]`. The release workflow builds, joins and signs it beside the image of Hodor, as `ghcr.io/<owner>/hodor-ext-authz`.
+
+### `cert-manager-issuer.Dockerfile`
+
+The image of `hodor-cert-manager-issuer` alone (Issue-118, Decision 0074). Two stages: `build` (`rust:1.98-bookworm`, `cargo build --release --locked --package hodor-cert-manager-issuer --bin hodor-cert-manager-issuer`, with the same cache mounts and touch as `Dockerfile`) and the final `gcr.io/distroless/cc-debian12:nonroot` with the binary in `/usr/local/bin/`. It runs as `nonroot:nonroot`, exposes `9090` (operations), sets `HODOR_OPS_ADDR=0.0.0.0:9090` and `HODOR_CERT_MANAGER_ISSUER_CONFIG=/etc/hodor-cert-manager-issuer/config.json`, and has `ENTRYPOINT ["/usr/local/bin/hodor-cert-manager-issuer"]`; `jwk --key <file>` prints a key's public part instead. The release workflow builds, joins and signs it beside the image of Hodor, as `ghcr.io/<owner>/hodor-cert-manager-issuer`.
+
 ### `compose.yaml` (project `name: hodor`)
 
 | Service | Image | Role | Host port (override variable, default) |
@@ -33,6 +41,8 @@ The final image runs as `nonroot:nonroot`, exposes `8080` and `9090`, sets `HODO
 | `provider` | `node:24-bookworm-slim` | `node /provider.mjs`, mounted read-only from `../dev-provider/provider.mjs`, with `PORT`, `ISSUER=http://provider:9400`, `BROWSER_URL`, `CLIENT_ID`, `CLIENT_SECRET`; health check fetches `/health` | `HODOR_PROVIDER_PORT`, 9400 |
 | `saml-provider` | `node:24-bookworm-slim` | `node /saml-provider/saml-provider.mjs`, the whole `../dev-saml-provider` directory mounted read-only, with `PORT`, `ENTITY_ID=urn:hodor:development-saml-provider`, `BROWSER_URL`; health check fetches `/health` | `HODOR_SAML_PROVIDER_PORT`, 9500 |
 | `webhook-receiver` | `node:24-bookworm-slim` | `node /receiver.mjs`, `../dev-webhook-receiver/receiver.mjs` mounted read-only, with `PORT=9600`; health check fetches `/health` | `HODOR_WEBHOOK_RECEIVER_PORT`, 9600 |
+| `openbao` | `openbao/openbao:2.7.2` | `server -dev`, in memory, root token `development-root-token`; health check `bao status` | `HODOR_OPENBAO_PORT`, 8200 |
+| `openbao-setup` | `openbao/openbao:2.7.2` | `../openbao/setup.sh`, once: Transit at `hodor-transit`, the policy `../openbao/hodor-policy.hcl`, the AppRole `hodor` with placeholder identifiers. The server and the worker wait for it, and are given OpenBao's settings, with `HODOR_KEY_PROVIDER` from the caller's environment, `local` by default | None |
 | `directory` | `osixia/openldap:1.5.0` | LDAP directory for `example.org` with a read-only user `readonly`, transport security off (`LDAP_TLS: "false"`), seeded from `../dev-directory/people.ldif`; health check `ldapwhoami` as the read-only user | none (inside the stack only) |
 | `server` | `hodor:dev` (default entrypoint `hodor-server`) | the server, as database role `hodor_server`; health check `hodor-cli probe --addr 127.0.0.1:9090 --path /readyz` | `HODOR_HTTP_PORT`, 8080; `HODOR_OPS_PORT`, 9090 |
 | `worker` | `hodor:dev`, entrypoint `hodor-worker` | the worker, as `hodor_worker` and `hodor_worker_platform`, sending mail to `smtp://mail:1025`; same `probe` health check | none |

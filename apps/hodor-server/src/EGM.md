@@ -35,6 +35,10 @@ Configuration (`Config`, clap, command name `hodor-server`):
 | `--open-policy-agent-tenant-addresses` | `HODOR_OPEN_POLICY_AGENT_TENANT_ADDRESSES` | empty, comma separated `tenant-identifier=origin` |
 | `--open-policy-agent-token` | `HODOR_OPEN_POLICY_AGENT_TOKEN` | unset; its value is hidden from the help text |
 | `--open-policy-agent-revision-lag-seconds` | `HODOR_OPEN_POLICY_AGENT_REVISION_LAG_SECONDS` | 300; the engine refuses decisions of an older revision after that (`StoredRevisions` over `PgBundleStore`) |
+| `--trusted-proxies` | `HODOR_TRUSTED_PROXIES` | empty, comma separated address ranges; `trusted_proxies` refuses one that does not read or holds every address |
+| `--forwarded-header` | `HODOR_FORWARDED_HEADER` | `x-forwarded-for`, or `forwarded`, or `none` |
+| `--client-identity-header` | `HODOR_CLIENT_IDENTITY_HEADER` | empty: no header of the caller's identity is read; or `client-cert`, `x-forwarded-client-cert`, `l5d-client-id`, given to `TrustedProxies::with_identity_header`. Another value stops the server; a header named without a trusted proxy is logged as never read |
+| `--gateway-identities` | `HODOR_GATEWAY_IDENTITIES` | empty: the forwarded header is read from every trusted proxy; or SPIFFE identifiers and Linkerd identities separated by commas, read by `parse_gateways` and given to `TrustedProxies::with_gateways` with `X509CertificateCheck`. An identity that does not read stops the server, and so do gateways named with no trusted proxy, no header of the caller's identity, or `HODOR_FORWARDED_HEADER=none` |
 | `--directory-hosts` | `HODOR_DIRECTORY_HOSTS` | empty, comma separated `host:port` |
 | `--password-hash-memory-kibibytes` | `HODOR_PASSWORD_HASH_MEMORY_KIBIBYTES` | `19 * 1024` |
 | `--password-hash-passes` | `HODOR_PASSWORD_HASH_PASSES` | 2 |
@@ -48,14 +52,28 @@ Routers, as assembled in `run`:
   `InteractionState` built by `interaction`, merged with
   `hodor_protocol_http::consent_routes`, whose `ConsentState` shares the
   `ConsentService` and `SessionService` of the authorization endpoint.
+  That endpoint's `AuthorizationCodeService` checks an `id_token_hint`
+  with `with_id_token_hints` when `keys` built a `KeyService`, and compares
+  a pairwise client's hint through `with_pairwise_subjects` when
+  `HODOR_SECRET_KEYS` is set; without keys a hint is refused (Issue-125).
 - `/api/v1/admin` nests `hodor_protocol_http::admin_routes` with the
-  `AdminState` built by `administration`; its `webhooks` is the
+  `AdminState` built by `administration`; its `trust_domains` is the
+  `TrustDomainService` of `trust_domains`, over `PgTrustDomainStore`, whose
+  bundle endpoints are checked and fetched by a `GuardedHttpClient` with
+  the development exception, whatever the keys; its `webhooks` is the
   `WebhookService` of `webhooks`, with `HODOR_SECRET_KEYS` only, whose
   addresses are checked by a `GuardedHttpClient` with the development
   exception; its `applications` is an `ApplicationService` given such a
   client too, with `with_destinations`, to check clients' back-channel
-  logout addresses and sector identifier addresses, and another with
-  `with_sector_documents`, to fetch the latter.
+  logout addresses, sector identifier addresses and key set addresses, and
+  another with `with_sector_documents`, to fetch sector identifier
+  addresses.
+- `client_key_sets` builds the one `ClientKeySets` of the server, over a
+  `GuardedHttpClient` with the development exception that reads at most
+  `MAX_KEY_SET_BYTES` of an answer, given to the authorization endpoint's
+  `AuthorizationCodeService` and to the `TokenService` of `token` with
+  `with_client_key_sets`, so that both endpoints share the keys kept from
+  clients' addresses (Issue-136, Decision 0079).
 - `/console/api` nests `hodor_protocol_http::console_routes`.
 - `/api/v1/authorization` nests `hodor_protocol_http::authorization_api_routes`
   with the `AuthorizationApiState` built by `authorization_api`, only when
@@ -81,10 +99,32 @@ Routers, as assembled in `run`:
   (`ApiKeyService::revoke_all_of_in`, `revoke_credentials`). `api_keys`
   builds the `ApiKeyService` over `PgApiKeyStore` that the administration
   interface and the Authorization API (`ApiKeyAccess`) use.
+- `HODOR_CERTIFICATE_AUTHORITY` (`certificate_authority`, read by
+  `AuthoritySetting::parse`): `off` by default; `on` or `development`
+  builds an `AuthorityService` in `authority` (over `PgAuthorityStore`,
+  `PgTrustDomainStore`, `PgIntermediateStore`, `X509Certificates` and the
+  `KeyProviders` of
+  `key_providers`, whose `authorities()` makes its key), given to the
+  `AdminState` and merged as `authority_bundle_routes` into the tenant
+  routes. With it and the keys, `AdminState.certificate_signing` is the
+  `ResourceAccessService` of `resource_access`, which the signing of
+  intermediates checks access tokens for the audience
+  `urn:hodor:certificate-authority` with. Without `HODOR_SECRET_KEYS`, or with another value, the server
+  stops at startup with `keys.authority_setting_invalid`. The
+  `TrustDomainService` of `trust_domains` reads withdrawn keys from
+  `PgIntermediateStore` whatever the setting, so that the token endpoint
+  refuses a path through a withdrawn intermediate.
 - `/oauth2/jwks`: `hodor_protocol_http::key_set_routes(KeyService)` is merged
   into the tenant routes when `keys` built a `KeyService` (`PgKeyStore`,
   `LocalKeyProvider` over `HODOR_SECRET_KEYS`); otherwise a warning is logged
   and the address is not served.
+- The token, revocation and introspection endpoints share the
+  `TokenService` built by `token`, given `with_trust_domains` (the
+  `TrustDomainService` of `trust_domains`) and `with_certificate_check`
+  (`X509CertificateCheck`), so that JWT-SVIDs and clients of
+  `tls_client_auth`, `spiffe_x509` and `linkerd_identity` are checked
+  against the tenant's trust domains; the discovery document names those
+  methods from `TrustedProxies::identity_header`.
 - `/opa/…`: `hodor_protocol_http::policy_agent_routes(BundleService)` is
   merged into the site routes, with `PgInstanceStore`, `PgBundleStore`,
   `PgInstanceStatusStore` and `PgUploadedDecisionStore`. The server never
@@ -104,9 +144,13 @@ Adapters implemented here:
 - `TenantLockout` implements `hodor_federation::api::LockoutPolicy`, reading
   the tenant's lockout settings into `LockoutRules`.
 - `ServerSubjects` (`subjects.rs`) implements
-  `hodor_authorization::api::SubjectAttributeSource`: a user's `status` and
-  `kind` through `IdentityService::get`, a client's `application`,
-  `client_type` and `enabled` through `ApplicationService::client`, and its
+  `hodor_authorization::api::SubjectAttributeSource`: a user's `status`,
+  `kind`, `groups` and `organizations` in one transaction of its
+  `units_of_work`, through `IdentityService::get_in`,
+  `GroupService::effective_groups_in` and
+  `OrganizationService::organizations_of_in`, never kept between
+  decisions; a client's `application`, `client_type` and `enabled` through
+  `ApplicationService::client`, and its
   `principal` only when it is bound to one; an identifier that does not
   parse or is not found has no attributes.
 - `ServerStanding` (`standing.rs`), built by `standing`, implements
@@ -123,11 +167,15 @@ Adapters implemented here:
 - `ServerClaimSources` (`standing.rs`, `ServerClaimSources::over(database,
   clock)`) implements `hodor_oauth::api::PersonClaimSources` over
   `IdentityService::get` (the display name, the primary username and
-  email address, whether it is verified, the locale; nothing for an
-  unknown user) and `OrganizationService::get` (the name, or none).
+  email address, whether it is verified, the locale and the person's
+  standard claims, which UserInfo and the claim mappers read; nothing for
+  an unknown user) and `OrganizationService::get` (the name, or none).
   `claim_mapping` wires both with `PgClaimMapperStore` into the
   `ClaimMapping` of the token endpoint and of UserInfo; `administration`
-  gives `AdminState.claim_mappers` its `ClaimMapperService`.
+  gives `AdminState.claim_mappers` its `ClaimMapperService`, and
+  `AdminState.client_registration` its `ClientRegistrationService` on
+  `PgClientRegistrationStore`, `PgInitialAccessTokenStore` and
+  `PgApplicationStore`.
 
 Wiring functions: `interaction` (Argon2id hashing, identity, credential,
 WebAuthn with the relying party of `HODOR_PUBLIC_URL`, session, attempt
@@ -148,7 +196,8 @@ too),
 through `with_directories`, `LdapDirectoryClient`), `keys`, `key_rotation`
 (the default policy with `HODOR_KEY_OVERLAP_HOURS`), `token` (the token
 endpoint, with `PgRefreshTokenStore`, `ServerStanding`, the secret box,
-the retry window of `HODOR_REFRESH_RETRY_SECONDS` and `pairwise_subjects`),
+the retry window of `HODOR_REFRESH_RETRY_SECONDS`, `pairwise_subjects`, and
+the `TrustDomainService` of `trust_domains`, to check JWT-SVIDs),
 `pairwise_subjects` (`PairwiseSubjects` over `PgPairwiseSecretStore`, a
 secret box and `AwsLcHmacSha256`, given to the token endpoint and to
 `logout`, the end-session endpoint), `consents` (the

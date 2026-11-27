@@ -36,6 +36,54 @@ secret:
     secretKeys: secret-keys
     # Address of the mail server, such as smtps://user:password@mail.example.com:465. Read when mail.enabled.
     smtpUrl: smtp-url
+    # The role identifier and secret identifier of Hodor's AppRole in OpenBao. Read when keyProvider.openbao
+    # signs in with an AppRole.
+    openbaoRoleId: openbao-role-id
+    openbaoSecretId: openbao-secret-id
+
+# Where the tenants' signing keys are made and used. How to prepare OpenBao, step by step:
+# docs/operations/keys-in-openbao.md.
+keyProvider:
+  # local: inside the servers and workers, wrapped under secret-keys. openbao: in OpenBao's Transit secrets
+  # engine, which signs and never lets a key out. Only new keys follow this value; each key keeps signing where
+  # it was made. The keys of secrets at rest are local either way.
+  signingKeys: local
+  openbao:
+    # true: the servers and workers reach OpenBao, and sign with the keys made there. Required for
+    # signingKeys: openbao, and kept true afterwards for as long as a key made there may sign.
+    enabled: false
+    # Its address: https, the name and the port, no path, such as https://openbao.openbao.svc:8200. Required
+    # when enabled. Reached directly, never through a proxy; with networkPolicy.egress, list it in `to`.
+    address: ""
+    # Where Transit is mounted for Hodor. The policy in deploy/openbao/hodor-policy.hcl names this mount.
+    transitMount: hodor-transit
+    # How Hodor signs in: kubernetes, with a token of the release's service account made for OpenBao alone, or
+    # approle, with the identifiers in the Secret (secret.keys.openbaoRoleId and openbaoSecretId).
+    authMethod: kubernetes
+    # Where that method is mounted in OpenBao. Empty: kubernetes or approle.
+    authMount: ""
+    # The role of OpenBao's Kubernetes method that gives Hodor its policy.
+    kubernetesRole: hodor
+    # The audience of the service account token Hodor presents; the role must name it.
+    tokenAudience: openbao
+    # The ConfigMap, in the namespace of the release, holding the certificate of the authority that issued
+    # OpenBao's certificate, and its key in the ConfigMap. Empty: the authorities the image trusts. When set,
+    # only this authority is trusted for OpenBao.
+    certificateAuthority:
+      configMap: ""
+      key: ca.crt
+    # Milliseconds one request to OpenBao may take, 1 to 60000. A signature waits for it.
+    timeoutMs: 5000
+
+# The certificate authority a tenant may have, which signs the intermediates of its meshes. Off unless
+# enabled. How it works: docs/architecture/contexts/keys.md, "The certificate authority of a tenant".
+certificateAuthority:
+  # true: a tenant's administrator may create the tenant's authority, whose key OpenBao makes and keeps
+  # (keyProvider.openbao). Without OpenBao, creating one is refused.
+  enabled: false
+  # true, with enabled: the local key provider is accepted too, and the key is kept where Hodor can read it.
+  # For a machine of one's own, never for an installation that serves anyone.
+  development: false
 
 # The messages Hodor sends: address verification and password recovery.
 mail:
@@ -52,8 +100,48 @@ directoryHosts: []
 # one limit on sign-in attempts. Name the range the ingress controller's pods get their addresses from, and
 # turn on networkPolicy so that nothing else in that range can connect.
 trustedProxies: []
-# The header they write: x-forwarded-for or forwarded.
+# The header they write: x-forwarded-for or forwarded; or none, when they are named only for the caller's
+# identity below.
 forwardedHeader: x-forwarded-for
+# The header the proxy in front of Hodor writes the caller's identity into, for workloads of a service mesh:
+# client-cert, x-forwarded-client-cert or l5d-client-id. Read only from trustedProxies. Empty: none is read, or,
+# with mesh.provider, the header of that mesh.
+clientIdentityHeader: ""
+# The identities of the ingress gateways of a service mesh, whose forwarded address is believed: SPIFFE
+# identifiers, such as spiffe://cluster.local/ns/istio-system/sa/istio-ingressgateway-service-account, or
+# Linkerd identities, such as gateway.edge.serviceaccount.identity.linkerd.cluster.local. Set: the forwarded
+# address is read only from a request whose caller, in the header of the caller's identity, is one of them;
+# every other workload is known by the address of the proxy beside Hodor. Empty: it is read from every
+# trusted proxy, or, with mesh.provider, from none.
+gatewayIdentities: []
+
+# Hodor's pods with the proxy of a service mesh beside them. Istio's ambient mode needs nothing here: see
+# "Inside a service mesh" in docs/operations/install-on-kubernetes.md.
+mesh:
+  # istio or linkerd: the server's and the worker's pods join that mesh, and so do hodor-ext-authz's and
+  # hodor-cert-manager-issuer's; the health checks on the operations port stay out of its proxy; the proxy is
+  # a trusted proxy for the caller's identity; and the forwarded address is read only from
+  # gatewayIdentities. Empty: nothing is done for a mesh.
+  provider: ""
+  # The migration job joins the mesh too. Keep it with native sidecars, which both meshes inject on
+  # Kubernetes 1.33 and newer. With a classic sidecar the job never completes: set false, if the database can
+  # be reached from outside the mesh.
+  injectMigration: true
+  # Ports whose outgoing connections bypass the proxy. With Linkerd, 25 and 587 for a mail server that speaks
+  # first, which the proxy otherwise holds for about ten seconds.
+  skipOutboundPorts: []
+  # The namespace of the mesh's control plane, which the pods may reach when networkPolicy.egress.enabled.
+  # Empty: istio-system for Istio, linkerd for Linkerd.
+  controlPlaneNamespace: ""
+
+# The authorities Hodor's outbound requests trust, in place of the public ones the image holds: a ConfigMap
+# of yours, made before the chart is installed, whose key holds certificates in PEM. For an identity
+# provider or a trust domain's bundle endpoint served under an authority of your own. The file replaces the
+# image's authorities, so it holds the public ones too when Hodor also calls public addresses.
+# Empty: the image's authorities.
+outboundAuthorities:
+  configMap: ""
+  key: authorities.pem
 
 log:
   # json or pretty.
@@ -156,8 +244,10 @@ ingress:
 
 networkPolicy:
   enabled: false
-  # Who may reach the servers' public port, as Kubernetes writes network policy peers. Empty: anyone in
-  # the cluster. For an ingress controller in the namespace ingress-nginx:
+  # Who may reach the servers' public port, as Kubernetes writes network policy peers, and with
+  # mesh.provider linkerd their port 4143. When it names anyone, the release's own hodor-ext-authz and
+  # hodor-cert-manager-issuer may reach them too. Empty: anyone in the cluster. For an ingress controller in
+  # the namespace ingress-nginx:
   #   - namespaceSelector:
   #       matchLabels:
   #         kubernetes.io/metadata.name: ingress-nginx
@@ -168,6 +258,143 @@ networkPolicy:
     # Where Hodor's pods may connect, as Kubernetes writes egress rules: the database, the mail server,
     # the collector of metrics and traces, the identity providers and directories.
     to: []
+
+# hodor-ext-authz: Envoy's external authorization for the proxies of a service mesh, each check answered by
+# Hodor's Authorization API. Off by default. docs/operations/hodor-ext-authz.md says what it does and how to
+# set its tenant up; docs/operations/install-on-kubernetes.md lists these values.
+extAuthz:
+  enabled: false
+  image:
+    # Its own image. Empty tag: the version this chart was made for.
+    repository: ghcr.io/ortisun/hodor-ext-authz
+    tag: ""
+  replicas: 2
+  # The tenant's slug. Required when enabled.
+  tenant: ""
+  # Where it reaches Hodor. Empty: this release's Service, http://<release>.<namespace>.svc.cluster.local:<port>.
+  hodorUrl: ""
+  # The tenant's issuer, which the checked token's iss must be. Empty: publicUrl followed by /t/<tenant>.
+  issuer: ""
+  # How long one call to Hodor may take before the request is denied, from 1 to 60000.
+  timeoutMilliseconds: 1000
+  # Where the claims of the token the proxy checked are. Empty: none is read, and the subject is always the
+  # caller's identity. Either
+  #   metadata:
+  #     namespace: envoy.filters.http.jwt_authn
+  #     key: hodor
+  # or
+  #   header: x-hodor-token-claims
+  token: {}
+  # One entry per protected application:
+  #   - destination: spiffe://cluster.local/ns/shop/sa/orders
+  #     clientId: <the application's client, bound to the identity of this service account>
+  #     audience: <the audience of the application's resource server, which a token's aud must hold>
+  #     routes:
+  #       - methods: [GET]
+  #         path: /orders/{id}
+  #         resourceType: order
+  #         action: read
+  applications: []
+  # Its own Kubernetes service account, which gives it its mesh identity.
+  serviceAccount:
+    # false: the pods use the service account named below, which must exist.
+    create: true
+    # Empty: "<release>-ext-authz".
+    name: ""
+    annotations: {}
+  service:
+    # The gRPC port the mesh's provider names.
+    port: 9191
+  resources:
+    requests:
+      cpu: 100m
+      memory: 32Mi
+    limits:
+      memory: 128Mi
+  podDisruptionBudget:
+    enabled: true
+    maxUnavailable: 1
+  networkPolicy:
+    # With networkPolicy.enabled, who may reach its gRPC port, as Kubernetes writes network policy peers,
+    # and with mesh.provider linkerd its port 4143. Empty: anyone in the cluster. Name the namespaces of the
+    # protected applications, whose proxies call it.
+    ingressFrom: []
+  extraEnvironment: []
+  # Annotations of its pods. With mesh.provider, the chart asks for the mesh's proxy itself; these win over
+  # its annotations.
+  podAnnotations: {}
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+
+# hodor-cert-manager-issuer: cert-manager's outside issuer, which signs the approved requests for an authority of
+# its HodorIssuer and HodorClusterIssuer through the tenant's certificate authority. Off by default.
+# docs/operations/hodor-cert-manager-issuer.md says what it does and how to set its tenant up;
+# docs/operations/install-on-kubernetes.md lists these values. cert-manager must be installed first.
+certManagerIssuer:
+  enabled: false
+  # true: the release holds the issuer alone, for a cluster of meshes where Hodor does not run. None of Hodor's
+  # own values is then needed, and hodorUrl is required.
+  only: false
+  image:
+    # Its own image. Empty tag: the version this chart was made for.
+    repository: ghcr.io/ortisun/hodor-cert-manager-issuer
+    tag: ""
+  # The tenant's slug. Required when enabled.
+  tenant: ""
+  # Where it reaches Hodor. Empty: this release's Service, http://<release>.<namespace>.svc.cluster.local:<port>.
+  # Required with only.
+  hodorUrl: ""
+  # The tenant's issuer, which its assertions name as their audience. Empty: publicUrl followed by /t/<tenant>,
+  # or with only, hodorUrl followed by /t/<tenant>.
+  issuer: ""
+  # How long one call to Hodor may take, from 1 to 60000.
+  timeoutMilliseconds: 10000
+  # The client of the issuer's service account in Hodor, holding the scope certificate-authority:sign. Required
+  # when enabled.
+  clientId: ""
+  authentication:
+    # forwarded: the client proves who it is with the identity of the issuer's pod in its mesh, which its sidecar
+    # presents; nothing secret is held. private_key_jwt: with the key in the Secret below.
+    method: forwarded
+    privateKeyJwt:
+      # The Secret, in the release's namespace, that holds the key in PEM. Required with private_key_jwt.
+      secretName: ""
+      # The key of the Secret that holds it.
+      key: key.pem
+      # The kid of the key among the client's keys, if it has more than one.
+      keyId: ""
+  # true: the chart defines the kinds HodorIssuer and HodorClusterIssuer. false: they are defined already, by
+  # another release in the same cluster.
+  customResourceDefinitions: true
+  # cert-manager's own approver approves every request of the issuers it may approve for. true: it may approve
+  # for HodorIssuer and HodorClusterIssuer, so that whoever can create a CertificateRequest naming one has it
+  # approved. false: approve otherwise, with approver-policy for example.
+  approveWithCertManager:
+    enabled: false
+    # cert-manager's own service account.
+    serviceAccount: cert-manager
+    namespace: cert-manager
+  # Its own Kubernetes service account, which its ClusterRole is bound to and which gives it its mesh identity.
+  serviceAccount:
+    # false: the pod uses the service account named below, which must exist.
+    create: true
+    # Empty: "<release>-cert-manager-issuer".
+    name: ""
+    annotations: {}
+  resources:
+    requests:
+      cpu: 50m
+      memory: 32Mi
+    limits:
+      memory: 128Mi
+  extraEnvironment: []
+  # Annotations of its pods. With mesh.provider, the chart asks for the mesh's proxy itself; these win over
+  # its annotations.
+  podAnnotations: {}
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
 
 serviceAccount:
   # false: the pods use the service account named below, which must exist.

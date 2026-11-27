@@ -4,12 +4,13 @@
 
 use crate::uow::{connection, database_error};
 use hodor_identity::api::{
-    IdentifierId, IdentifierKind, LoginIdentifier, NormalizedIdentifier, Profile, User, UserKind,
-    UserRepository, UserSnapshot, UserStatus, WorkloadRepository,
+    IdentifierId, IdentifierKind, LoginIdentifier, NormalizedIdentifier, PostalAddress, Profile,
+    StandardClaims, User, UserKind, UserRepository, UserSnapshot, UserStatus, WorkloadRepository,
 };
 use hodor_kernel::{DomainError, TenantId, Timestamp, UnitOfWork, UserId};
-use sqlx::PgConnection;
+use sqlx::postgres::PgRow;
 use sqlx::types::Uuid;
+use sqlx::{PgConnection, Row};
 
 const VALUE_CONSTRAINT: &str = "user_identifier_value_unique";
 
@@ -17,17 +18,16 @@ const VALUE_CONSTRAINT: &str = "user_identifier_value_unique";
 #[derive(Debug, Clone, Copy, Default)]
 pub struct PgUserRepository;
 
-type UserRow = (
-    Uuid,
-    String,
-    String,
-    Option<String>,
-    Option<String>,
-    Option<String>,
-    Timestamp,
-    Timestamp,
-    i32,
-);
+/// The columns of a user's standard claims, in the order
+/// [`bind_claims`] binds them: a literal, so that every statement stays one.
+macro_rules! claim_columns {
+    () => {
+        "given_name, family_name, middle_name, nickname, profile, picture, website, gender, \
+         birthdate, zoneinfo, phone_number, phone_number_verified, address_formatted, \
+         address_street_address, address_locality, address_region, address_postal_code, \
+         address_country"
+    };
+}
 type IdentifierRow = (
     Uuid,
     String,
@@ -62,36 +62,91 @@ fn stored_version(user: &User) -> Result<i32, DomainError> {
     i32::try_from(user.snapshot().version).map_err(|_| corrupted("version out of range"))
 }
 
+fn claims_of(row: &PgRow) -> Result<StandardClaims, sqlx::Error> {
+    let text = |column: &str| row.try_get::<Option<String>, _>(column);
+    let address = PostalAddress {
+        formatted: text("address_formatted")?,
+        street_address: text("address_street_address")?,
+        locality: text("address_locality")?,
+        region: text("address_region")?,
+        postal_code: text("address_postal_code")?,
+        country: text("address_country")?,
+    };
+    Ok(StandardClaims {
+        given_name: text("given_name")?,
+        family_name: text("family_name")?,
+        middle_name: text("middle_name")?,
+        nickname: text("nickname")?,
+        profile: text("profile")?,
+        picture: text("picture")?,
+        website: text("website")?,
+        gender: text("gender")?,
+        birthdate: text("birthdate")?,
+        zoneinfo: text("zoneinfo")?,
+        phone_number: text("phone_number")?,
+        phone_number_verified: row.try_get("phone_number_verified")?,
+        address: (!address.is_empty()).then_some(address),
+    })
+}
+
+/// Binds the columns of [`CLAIM_COLUMNS`], in their order.
+fn bind_claims<'q>(
+    query: sqlx::query::Query<'q, sqlx::Postgres, sqlx::postgres::PgArguments>,
+    claims: &'q StandardClaims,
+) -> sqlx::query::Query<'q, sqlx::Postgres, sqlx::postgres::PgArguments> {
+    let address = claims.address.as_ref();
+    let part = |of: fn(&PostalAddress) -> &Option<String>| address.and_then(|a| of(a).as_deref());
+    query
+        .bind(claims.given_name.as_deref())
+        .bind(claims.family_name.as_deref())
+        .bind(claims.middle_name.as_deref())
+        .bind(claims.nickname.as_deref())
+        .bind(claims.profile.as_deref())
+        .bind(claims.picture.as_deref())
+        .bind(claims.website.as_deref())
+        .bind(claims.gender.as_deref())
+        .bind(claims.birthdate.as_deref())
+        .bind(claims.zoneinfo.as_deref())
+        .bind(claims.phone_number.as_deref())
+        .bind(claims.phone_number_verified)
+        .bind(part(|a| &a.formatted))
+        .bind(part(|a| &a.street_address))
+        .bind(part(|a| &a.locality))
+        .bind(part(|a| &a.region))
+        .bind(part(|a| &a.postal_code))
+        .bind(part(|a| &a.country))
+}
+
 async fn load_user(
     connection: &mut PgConnection,
     tenant: TenantId,
     id: Uuid,
 ) -> Result<Option<User>, DomainError> {
-    let row: Option<UserRow> = sqlx::query_as(
-        r#"SELECT id, kind, status, status_reason, display_name, locale,
-                  created_at, updated_at, version
-           FROM identity."user"
-           WHERE tenant_id = $1 AND id = $2"#,
-    )
+    let row: Option<PgRow> = sqlx::query(concat!(
+        "SELECT id, kind, status, status_reason, display_name, locale, created_at, updated_at, \
+         version, ",
+        claim_columns!(),
+        r#" FROM identity."user" WHERE tenant_id = $1 AND id = $2"#
+    ))
     .bind(tenant.as_uuid())
     .bind(id)
     .fetch_optional(&mut *connection)
     .await
     .map_err(|e| database_error(&e))?;
-    let Some((
-        id,
-        kind,
-        status,
-        status_reason,
-        display_name,
-        locale,
-        created_at,
-        updated_at,
-        version,
-    )) = row
-    else {
+    let Some(row) = row else {
         return Ok(None);
     };
+    let read = |error: sqlx::Error| database_error(&error);
+    let id: Uuid = row.try_get("id").map_err(read)?;
+    let kind: String = row.try_get("kind").map_err(read)?;
+    let status: String = row.try_get("status").map_err(read)?;
+    let status_reason: Option<String> = row.try_get("status_reason").map_err(read)?;
+    let display_name: Option<String> = row.try_get("display_name").map_err(read)?;
+    let locale: Option<String> = row.try_get("locale").map_err(read)?;
+    let created_at: Timestamp = row.try_get("created_at").map_err(read)?;
+    let updated_at: Timestamp = row.try_get("updated_at").map_err(read)?;
+    let version: i32 = row.try_get("version").map_err(read)?;
+    let claims = claims_of(&row).map_err(read)?;
 
     let rows: Vec<IdentifierRow> = sqlx::query_as(
         "SELECT id, kind, value_normalized, value_display, verified_at, is_primary, created_at
@@ -132,6 +187,7 @@ async fn load_user(
             display_name,
             locale,
         },
+        claims,
         identifiers,
         created_at,
         updated_at,
@@ -174,12 +230,14 @@ impl UserRepository for PgUserRepository {
         let state = user.snapshot();
         let version = stored_version(user)?;
         let connection = connection(uow)?;
-        sqlx::query(
+        let query = sqlx::query(concat!(
             r#"INSERT INTO identity."user"
                    (tenant_id, id, kind, status, status_reason, display_name, locale,
-                    created_at, updated_at, version)
-               VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)"#,
-        )
+                    created_at, updated_at, version, "#,
+            claim_columns!(),
+            ") VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, \
+             $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28)"
+        ))
         .bind(tenant.as_uuid())
         .bind(state.id.as_uuid())
         .bind(state.kind.as_str())
@@ -189,10 +247,11 @@ impl UserRepository for PgUserRepository {
         .bind(&state.profile.locale)
         .bind(state.created_at)
         .bind(state.updated_at)
-        .bind(version)
-        .execute(&mut *connection)
-        .await
-        .map_err(|e| database_error(&e))?;
+        .bind(version);
+        bind_claims(query, &state.claims)
+            .execute(&mut *connection)
+            .await
+            .map_err(|e| database_error(&e))?;
         insert_identifiers(connection, tenant, user).await
     }
 
@@ -261,10 +320,16 @@ impl UserRepository for PgUserRepository {
         let version = stored_version(user)?;
         let connection = connection(uow)?;
 
-        let updated = sqlx::query(
+        let query = sqlx::query(
             r#"UPDATE identity."user"
                SET status = $3, status_reason = $4, display_name = $5, locale = $6,
-                   updated_at = $7, version = version + 1
+                   updated_at = $7, version = version + 1,
+                   given_name = $9, family_name = $10, middle_name = $11, nickname = $12,
+                   profile = $13, picture = $14, website = $15, gender = $16,
+                   birthdate = $17, zoneinfo = $18, phone_number = $19,
+                   phone_number_verified = $20, address_formatted = $21,
+                   address_street_address = $22, address_locality = $23,
+                   address_region = $24, address_postal_code = $25, address_country = $26
                WHERE tenant_id = $1 AND id = $2 AND version = $8"#,
         )
         .bind(tenant.as_uuid())
@@ -274,11 +339,12 @@ impl UserRepository for PgUserRepository {
         .bind(&state.profile.display_name)
         .bind(&state.profile.locale)
         .bind(state.updated_at)
-        .bind(version)
-        .execute(&mut *connection)
-        .await
-        .map_err(|e| database_error(&e))?
-        .rows_affected();
+        .bind(version);
+        let updated = bind_claims(query, &state.claims)
+            .execute(&mut *connection)
+            .await
+            .map_err(|e| database_error(&e))?
+            .rows_affected();
 
         if updated == 0 {
             let exists: bool = sqlx::query_scalar(

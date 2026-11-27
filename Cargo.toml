@@ -3,16 +3,18 @@ resolver = "3"
 members = ["crates/*", "apps/*", "tests/*"]
 
 [workspace.package]
-version = "0.3.0"
+version = "0.4.0"
 edition = "2024"
 rust-version = "1.98"
 publish = false
 repository = "https://github.com/ortisun/hodor"
+license = "MIT"
 
 [workspace.dependencies]
 hodor-adapters-crypto = { path = "crates/adapters-crypto" }
 hodor-adapters-postgres = { path = "crates/adapters-postgres" }
 hodor-adapters-http = { path = "crates/adapters-http" }
+hodor-adapters-kms = { path = "crates/adapters-kms" }
 hodor-adapters-ldap = { path = "crates/adapters-ldap" }
 hodor-adapters-policy-check = { path = "crates/adapters-policy-check" }
 hodor-adapters-smtp = { path = "crates/adapters-smtp" }
@@ -22,6 +24,8 @@ hodor-authorization = { path = "crates/authorization" }
 hodor-authorization-native = { path = "crates/authorization-native" }
 hodor-authorization-opa = { path = "crates/authorization-opa" }
 hodor-credential = { path = "crates/credential" }
+hodor-ext-authz = { path = "apps/hodor-ext-authz" }
+hodor-cert-manager-issuer = { path = "apps/hodor-cert-manager-issuer" }
 hodor-federation = { path = "crates/federation" }
 hodor-identity = { path = "crates/identity" }
 hodor-kernel = { path = "crates/kernel" }
@@ -34,6 +38,8 @@ hodor-provisioning = { path = "crates/provisioning" }
 hodor-saml = { path = "crates/saml" }
 hodor-session = { path = "crates/session" }
 hodor-tenant = { path = "crates/tenant" }
+# Only for tests: how they start containers and reach them.
+hodor-test-containers = { path = "tests/containers" }
 hodor-webhooks = { path = "crates/webhooks" }
 
 argon2 = "0.6"
@@ -43,6 +49,10 @@ axum = "0.8"
 cargo_metadata = "0.23"
 base64 = "0.22"
 clap = { version = "4", features = ["derive", "env"] }
+# Envoy's types, generated from its `.proto` files and shipped compiled, so
+# that no build needs `protoc` or the network (Decision 0058). Only
+# hodor-ext-authz, and the server's tests that call it.
+envoy-types = "0.7"
 proptest = "1"
 opentelemetry = "0.33"
 opentelemetry-otlp = { version = "0.33", default-features = false, features = [
@@ -54,11 +64,27 @@ opentelemetry-otlp = { version = "0.33", default-features = false, features = [
 opentelemetry_sdk = "0.33"
 rcgen = { version = "0.13", default-features = false, features = ["aws_lc_rs", "pem"] }
 reqwest = { version = "0.13", default-features = false }
+# X.509 paths of forwarded certificates (Decision 0056), and of the
+# certificates of a tenant's authority, whose URI name constraints Hodor
+# reads itself (Decision 0062); only hodor-adapters-crypto.
+rustls-pki-types = { version = "1", features = ["std"] }
+rustls-webpki = { version = "0.103", default-features = false, features = ["std", "aws-lc-rs"] }
 form_urlencoded = "1"
+futures = "0.3"
 getrandom = "0.4"
 http-body-util = "0.1"
 # Only to check, in tests, the tokens Hodor signs with a library of its own.
 jsonwebtoken = { version = "12", default-features = false }
+# The Kubernetes client for Rust and its controller runtime (Decision 0074);
+# only hodor-cert-manager-issuer. The oldest version of Kubernetes it reads
+# is the earliest k8s-openapi supports.
+k8s-openapi = { version = "0.29", default-features = false, features = ["std", "earliest"] }
+kube = { version = "5", default-features = false, features = [
+    "client",
+    "runtime",
+    "rustls-tls",
+    "aws-lc-rs",
+] }
 ldap3 = { version = "0.12", default-features = false, features = ["tls-rustls-aws-lc-rs"] }
 miniz_oxide = "0.9"
 lettre = { version = "0.11", default-features = false, features = [
@@ -68,6 +94,9 @@ lettre = { version = "0.11", default-features = false, features = [
     "aws-lc-rs",
     "rustls-native-certs",
 ] }
+# Only to check, in tests, what is written against the patterns of a
+# Kubernetes schema. Already in the tree through the condition language.
+regex = "1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha2 = "0.11"
@@ -90,6 +119,8 @@ thiserror = "2"
 tracing = "0.1"
 tracing-opentelemetry = "0.34"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+# gRPC for Envoy's external authorization; only hodor-ext-authz.
+tonic = { version = "0.14", default-features = false, features = ["transport", "router", "codegen"] }
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "net", "signal", "sync", "time"] }
 tower = { version = "0.5", features = ["util"] }
 tower-http = { version = "0.7", features = ["fs", "limit", "timeout"] }

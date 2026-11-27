@@ -1,0 +1,38 @@
+# What Hodor's sidecar forwards of a caller's certificate. Istio's sidecar writes only the names and the Hash
+# of the certificate into X-Forwarded-Client-Cert by default, which Hodor believes only for a trust domain
+# checked by the mesh. The trust domains of a tenant's certificate authority have a bundle, so Hodor checks the
+# certificate itself against it, and every intermediate of its chain against those an administrator withdrew:
+# the sidecar in front of Hodor's server writes the certificate and its chain too, and replaces any header the
+# caller sent.
+#
+#   python3 deploy/demo/certificate_authority.py applies it; see docs/operations/quick-start.md.
+
+apiVersion: networking.istio.io/v1alpha3
+kind: EnvoyFilter
+metadata:
+  name: hodor-forwards-certificates
+  namespace: hodor
+spec:
+  workloadSelector:
+    labels:
+      app.kubernetes.io/component: server
+  configPatches:
+    - applyTo: NETWORK_FILTER
+      match:
+        context: SIDECAR_INBOUND
+        listener:
+          filterChain:
+            filter:
+              name: envoy.filters.network.http_connection_manager
+      patch:
+        operation: MERGE
+        value:
+          typed_config:
+            "@type": type.googleapis.com/envoy.extensions.filters.network.http_connection_manager.v3.HttpConnectionManager
+            forward_client_cert_details: SANITIZE_SET
+            set_current_client_cert_details:
+              subject: true
+              uri: true
+              dns: true
+              cert: true
+              chain: true

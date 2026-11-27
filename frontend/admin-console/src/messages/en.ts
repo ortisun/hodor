@@ -85,7 +85,11 @@ export const en = {
   revokeConsequenceValue: "Denied from the next decision",
 
   // Frame
-  roles: { tenant_administrator: "Tenant administrator", tenant_auditor: "Tenant auditor" } as Record<string, string>,
+  roles: {
+    tenant_administrator: "Tenant administrator",
+    tenant_auditor: "Tenant auditor",
+    certificate_signer: "Certificate signer",
+  } as Record<string, string>,
   sessionUntil: (time: string) => `Console session until ${time}`,
   sessionUntilHint: "The console asks you to sign in again 12 hours after you signed in.",
   searchOrRun: "Search or run a command",
@@ -110,6 +114,8 @@ export const en = {
   serviceAccounts: "Service accounts",
   agents: "Agents",
   webhooks: "Webhooks",
+  security: "Security",
+  trustDomains: "Trust domains",
 
   // Failures
   unreachable: "The server could not be reached. Check your connection and try again.",
@@ -161,6 +167,28 @@ export const en = {
   identifierLabel: "Identifier",
   kind: "Kind",
   language: "Language",
+  standardClaims: "Standard claims",
+  noStandardClaims: "None given.",
+  claimLabel: (claim: string): string =>
+    ({
+      given_name: "Given name",
+      middle_name: "Middle name",
+      family_name: "Family name",
+      nickname: "Nickname",
+      gender: "Gender",
+      birthdate: "Birth date",
+      zoneinfo: "Time zone",
+      profile: "Page elsewhere",
+      picture: "Picture",
+      website: "Website",
+      phone_number: "Telephone number",
+      "address.formatted": "Address",
+      "address.street_address": "Street",
+      "address.locality": "City",
+      "address.region": "State or region",
+      "address.postal_code": "Postal code",
+      "address.country": "Country",
+    })[claim] ?? claim,
   created: "Created",
   changed: "Last changed",
   suspendedBecause: (reason: string) => `Suspended: ${reason}`,
@@ -368,7 +396,23 @@ export const en = {
     client_secret_basic: "Secret, in the Authorization header",
     client_secret_post: "Secret, in the form",
     private_key_jwt: "Its own key",
+    spiffe_jwt: "A JWT-SVID of its workload",
+    spiffe_x509: "An X509-SVID forwarded by the proxy",
+    tls_client_auth: "A certificate forwarded by the proxy",
+    linkerd_identity: "A Linkerd identity forwarded by the proxy",
     none: "Nothing: a public client",
+  } as Record<string, string>,
+  methodHints: {
+    client_secret_basic: "A secret Hodor gives it, sent in the Authorization header.",
+    client_secret_post: "A secret Hodor gives it, sent in the form of the request.",
+    private_key_jwt: "An assertion signed with its own private key, whose public key is added here.",
+    spiffe_jwt:
+      "The JWT-SVID its mesh or SPIRE gives the workload, checked against the bundle of a trust domain this tenant trusts.",
+    spiffe_x509:
+      "The X509-SVID the proxy in front of Hodor forwards, checked against the bundle of a trust domain this tenant trusts.",
+    tls_client_auth:
+      "The certificate the proxy in front of Hodor forwards, which names its SPIFFE identifier or its Linkerd identity.",
+    linkerd_identity: "The identity Linkerd's proxy forwards, for a trust domain checked by the mesh.",
   } as Record<string, string>,
   grants: {
     authorization_code: "Authorization code: a person signs in",
@@ -447,6 +491,23 @@ export const en = {
   enableClientLead: "It gets tokens again.",
   clientDisabled: (name: string) => `${name} disabled.`,
   clientEnabled: (name: string) => `${name} enabled.`,
+  workloadMethodLead:
+    "A client that proves who it is with its workload's identity acts as a service account, asks only for client credentials, and has no secret.",
+  principalServiceAccountLabel: "Service account it acts as",
+  principalServiceAccountHint: "The identifier of the service account. Copy it from the service account's page.",
+  principalNotAnIdentifier: "This is not a service account identifier. Copy it from the service account's page.",
+  identityKindLabel: "Identity the certificate names",
+  spiffeIdLabel: "SPIFFE identifier",
+  spiffeIdHint:
+    "Exactly one, such as spiffe://cluster.local/ns/payroll/sa/nightly-export, of a trust domain this tenant trusts. A prefix ending in /* is not accepted.",
+  linkerdIdentityLabel: "Linkerd identity",
+  linkerdIdentityHint: "Exactly one, as Linkerd's proxy forwards it, such as web.shop.serviceaccount.identity.linkerd.cluster.local.",
+  certificateBoundLabel: "Bind its access tokens to its certificate",
+  certificateBoundHint:
+    "Every access token it gets is bound to the certificate the proxy in front of Hodor forwards with its request, and a request without one gets no token.",
+  certificateBoundTitle: "Access tokens",
+  certificateBound: "Bound to the certificate the proxy forwards",
+  certificateNotBound: "Not bound to a certificate",
 
   // Groups and organizations alike
   nameLabel: "Name",
@@ -762,6 +823,93 @@ export const en = {
   redeliverLead: "The endpoint receives the event again, with the same webhook-id, as soon as a worker sends it.",
   redelivered: "The delivery is pending again.",
 
+  // Trust domains
+  trustDomainsLead:
+    "The SPIFFE trust domains whose workloads this tenant trusts, and the bundle of authorities each is checked against. Oldest first.",
+  addTrustDomain: "Add trust domain",
+  addTrustDomainTitle: "Add a trust domain",
+  noTrustDomains: "No trust domains yet",
+  noTrustDomainsHint:
+    "A workload in a service mesh or under SPIRE can prove who it is only with a trust domain this tenant trusts.",
+  columnSource: "Source",
+  columnBundle: "Bundle",
+  columnRefresh: "Last refresh",
+  trustDomainSources: {
+    uploaded: "Bundle given here",
+    bundle_endpoint: "Bundle endpoint",
+    mesh: "The mesh",
+  } as Record<string, string>,
+  trustDomainSourceHints: {
+    uploaded: "An administrator pastes the bundle, and replaces it by hand when the trust domain's authorities change.",
+    bundle_endpoint:
+      "Hodor fetches the bundle from the trust domain's SPIFFE bundle endpoint now, and again when its refresh hint says, so it follows the authorities' rotation.",
+    mesh: "The mesh in front of Hodor checks each workload's certificate itself. There is no bundle: only an identity a trusted proxy forwards can name this trust domain.",
+  } as Record<string, string>,
+  bundleInForce: "In force",
+  bundleFailing: "Fetching fails",
+  noBundle: "No bundle",
+  meshHasNoBundle: "The mesh checks its workloads",
+  bundleChangedAt: (time: string) => `Changed ${time}`,
+  replacedByHand: "Replaced by hand",
+  nothingToFetch: "Nothing to fetch",
+  neverFetched: "Never fetched",
+  fetchedAt: (time: string) => `Fetched ${time}`,
+  nextFetch: (time: string) => `Next fetch ${time}`,
+  failingSince: (time: string) => `Failing since ${time}.`,
+  bundleFailures: {
+    "keys.bundle_endpoint_unreachable":
+      "The endpoint did not answer a bundle: no answer in 10 seconds, a status other than success, a redirect, or too much.",
+    "keys.trust_bundle_invalid": "The bundle it answered does not read.",
+    "keys.trust_bundle_sequence_invalid": "The bundle it answered goes back to an older sequence number, so it was refused.",
+    "keys.bundle_endpoint_forbidden": "The address now leads somewhere Hodor may not call.",
+    "keys.bundle_endpoint_unresolvable": "The address's name resolves to nothing.",
+    "keys.bundle_endpoint_invalid": "The address is not one Hodor calls.",
+  } as Record<string, string>,
+  bundleFailureUnknown: "No reason was recorded.",
+  trustDomainTitle: "Trust domain",
+  trustDomainNameHint:
+    "As it appears in a SPIFFE identifier, spiffe://name/…: lowercase letters, digits, dots, hyphens and underscores. It never changes.",
+  sourceLabel: "Source",
+  bundleEndpointLabel: "Bundle endpoint address",
+  bundleEndpointHint:
+    "The HTTPS address of its SPIFFE bundle endpoint, at most 1000 characters, leading to a public address. It is fetched before anything is kept.",
+  bundleLabel: "Bundle, as JSON",
+  bundleHint:
+    "The trust bundle as SPIFFE writes it: a JSON Web Key Set whose keys have the use x509-svid or jwt-svid. An element Hodor does not know is ignored; one that breaks a rule refuses the whole bundle.",
+  bundleNotJson: "This is not JSON. Paste the bundle as the JSON document it is.",
+  addTrustDomainConsequence:
+    "From the next request, workloads of this trust domain are trusted as its source says. A bundle endpoint is fetched first, and nothing is kept unless it answers a bundle that reads.",
+  replaceTrustDomain: "Replace source",
+  replaceTrustDomainTitle: (name: string) => `Replace the source of ${name}`,
+  replaceTrustDomainConsequence:
+    "From the next request, this trust domain trusts only what the new source says. If the server refuses it, the trust domain keeps the source and the bundle it had.",
+  saveTrustDomain: "Replace source",
+  trustDomainAdded: (name: string) => `${name} added.`,
+  trustDomainReplaced: (name: string) => `The source of ${name} is replaced.`,
+  bundleTitle: "Bundle in force",
+  bundleLead: "Its authorities are counted here; the administration interface gives them whole.",
+  meshLead:
+    "This trust domain has no bundle: the mesh in front of Hodor checks each workload's certificate itself, and only an identity a trusted proxy forwards can name it. A JWT-SVID of it is refused.",
+  sequenceLabel: "Sequence number",
+  refreshHintLabel: "Refresh hint",
+  notGiven: "Not given",
+  x509AuthoritiesLabel: "Authorities for X509-SVIDs",
+  jwtAuthoritiesLabel: "Authorities for JWT-SVIDs",
+  refreshTitle: "Refresh",
+  refreshLead:
+    "The worker fetches the bundle again after its refresh hint, between 1 minute and 1 day, or after 5 minutes without one. A fetch that fails keeps the bundle in force.",
+  lastFetchLabel: "Last fetch that read",
+  nextFetchLabel: "Next fetch",
+  failingSinceLabel: "Fetching fails since",
+  lastErrorLabel: "Why",
+  removeTrustDomain: "Remove trust domain",
+  removeTrustDomainTitle: (name: string) => `Remove ${name}`,
+  removeTrustDomainWorkloads: "Its workloads",
+  removeTrustDomainWorkloadsValue: "Refused from the next request",
+  removeTrustDomainBundle: "Its bundle",
+  removeTrustDomainBundleValue: "Removed with it",
+  trustDomainRemoved: (name: string) => `${name} removed.`,
+
   // Refusals of workloads, keys and webhooks
   workloadNotFound: "This service account or agent does not exist in this tenant.",
   apiKeyNotFound: "This API key does not exist.",
@@ -772,6 +920,11 @@ export const en = {
   tooManyEndpoints: "This tenant already has 20 endpoints, the most it may.",
   deliveryNotSetAside: "This delivery is not set aside, so it is not delivered again.",
   webhooksNotConfigured: "This installation has no keys to keep secrets with, so it has no webhooks.",
+  trustDomainNotFound: "This trust domain does not exist in this tenant.",
+  trustDomainNameTaken: "This tenant already has a trust domain of this name.",
+  tooManyTrustDomains: "This tenant already has 50 trust domains, the most it may.",
+  spiffeIdTaken: "A client of another service account of this tenant is already bound to this SPIFFE identifier.",
+  linkerdIdentityTaken: "A client of another service account of this tenant is already bound to this Linkerd identity.",
 
   valueInvalid: {
     "federation.alias_invalid": "The alias must be 2 to 32 lowercase letters, digits and hyphens, starting with a letter or digit.",
@@ -784,7 +937,15 @@ export const en = {
     "oauth.client_name_invalid": "The name must be 1 to 100 characters, without control characters.",
     "oauth.resource_server_name_invalid": "The name must be 1 to 100 characters, without control characters.",
     "oauth.client_authentication_method_invalid":
-      "A confidential client proves itself with a secret or its own key; a public client with nothing.",
+      "A confidential client proves itself with a secret, its own key or its workload's identity; a public client with nothing.",
+    "oauth.client_principal_invalid":
+      "The principal must be a service account or an agent of this tenant that is not deleted; a client that proves its workload's identity acts as a service account.",
+    "oauth.client_spiffe_id_invalid":
+      "A SPIFFE identifier is spiffe://, the name of a trust domain and a path, written exactly, without /* at the end. A JWT-SVID or an X509-SVID needs one; a forwarded certificate needs it or a Linkerd identity, not both.",
+    "oauth.client_linkerd_identity_invalid":
+      "A Linkerd identity is written as Linkerd's proxy forwards it, and only a client of a Linkerd identity or a forwarded certificate has one.",
+    "oauth.client_certificate_bound_access_tokens_invalid":
+      "A client of a Linkerd identity cannot bind its tokens to a certificate: Linkerd's proxy forwards none.",
     "oauth.client_grants_invalid":
       "Choose at least one grant. Client credentials is for confidential clients, and a refresh token comes with the authorization code.",
     "oauth.client_redirect_uri_invalid":
@@ -827,6 +988,18 @@ export const en = {
     "webhooks.endpoint_address_unresolvable": "The address's name does not resolve to any address.",
     "webhooks.event_type_unknown": "An event type is not in the catalog.",
     "webhooks.description_invalid": "The description must be at most 200 characters, without control characters.",
+    "keys.trust_domain_name_invalid":
+      "The name must be 1 to 255 characters, each a lowercase letter, a digit, a dot, a hyphen or an underscore.",
+    "keys.trust_domain_source_invalid":
+      "Choose a source with what it needs: the bundle when it is given here, the address for a bundle endpoint.",
+    "keys.trust_bundle_invalid":
+      "The bundle does not read: it is a JSON object of at most 64 kibibytes with keys, and each element of a use and key type Hodor knows follows its rules, without a private part.",
+    "keys.bundle_endpoint_invalid":
+      "The address must be HTTPS, at most 1000 characters, without a name and password or a fragment.",
+    "keys.bundle_endpoint_forbidden": "The address leads somewhere Hodor may not call: it must be public.",
+    "keys.bundle_endpoint_unresolvable": "The address's name does not resolve to any address.",
+    "keys.bundle_endpoint_unreachable":
+      "The bundle endpoint did not answer a bundle: no answer in 10 seconds, a status other than success, a redirect, or more than 64 kibibytes.",
   } as Record<string, string>,
 };
 

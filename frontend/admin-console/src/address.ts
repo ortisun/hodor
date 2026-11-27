@@ -22,7 +22,9 @@ export type Screen =
   | { name: "agents" }
   | { name: "agent"; id: string }
   | { name: "webhooks" }
-  | { name: "webhook"; id: string };
+  | { name: "webhook"; id: string }
+  | { name: "trustDomains" }
+  | { name: "trustDomain"; id: string };
 
 export interface Place {
   tenant: string;
@@ -110,6 +112,12 @@ function screenOf(rest: string[]): Screen | null {
   if (first === "webhooks" && second !== undefined && more.length === 0 && isIdentifier(second)) {
     return { name: "webhook", id: second.toLowerCase() };
   }
+  if (first === "trust-domains" && second === undefined) {
+    return { name: "trustDomains" };
+  }
+  if (first === "trust-domains" && second !== undefined && more.length === 0 && isIdentifier(second)) {
+    return { name: "trustDomain", id: second.toLowerCase() };
+  }
   return null;
 }
 
@@ -157,6 +165,10 @@ export function pathOf(tenant: string, screen: Screen): string {
       return `${base}/webhooks`;
     case "webhook":
       return `${base}/webhooks/${screen.id}`;
+    case "trustDomains":
+      return `${base}/trust-domains`;
+    case "trustDomain":
+      return `${base}/trust-domains/${screen.id}`;
   }
 }
 

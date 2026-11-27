@@ -207,8 +207,21 @@ export function ClientScreen({ id, client, me, text, go, path, say }: ScreenProp
                 <PrincipalOf id={found.principal} client={client} me={me} text={text} go={go} path={path} />
               </MetadataListItem>
             ) : null}
+            {found.spiffeId !== null ? (
+              <MetadataListItem label={text.spiffeIdLabel}>
+                <span className="console-mono console-wrap">{found.spiffeId}</span>
+              </MetadataListItem>
+            ) : null}
+            {found.linkerdIdentity !== null ? (
+              <MetadataListItem label={text.linkerdIdentityLabel}>
+                <span className="console-mono console-wrap">{found.linkerdIdentity}</span>
+              </MetadataListItem>
+            ) : null}
             <MetadataListItem label={text.pkceLabel}>
               {found.requirePkce ? text.pkceRequired : text.pkceNotRequired}
+            </MetadataListItem>
+            <MetadataListItem label={text.certificateBoundTitle}>
+              {found.certificateBoundAccessTokens ? text.certificateBound : text.certificateNotBound}
             </MetadataListItem>
             <MetadataListItem label={text.created}>{moment(found.createdAt, text)}</MetadataListItem>
             <MetadataListItem label={text.changed}>{moment(found.updatedAt, text)}</MetadataListItem>

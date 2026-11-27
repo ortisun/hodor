@@ -1,0 +1,56 @@
+# What Istio's ingress gateway serves in the demonstration of Milestone 11: login.example.com, Hodor itself,
+# and orders.example.com, the protected application. Both are names the cluster's name service does not
+# know: the workloads outside the mesh connect to the gateway's Service and send them as the host.
+#
+#   python3 deploy/demo/service_mesh.py applies it; see docs/operations/quick-start.md.
+
+apiVersion: networking.istio.io/v1
+kind: Gateway
+metadata:
+  name: edge
+  namespace: istio-system
+spec:
+  selector:
+    istio: ingressgateway
+  servers:
+    - port:
+        number: 80
+        name: http
+        protocol: HTTP
+      hosts:
+        - login.example.com
+        - orders.example.com
+---
+apiVersion: networking.istio.io/v1
+kind: VirtualService
+metadata:
+  name: hodor
+  namespace: hodor
+spec:
+  hosts:
+    - login.example.com
+  gateways:
+    - istio-system/edge
+  http:
+    - route:
+        - destination:
+            host: hodor.hodor.svc.cluster.local
+            port:
+              number: 8080
+---
+apiVersion: networking.istio.io/v1
+kind: VirtualService
+metadata:
+  name: orders
+  namespace: shop
+spec:
+  hosts:
+    - orders.example.com
+  gateways:
+    - istio-system/edge
+  http:
+    - route:
+        - destination:
+            host: orders.shop.svc.cluster.local
+            port:
+              number: 8080

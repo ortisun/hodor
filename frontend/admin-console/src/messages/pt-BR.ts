@@ -84,7 +84,11 @@ export const ptBR: Messages = {
   revokeConsequence: "O que ele permitia",
   revokeConsequenceValue: "Negado a partir da próxima decisão",
 
-  roles: { tenant_administrator: "Administrador do tenant", tenant_auditor: "Auditor do tenant" },
+  roles: {
+    tenant_administrator: "Administrador do tenant",
+    tenant_auditor: "Auditor do tenant",
+    certificate_signer: "Assinante de certificados",
+  },
   sessionUntil: (time) => `Sessão do console até ${time}`,
   sessionUntilHint: "O console pede que você entre de novo 12 horas depois de ter entrado.",
   searchOrRun: "Buscar ou executar um comando",
@@ -108,6 +112,8 @@ export const ptBR: Messages = {
   serviceAccounts: "Contas de serviço",
   agents: "Agentes",
   webhooks: "Webhooks",
+  security: "Segurança",
+  trustDomains: "Domínios de confiança",
 
   unreachable: "Não foi possível falar com o servidor. Verifique sua conexão e tente de novo.",
   forbidden: "Sua conta não pode fazer isto.",
@@ -156,6 +162,28 @@ export const ptBR: Messages = {
   identifierLabel: "Identificador",
   kind: "Tipo",
   language: "Idioma",
+  standardClaims: "Declarações padrão",
+  noStandardClaims: "Nenhuma informada.",
+  claimLabel: (claim: string): string =>
+    ({
+      given_name: "Nome",
+      middle_name: "Nome do meio",
+      family_name: "Sobrenome",
+      nickname: "Apelido",
+      gender: "Gênero",
+      birthdate: "Data de nascimento",
+      zoneinfo: "Fuso horário",
+      profile: "Página em outro lugar",
+      picture: "Foto",
+      website: "Site",
+      phone_number: "Número de telefone",
+      "address.formatted": "Endereço",
+      "address.street_address": "Rua",
+      "address.locality": "Cidade",
+      "address.region": "Estado",
+      "address.postal_code": "CEP",
+      "address.country": "País",
+    })[claim] ?? claim,
   created: "Criado em",
   changed: "Última alteração",
   suspendedBecause: (reason) => `Suspenso: ${reason}`,
@@ -358,7 +386,23 @@ export const ptBR: Messages = {
     client_secret_basic: "Segredo, no cabeçalho Authorization",
     client_secret_post: "Segredo, no formulário",
     private_key_jwt: "Sua própria chave",
+    spiffe_jwt: "Um JWT-SVID da sua carga de trabalho",
+    spiffe_x509: "Um X509-SVID repassado pelo proxy",
+    tls_client_auth: "Um certificado repassado pelo proxy",
+    linkerd_identity: "Uma identidade do Linkerd repassada pelo proxy",
     none: "Nada: um cliente público",
+  },
+  methodHints: {
+    client_secret_basic: "Um segredo que o Hodor lhe dá, enviado no cabeçalho Authorization.",
+    client_secret_post: "Um segredo que o Hodor lhe dá, enviado no formulário da requisição.",
+    private_key_jwt: "Uma asserção assinada com sua própria chave privada, cuja chave pública é adicionada aqui.",
+    spiffe_jwt:
+      "O JWT-SVID que a malha de serviços ou o SPIRE dá à carga de trabalho, conferido com o bundle de um domínio de confiança deste tenant.",
+    spiffe_x509:
+      "O X509-SVID que o proxy na frente do Hodor repassa, conferido com o bundle de um domínio de confiança deste tenant.",
+    tls_client_auth:
+      "O certificado que o proxy na frente do Hodor repassa, que traz o seu identificador SPIFFE ou a sua identidade do Linkerd.",
+    linkerd_identity: "A identidade que o proxy do Linkerd repassa, de um domínio de confiança conferido pela malha.",
   },
   grants: {
     authorization_code: "Código de autorização: uma pessoa entra",
@@ -437,6 +481,24 @@ export const ptBR: Messages = {
   enableClientLead: "Ele volta a receber tokens.",
   clientDisabled: (name) => `${name} desativado.`,
   clientEnabled: (name) => `${name} ativado.`,
+  workloadMethodLead:
+    "Um cliente que prova quem é com a identidade da sua carga de trabalho age como uma conta de serviço, pede só credenciais do cliente e não tem segredo.",
+  principalServiceAccountLabel: "Conta de serviço como a qual age",
+  principalServiceAccountHint: "O identificador da conta de serviço. Copie-o da página da conta de serviço.",
+  principalNotAnIdentifier: "Isto não é um identificador de conta de serviço. Copie-o da página da conta de serviço.",
+  identityKindLabel: "Identidade que o certificado traz",
+  spiffeIdLabel: "Identificador SPIFFE",
+  spiffeIdHint:
+    "Exatamente um, como spiffe://cluster.local/ns/payroll/sa/nightly-export, de um domínio de confiança deste tenant. Um prefixo terminado em /* não é aceito.",
+  linkerdIdentityLabel: "Identidade do Linkerd",
+  linkerdIdentityHint:
+    "Exatamente uma, como o proxy do Linkerd a repassa, por exemplo web.shop.serviceaccount.identity.linkerd.cluster.local.",
+  certificateBoundLabel: "Vincular seus tokens de acesso ao certificado",
+  certificateBoundHint:
+    "Cada token de acesso que ele recebe fica vinculado ao certificado que o proxy na frente do Hodor repassa com a requisição, e uma requisição sem certificado não recebe token.",
+  certificateBoundTitle: "Tokens de acesso",
+  certificateBound: "Vinculados ao certificado que o proxy repassa",
+  certificateNotBound: "Não vinculados a um certificado",
 
   // A secret shown once
   nameLabel: "Nome",
@@ -759,6 +821,95 @@ export const ptBR: Messages = {
   redeliverLead: "O destino recebe o evento de novo, com o mesmo webhook-id, assim que um worker o enviar.",
   redelivered: "A entrega está pendente de novo.",
 
+  // Domínios de confiança
+  trustDomainsLead:
+    "Os domínios de confiança SPIFFE cujas cargas de trabalho este tenant aceita, e o bundle de autoridades com que cada um é conferido. Os mais antigos primeiro.",
+  addTrustDomain: "Adicionar domínio de confiança",
+  addTrustDomainTitle: "Adicionar um domínio de confiança",
+  noTrustDomains: "Nenhum domínio de confiança ainda",
+  noTrustDomainsHint:
+    "Uma carga de trabalho numa malha de serviços ou sob o SPIRE só consegue provar quem é com um domínio de confiança deste tenant.",
+  columnSource: "Origem",
+  columnBundle: "Bundle",
+  columnRefresh: "Última atualização",
+  trustDomainSources: {
+    uploaded: "Bundle dado aqui",
+    bundle_endpoint: "Endpoint de bundle",
+    mesh: "A malha de serviços",
+  },
+  trustDomainSourceHints: {
+    uploaded:
+      "Alguém da administração cola o bundle e o troca à mão quando as autoridades do domínio de confiança mudam.",
+    bundle_endpoint:
+      "O Hodor busca o bundle no endpoint de bundle SPIFFE do domínio de confiança agora, e de novo quando a dica de atualização manda, então ele acompanha a troca das autoridades.",
+    mesh: "A malha na frente do Hodor confere o certificado de cada carga de trabalho por conta própria. Não há bundle: só uma identidade que um proxy confiável repassa pode citar este domínio de confiança.",
+  },
+  bundleInForce: "Em vigor",
+  bundleFailing: "A busca falha",
+  noBundle: "Sem bundle",
+  meshHasNoBundle: "A malha confere suas cargas de trabalho",
+  bundleChangedAt: (time: string) => `Mudou em ${time}`,
+  replacedByHand: "Trocado à mão",
+  nothingToFetch: "Nada a buscar",
+  neverFetched: "Nunca buscado",
+  fetchedAt: (time: string) => `Buscado em ${time}`,
+  nextFetch: (time: string) => `Próxima busca em ${time}`,
+  failingSince: (time: string) => `Falhando desde ${time}.`,
+  bundleFailures: {
+    "keys.bundle_endpoint_unreachable":
+      "O endpoint não respondeu um bundle: nenhuma resposta em 10 segundos, uma resposta que não é de sucesso, um redirecionamento ou dados demais.",
+    "keys.trust_bundle_invalid": "O bundle que ele respondeu não pode ser lido.",
+    "keys.trust_bundle_sequence_invalid":
+      "O bundle que ele respondeu volta a um número de sequência mais antigo, então foi recusado.",
+    "keys.bundle_endpoint_forbidden": "O endereço agora leva a um lugar que o Hodor não pode chamar.",
+    "keys.bundle_endpoint_unresolvable": "O nome do endereço não leva a nenhum endereço.",
+    "keys.bundle_endpoint_invalid": "O endereço não é um que o Hodor chame.",
+  },
+  bundleFailureUnknown: "Nenhum motivo foi registrado.",
+  trustDomainTitle: "Domínio de confiança",
+  trustDomainNameHint:
+    "Como aparece num identificador SPIFFE, spiffe://nome/…: letras minúsculas, dígitos, pontos, hífens e sublinhados. Nunca muda.",
+  sourceLabel: "Origem",
+  bundleEndpointLabel: "Endereço do endpoint de bundle",
+  bundleEndpointHint:
+    "O endereço HTTPS do seu endpoint de bundle SPIFFE, de até 1000 caracteres, que leve a um endereço público. Ele é buscado antes de qualquer coisa ser guardada.",
+  bundleLabel: "Bundle, em JSON",
+  bundleHint:
+    "O bundle de confiança como o SPIFFE o escreve: um JSON Web Key Set cujas chaves têm o uso x509-svid ou jwt-svid. Um elemento que o Hodor não conhece é ignorado; um que quebra uma regra faz o bundle inteiro ser recusado.",
+  bundleNotJson: "Isto não é JSON. Cole o bundle como o documento JSON que ele é.",
+  addTrustDomainConsequence:
+    "A partir da próxima requisição, as cargas de trabalho deste domínio de confiança são aceitas como a origem diz. Um endpoint de bundle é buscado antes, e nada é guardado se ele não responder um bundle que possa ser lido.",
+  replaceTrustDomain: "Trocar origem",
+  replaceTrustDomainTitle: (name: string) => `Trocar a origem de ${name}`,
+  replaceTrustDomainConsequence:
+    "A partir da próxima requisição, este domínio de confiança aceita só o que a nova origem diz. Se o servidor a recusar, o domínio de confiança fica com a origem e o bundle que tinha.",
+  saveTrustDomain: "Trocar origem",
+  trustDomainAdded: (name: string) => `${name} adicionado.`,
+  trustDomainReplaced: (name: string) => `A origem de ${name} foi trocada.`,
+  bundleTitle: "Bundle em vigor",
+  bundleLead: "Suas autoridades são contadas aqui; a interface de administração as dá por inteiro.",
+  meshLead:
+    "Este domínio de confiança não tem bundle: a malha na frente do Hodor confere o certificado de cada carga de trabalho por conta própria, e só uma identidade que um proxy confiável repassa pode citá-lo. Um JWT-SVID dele é recusado.",
+  sequenceLabel: "Número de sequência",
+  refreshHintLabel: "Dica de atualização",
+  notGiven: "Não informado",
+  x509AuthoritiesLabel: "Autoridades para X509-SVIDs",
+  jwtAuthoritiesLabel: "Autoridades para JWT-SVIDs",
+  refreshTitle: "Atualização",
+  refreshLead:
+    "O worker busca o bundle de novo depois da sua dica de atualização, entre 1 minuto e 1 dia, ou depois de 5 minutos quando não há dica. Uma busca que falha mantém o bundle em vigor.",
+  lastFetchLabel: "Última busca que pôde ser lida",
+  nextFetchLabel: "Próxima busca",
+  failingSinceLabel: "A busca falha desde",
+  lastErrorLabel: "Por quê",
+  removeTrustDomain: "Remover domínio de confiança",
+  removeTrustDomainTitle: (name: string) => `Remover ${name}`,
+  removeTrustDomainWorkloads: "Suas cargas de trabalho",
+  removeTrustDomainWorkloadsValue: "Recusadas a partir da próxima requisição",
+  removeTrustDomainBundle: "Seu bundle",
+  removeTrustDomainBundleValue: "Removido com ele",
+  trustDomainRemoved: (name: string) => `${name} removido.`,
+
   // Recusas de identidades de programas, chaves e webhooks
   workloadNotFound: "Esta conta de serviço ou este agente não existe neste tenant.",
   apiKeyNotFound: "Esta chave de API não existe.",
@@ -769,6 +920,11 @@ export const ptBR: Messages = {
   tooManyEndpoints: "Este tenant já tem 20 destinos, o máximo que pode ter.",
   deliveryNotSetAside: "Esta entrega não está posta de lado, então não é entregue de novo.",
   webhooksNotConfigured: "Esta instalação não tem chaves para guardar segredos, então não tem webhooks.",
+  trustDomainNotFound: "Este domínio de confiança não existe neste tenant.",
+  trustDomainNameTaken: "Este tenant já tem um domínio de confiança com este nome.",
+  tooManyTrustDomains: "Este tenant já tem 50 domínios de confiança, o máximo que pode ter.",
+  spiffeIdTaken: "Um cliente de outra conta de serviço deste tenant já está vinculado a este identificador SPIFFE.",
+  linkerdIdentityTaken: "Um cliente de outra conta de serviço deste tenant já está vinculado a esta identidade do Linkerd.",
 
   valueInvalid: {
     "federation.alias_invalid":
@@ -782,7 +938,15 @@ export const ptBR: Messages = {
     "oauth.client_name_invalid": "O nome deve ter de 1 a 100 caracteres, sem caracteres de controle.",
     "oauth.resource_server_name_invalid": "O nome deve ter de 1 a 100 caracteres, sem caracteres de controle.",
     "oauth.client_authentication_method_invalid":
-      "Um cliente confidencial prova quem é com um segredo ou sua própria chave; um cliente público, com nada.",
+      "Um cliente confidencial prova quem é com um segredo, sua própria chave ou a identidade da sua carga de trabalho; um cliente público, com nada.",
+    "oauth.client_principal_invalid":
+      "O principal deve ser uma conta de serviço ou um agente deste tenant que não foi removido; um cliente que prova a identidade da sua carga de trabalho age como uma conta de serviço.",
+    "oauth.client_spiffe_id_invalid":
+      "Um identificador SPIFFE é spiffe://, o nome de um domínio de confiança e um caminho, escrito exatamente, sem /* no fim. Um JWT-SVID ou um X509-SVID precisa de um; um certificado repassado precisa dele ou de uma identidade do Linkerd, não dos dois.",
+    "oauth.client_linkerd_identity_invalid":
+      "Uma identidade do Linkerd é escrita como o proxy do Linkerd a repassa, e só um cliente de uma identidade do Linkerd ou de um certificado repassado tem uma.",
+    "oauth.client_certificate_bound_access_tokens_invalid":
+      "Um cliente de uma identidade do Linkerd não pode vincular seus tokens a um certificado: o proxy do Linkerd não repassa nenhum.",
     "oauth.client_grants_invalid":
       "Escolha ao menos uma permissão. Credenciais do cliente são só para clientes confidenciais, e o token de renovação vem com o código de autorização.",
     "oauth.client_redirect_uri_invalid":
@@ -826,5 +990,17 @@ export const ptBR: Messages = {
     "webhooks.endpoint_address_unresolvable": "O nome do endereço não leva a nenhum endereço.",
     "webhooks.event_type_unknown": "Um tipo de evento não está no catálogo.",
     "webhooks.description_invalid": "A descrição deve ter até 200 caracteres, sem caracteres de controle.",
+    "keys.trust_domain_name_invalid":
+      "O nome deve ter de 1 a 255 caracteres, cada um uma letra minúscula, um dígito, um ponto, um hífen ou um sublinhado.",
+    "keys.trust_domain_source_invalid":
+      "Escolha uma origem com o que ela precisa: o bundle, quando ele é dado aqui, ou o endereço, para um endpoint de bundle.",
+    "keys.trust_bundle_invalid":
+      "O bundle não pode ser lido: ele é um objeto JSON de até 64 kibibytes com keys, e cada elemento de um uso e de um tipo de chave que o Hodor conhece segue suas regras, sem parte privada.",
+    "keys.bundle_endpoint_invalid":
+      "O endereço deve ser HTTPS, de até 1000 caracteres, sem nome e senha nem fragmento.",
+    "keys.bundle_endpoint_forbidden": "O endereço leva a um lugar que o Hodor não pode chamar: ele deve ser público.",
+    "keys.bundle_endpoint_unresolvable": "O nome do endereço não leva a nenhum endereço.",
+    "keys.bundle_endpoint_unreachable":
+      "O endpoint de bundle não respondeu um bundle: nenhuma resposta em 10 segundos, uma resposta que não é de sucesso, um redirecionamento ou mais de 64 kibibytes.",
   },
 };

@@ -6,8 +6,8 @@
 use crate::api::{
     Group, GroupMember, GroupName, GroupPolicy, GroupRepository, IdentifierKind, Invitation,
     InvitationId, InvitationRepository, InvitationStatus, Membership, NormalizedIdentifier,
-    Organization, OrganizationName, OrganizationRepository, Profile, Unit, UnitId, UnitKind, User,
-    UserKind, UserRepository,
+    Organization, OrganizationName, OrganizationRepository, PostalAddress, Profile, StandardClaims,
+    Unit, UnitId, UnitKind, User, UserKind, UserRepository,
 };
 use hodor_kernel::{
     DomainError, GroupId, OrganizationId, TenantContext, TenantId, Timestamp, UnitOfWork,
@@ -211,6 +211,67 @@ pub async fn run_contract(ports: Ports<'_>) {
     an_update_cannot_reach_another_tenant(&ports).await;
     an_erased_user_frees_its_identifiers(&ports).await;
     users_are_listed_in_the_order_they_were_created(&ports).await;
+    standard_claims_are_stored_changed_and_erased(&ports).await;
+}
+
+/// Every standard claim with a value, the longest of each kind where it
+/// matters, so that a store that cuts or loses one is caught.
+#[must_use]
+pub fn every_standard_claim() -> StandardClaims {
+    StandardClaims {
+        given_name: Some("Ana".to_owned()),
+        family_name: Some("é".repeat(200)),
+        middle_name: Some("Maria".to_owned()),
+        nickname: Some("Aninha".to_owned()),
+        profile: Some("https://example.com/ana".to_owned()),
+        picture: Some(format!("https://example.com/{}", "p".repeat(1000))),
+        website: Some("http://ana.example.org".to_owned()),
+        gender: Some("female".to_owned()),
+        birthdate: Some("1960-04-12".to_owned()),
+        zoneinfo: Some("America/Sao_Paulo".to_owned()),
+        phone_number: Some("+5511912345678;ext=12".to_owned()),
+        phone_number_verified: true,
+        address: Some(PostalAddress {
+            formatted: Some("Rua Augusta, 100\nSão Paulo".to_owned()),
+            street_address: Some("Rua Augusta, 100\nApto 2".to_owned()),
+            locality: Some("São Paulo".to_owned()),
+            region: Some("SP".to_owned()),
+            postal_code: Some("01304-000".to_owned()),
+            country: Some("BR".to_owned()),
+        }),
+    }
+}
+
+async fn standard_claims_are_stored_changed_and_erased(ports: &Ports<'_>) {
+    let tenant = tenant();
+    let mut user = person(vec![email("ana@example.com")]);
+    user.change_claims(every_standard_claim(), MOMENT)
+        .expect("good claims");
+    store(ports, &tenant, &user).await.expect("insert");
+    assert_eq!(load(ports, &tenant, user.id()).await, Some(user.clone()));
+
+    let mut changed = load(ports, &tenant, user.id()).await.expect("exists");
+    let fewer = StandardClaims {
+        nickname: Some("Ana".to_owned()),
+        address: Some(PostalAddress {
+            country: Some("PT".to_owned()),
+            ..PostalAddress::default()
+        }),
+        ..StandardClaims::default()
+    };
+    changed.change_claims(fewer.clone(), MOMENT).expect("good");
+    save(ports, &tenant, &changed).await.expect("update");
+    let stored = load(ports, &tenant, user.id()).await.expect("exists");
+    assert_eq!(stored.snapshot().claims, fewer);
+
+    let mut leaving = stored;
+    leaving.deactivate(MOMENT).expect("deactivate");
+    leaving.mark_deleted(MOMENT).expect("delete");
+    save(ports, &tenant, &leaving).await.expect("update");
+    let erased = load(ports, &tenant, user.id())
+        .await
+        .expect("the row remains");
+    assert!(erased.snapshot().claims.is_empty());
 }
 
 fn tenant() -> TenantContext {

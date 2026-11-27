@@ -1,0 +1,33 @@
+[package]
+name = "hodor-adapters-kms"
+description = "Key providers outside the server: OpenBao's Transit secrets engine, which makes signing keys and signs without ever letting a key out."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+repository.workspace = true
+
+[dependencies]
+async-trait.workspace = true
+base64.workspace = true
+hodor-kernel.workspace = true
+hodor-keys.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+hodor-adapters-crypto = { workspace = true, features = ["testing"] }
+hodor-adapters-http.workspace = true
+hodor-kernel = { workspace = true, features = ["testing"] }
+hodor-keys = { workspace = true, features = ["testing"] }
+# Only for what OpenBao's administrator does in the tests, and for paths
+# Hodor never calls, with methods its port has not.
+reqwest = { workspace = true, features = ["rustls"] }
+hodor-test-containers.workspace = true
+testcontainers.workspace = true
+tokio.workspace = true
+x509-parser.workspace = true
+
+[lints]
+workspace = true

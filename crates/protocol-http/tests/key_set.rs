@@ -140,12 +140,12 @@ async fn a_tenant_without_keys_gets_one_for_each_token_algorithm_on_the_first_re
     algorithms.sort();
     assert_eq!(
         algorithms,
-        ["ES256", "RS256"],
-        "the key of the first token is known before it"
+        ["ES256", "EdDSA", "PS256", "RS256"],
+        "the key of the first token is known before it, whichever algorithm signs it"
     );
     assert_eq!(
         world.published("acme").await.len(),
-        2,
+        4,
         "a second read makes nothing more"
     );
     assert_eq!(
@@ -180,12 +180,49 @@ async fn each_key_is_published_with_its_numbers_and_nothing_else() {
         )
         .await
         .expect("RS256");
+    let ps256 = world
+        .keys
+        .rotate_now(
+            &world.acme,
+            KeyAlgorithm::Ps256,
+            &RotationPolicy::DEFAULT,
+            Caller::system(),
+        )
+        .await
+        .expect("PS256");
+    let eddsa = world
+        .keys
+        .rotate_now(
+            &world.acme,
+            KeyAlgorithm::EdDsa,
+            &RotationPolicy::DEFAULT,
+            Caller::system(),
+        )
+        .await
+        .expect("EdDSA");
 
     let reply = world.get("/t/acme/oauth2/jwks").await;
-    // The stand-in provider's made-up public keys.
+    // The stand-in provider's made-up public keys, newest first; an
+    // Ed25519 key as RFC 8037 writes an octet key pair.
     assert_eq!(
         reply.body,
         serde_json::json!({ "keys": [
+            {
+                "kid": eddsa.id().to_string(),
+                "kty": "OKP",
+                "use": "sig",
+                "alg": "EdDSA",
+                "crv": "Ed25519",
+                "x": URL_SAFE_NO_PAD.encode([4_u8; 32]),
+            },
+            {
+                "kid": ps256.id().to_string(),
+                "kty": "RSA",
+                "use": "sig",
+                "alg": "PS256",
+                "n": URL_SAFE_NO_PAD.encode([3_u8; 256]),
+                "e": "AQAB",
+            },
             {
                 "kid": rs256.id().to_string(),
                 "kty": "RSA",
@@ -277,7 +314,11 @@ async fn a_tenant_publishes_only_its_own_keys() {
         .expect("globex");
     let acme = world.published("acme").await;
     let globex = world.published("globex").await;
-    assert_eq!((acme.len(), globex.len()), (2, 2), "ES256 and RS256 each");
+    assert_eq!(
+        (acme.len(), globex.len()),
+        (4, 4),
+        "ES256, RS256, PS256 and EdDSA each"
+    );
     assert!(
         acme.iter().all(|key| !globex.contains(key)),
         "no key of one tenant is in the other's set"

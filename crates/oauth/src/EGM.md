@@ -13,7 +13,8 @@ follows is `docs/architecture/contexts/oauth.md`.
     `AuthorizationRequestStore`, `GrantStore`, `AuthorizationCodeStore`,
     `ClientAssertionStore`, `RefreshTokenStore`, `AccessTokenRecordStore`,
     `PersonStanding`, `PersonMemberships`, `ConsentStore`, `ClaimMapperStore`,
-    `PersonClaimSources`, and those of
+    `PersonClaimSources`, `ClientRegistrationStore`,
+    `InitialAccessTokenStore`, and those of
     back-channel logout: `SessionClients`, `LogoutDeliveryStore`,
     `DueLogoutDeliveries`, `TenantIssuer`; `PairwiseSecretStore`, and
     `HmacSha256`, implemented by the crypto adapter.
@@ -22,6 +23,11 @@ follows is `docs/architecture/contexts/oauth.md`.
     `AuthorizationCodePorts`, `ResumedRequest`, `RedeemedCode`;
     `TokenService`, `TokenPorts`, `Issuer`, `IssuedTokens`, with
     `TokenService::revoke`, `introspect`, `register` and `workload_tokens`;
+    `ClientKeySets` and `MAX_KEPT_KEY_SETS`, the keys at clients' addresses,
+    given to both services with `with_client_key_sets`; and the key set
+    domain: `check_jwks_uri`, `MAX_JWKS_URI_LENGTH`, `MAX_KEY_SET_BYTES`,
+    `KEY_SET_TIME_LIMIT`, `KEY_SET_KEPT_FOR`, `KEY_SET_REFETCH_AFTER`,
+    `MAX_PUBLISHED_KEYS`, `KEY_SET_ACCEPT`;
     `AccessTokenRegister`; `WorkloadTokens`; `UserInfoService`, `UserInfoPorts`;
     `LogoutService`, `LogoutPorts`, `LogoutRefusal`; `ConsentService`,
     `ConsentPorts`, `ConsentQuestion`, `AskedScope`, `ListedConsent`;
@@ -30,6 +36,19 @@ follows is `docs/architecture/contexts/oauth.md`.
     `LogoutOutcome`; `PairwiseSubjects`, `PairwisePorts`, given to
     `TokenService`, `LogoutService` and `BackChannelLogoutSender` with
     `with_pairwise_subjects`; `ApplicationService::with_sector_documents`.
+  - Pushed authorization requests' domain: `PushedRequestPolicy`,
+    `PushedRequest`, `PushedAnswer`, `PushedAuthorization`, `ReferenceHash`,
+    `RequestReference`, `Reference`, `check_reference`,
+    `check_pushed_request`, `pushed_lifetime`, `REFERENCE_PREFIX`,
+    `MAX_PUSHED_PER_CLIENT`, `DEFAULT_PUSHED_LIFETIME`,
+    `SHORTEST_PUSHED_LIFETIME`, `LONGEST_PUSHED_LIFETIME`; with
+    `TokenService::push` and `AuthorizationCodeService::push`.
+  - Request objects at a client's address: `check_request_uri`,
+    `is_registered`, `address_to_fetch`, `AddressToFetch`, `fetched_object`,
+    `FetchRefusal`, `refused_fetch`, `with_fetched_object`,
+    `MAX_REQUEST_URIS`, `MAX_REQUEST_URI_LENGTH`, `REQUEST_OBJECT_ACCEPT`,
+    `REQUEST_OBJECT_TIME_LIMIT`; with
+    `AuthorizationCodeService::with_request_object_addresses`.
   - Pairwise subject identifiers' domain: `SubjectType`, `PairwiseSecret`
     (with `subject` and `session`), `host_of`, `sector_of`,
     `check_sector_identifier_uri`, `check_sector_document`,
@@ -46,6 +65,20 @@ follows is `docs/architecture/contexts/oauth.md`.
     `ClaimMapperService`, `ClaimMapperPorts`, `ClaimMapping` (read by
     `TokenPorts::mapping` and `UserInfoPorts::mapping`), `MappedToken`,
     `MappedClaims`.
+  - Client registration: `ClientRegistrationService`,
+    `ClientRegistrationPorts`, `RegistrationInForce`, `Admission`,
+    `AllowedBy`; `RegistrationSettings`, `RegistrationPolicy`,
+    `RegistrationWay`, `RegistrationRequest`, `check_registration`,
+    `ClientRegistration`, `ClientRegistrationSnapshot`,
+    `is_policy_host`, `ways_from_stored`, `REGISTERABLE_METHODS`,
+    `MOST_REGISTERED_CLIENTS`, `DEFAULT_MOST_REGISTERED_CLIENTS`,
+    `MAX_POLICY_SCOPES`, `MAX_POLICY_HOSTS`; `InitialAccessToken`,
+    `InitialAccessTokenId`, `InitialAccessTokenHash`,
+    `InitialAccessTokenValue`, `InitialAccessTokenSnapshot`,
+    `InitialAccessTokenStatus`, `NewInitialAccessToken`,
+    `looks_like_initial_access_token`, `INITIAL_ACCESS_TOKEN_PREFIX`, and
+    the bounds of a token's lifetime, registrations and how many are
+    active.
   - Claim mappers: `ClaimMapper`, `ClaimMapperId`, `ClaimMapperSettings`,
     `ClaimMapperSnapshot`, `ClaimSource`, `ClaimTarget`, `PersonAttribute`,
     `OrganizationAttribute`, `PersonAttributes`, `PersonFacts`,
@@ -59,13 +92,25 @@ follows is `docs/architecture/contexts/oauth.md`.
     `ReturnAddress`, `logout_refusal`
     (the codes of the page), `MAX_LOGOUT_STATE_LENGTH`,
     `MAX_LOGOUT_LOCALES_LENGTH`.
+  - Certificate-bound access tokens: `CertificateThumbprint`,
+    `check_confirmation`, `CONFIRMATION_CLAIM`,
+    `CERTIFICATE_THUMBPRINT_MEMBER`, `presented_thumbprint`,
+    `advertise_certificate_bound_tokens`.
+  - Forwarded identities: `CertificateCheck`, `ForwardedIdentity`,
+    `CertificateNames`, `WorkloadIdentity`, `LinkerdIdentity`, `names_match`,
+    `advertise_forwarded_methods` and their bounds.
   - The token endpoint's domain: `TokenRequest` (with `parse`),
     `PresentedClient`, `BasicCredentials`, `GrantRequest`, `TokenError`,
-    `check_assertion`, `assertion_issuer`, `AssertionAudience`,
+    `check_assertion` (with the client's keys), `assertion_issuer`,
+    `AssertionAudience`,
     `CheckedAssertion`, `access_token_claims`, `claims_for`,
     `TokenSubject`, `AccessTokenClaims`, and
     `ASSERTION_TYPE`, `MAX_ASSERTION_BYTES`, `MAX_ASSERTION_ID_LENGTH`,
     `ASSERTION_LONGEST_AHEAD`, `CLOCK_ALLOWANCE`, `SUPPORTED_GRANT_TYPES`.
+  - SPIFFE client authentication: `SpiffeId`, `check_svid`, `CheckedSvid`,
+    and `SPIFFE_ASSERTION_TYPE`, `SPIFFE_CLIENT_AUTHENTICATION_DRAFT`,
+    `MAX_SPIFFE_ID_LENGTH`, `SVID_LONGEST_AHEAD`, `SVID_MARK_PREFIX`;
+    `TokenService::with_trust_domains`.
   - The OpenID Provider's domain: `id_token_claims`, `access_token_hash`,
     `authentication_methods`, `assurance`, `is_multi_factor`,
     `asks_for_openid`, `check_access_token`, `read_access_token`,
@@ -74,11 +119,14 @@ follows is `docs/architecture/contexts/oauth.md`.
     `ACR_MULTI_FACTOR`, `ACR_SINGLE_FACTOR`, `UI_LOCALES`.
   - The authorization endpoint's domain: `AuthorizationParameters`,
     `check_request`, `AuthorizationRequest`, `AuthorizationRefusal`,
+    `check_request_object`, `RequestObjectCheck`, `RequestObjectRefusal`,
+    `MAX_REQUEST_OBJECT_BYTES`, `RequestObjectAlgorithm`,
     `AuthorizationError`, `SignedInPerson`, `SessionDecision`,
     `PendingAuthorization`, `PendingAuthorizationId`, `BrowserSecret`,
     `Grant`, `GrantId`, `GrantStatus`, `AuthorizationCode`, `CodeHash`,
     `CodeValue`, `CodePresentation`, `CodeRefusal`, `s256_challenge`, and
-    `CODE_LIFETIME`, `PENDING_LIFETIME`, `MAX_RESOURCES`.
+    `CODE_LIFETIME`, `PENDING_LIFETIME`, `MAX_RESOURCES`; `ResponseType`,
+    `ResponseMode` and `error_mode`.
   - Refresh tokens: `RefreshFamily`, `RefreshFamilyId`, `RefreshTokenHash`,
     `RefreshTokenValue`, `RefreshTokenRecord`, `FamilySecret`,
     `FamilyStatus`, `RefreshAsk`, `RefreshDecision`, `RefreshRefusal`, and
@@ -114,8 +162,10 @@ follows is `docs/architecture/contexts/oauth.md`.
     `InMemoryGrants::new(&clients)`,
     `InMemoryAuthorizationCodes::new(&grants)`, which refuse a row whose
     client or grant the tenant does not have; `AuthorizationStorePorts` and
-    `run_authorization_contract(ports)`; `InMemoryGrants::all(tenant)` for
-    tests that look behind the use cases.
+    `run_authorization_contract(ports)`, pushed requests taken once by
+    their client only and at most five kept per client among its cases;
+    `InMemoryGrants::all(tenant)` and `InMemoryAuthorizationRequests::pushed(tenant)`
+    for tests that look behind the use cases.
   - `testing/token.rs`: `InMemoryClientAssertions::new(&clients)`;
     `FakeVerifier` and `fake_signature`, a stand-in for signature checking
     in tests only; `AssertionStorePorts` and `run_assertion_contract(ports)`.
@@ -154,6 +204,10 @@ follows is `docs/architecture/contexts/oauth.md`.
     secrets)`; `PairwiseSecretStorePorts` and
     `run_pairwise_secret_contract(ports)`, which requires one secret per
     tenant, the first stored kept.
+  - `testing/request_uri.rs`: `RequestObjectAddresses` with
+    `AddressAnswer` (`Content`, `Redirect`, `Failure` by the guarded
+    client's code), an outbound client that serves request objects at
+    clients' addresses and keeps every request made (`asked`, `fetched`).
 - Subdirectories:
   - [application](./application/EGM.md): the ports and the use cases.
   - [domain](./domain/EGM.md): the aggregates and their rules.

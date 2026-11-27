@@ -10,6 +10,7 @@ mod api_key;
 mod audit;
 mod authentication;
 mod authorization;
+mod certificate_authority;
 mod cleanup;
 mod credential;
 mod database;
@@ -17,6 +18,7 @@ mod decision_log;
 mod federation;
 mod group;
 mod identity;
+mod intermediates;
 mod invitation;
 mod key_rotation;
 mod keys;
@@ -30,6 +32,7 @@ mod oauth_consent;
 mod oauth_logout;
 mod oauth_pairwise;
 mod oauth_refresh;
+mod oauth_registration;
 mod oauth_token;
 mod organization;
 mod outbox;
@@ -41,6 +44,7 @@ mod session;
 mod tenant;
 #[cfg(feature = "testing")]
 pub mod testing;
+mod trust_domain;
 mod uow;
 mod webhooks;
 
@@ -51,6 +55,7 @@ pub use authentication::{
     PgAttemptStore, PgEmailSignInStore, PgTransactionStore, PgVerificationTokenStore,
 };
 pub use authorization::{PgEngineBindingStore, PgNativeRoleStore, PgRoleAssignmentStore};
+pub use certificate_authority::PgAuthorityStore;
 pub use cleanup::{
     AccessTokenCleanup, CleanupReport, ExpiredKind, ExpiredRowCleanup, PendingAuthorizationCleanup,
 };
@@ -64,6 +69,7 @@ pub use decision_log::{
 pub use federation::{PgLinkStore, PgPendingAuthorizationStore, PgProviderStore};
 pub use group::{PgGroupPolicy, PgGroupRepository};
 pub use identity::{PgUserRepository, PgWorkloadRepository};
+pub use intermediates::PgIntermediateStore;
 pub use invitation::PgInvitationRepository;
 pub use key_rotation::{KeyRotationJob, RotationPass};
 pub use keys::{PgKeyStore, PgSealingStateStore};
@@ -79,6 +85,7 @@ pub use oauth_consent::PgConsentStore;
 pub use oauth_logout::{PgDueLogoutDeliveries, PgLogoutDeliveryStore, PgSessionClients};
 pub use oauth_pairwise::PgPairwiseSecretStore;
 pub use oauth_refresh::PgRefreshTokenStore;
+pub use oauth_registration::{PgClientRegistrationStore, PgInitialAccessTokenStore};
 pub use oauth_token::PgClientAssertionStore;
 pub use organization::PgOrganizationRepository;
 pub use outbox::{DispatchReport, OutboxDispatcher};
@@ -96,5 +103,6 @@ pub use session::PgSessionStore;
 pub use sqlx::migrate::MigrateError;
 pub use sqlx::{Error, PgPool};
 pub use tenant::{PgTenantDirectory, PgTenantRepository};
+pub use trust_domain::{PgDueRefreshes, PgTrustDomainStore};
 pub use uow::{PgUnitOfWork, connection};
 pub use webhooks::{PgDeliveryStore, PgDueDeliveries, PgEndpointStore};

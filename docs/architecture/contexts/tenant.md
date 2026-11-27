@@ -137,6 +137,17 @@ The [depth](identity.md#groups-inside-groups) of a group is the longest chain of
 
 What [deprovisioning](provisioning.md#deprovisioning) through SCIM does to a person: deactivate them, so that they can be restored, or delete them, which erases them. Either way their sessions and grants end at once. Settings stored before this policy existed read as the default. The policy is set with `hodor-cli tenant scim-deprovisioning --slug <slug> --policy <deactivate|delete>`, or with `PUT /scim-deprovisioning` of [the administration interface](../../api/admin-api.md#scim-deprovisioning), and applies to requests that arrive after it.
 
+### Pushed authorization request policy
+
+| Setting | Default | Allowed |
+|---|---|---|
+| Life of a pushed request | 60 seconds | 10 to 600 seconds |
+| Pushed requests required | Off | On or off |
+
+How long a request a client [pushes](oauth.md#pushed-authorization-requests) waits for its browser, answered to the client as `expires_in`, and whether every client of the tenant must push its requests, which discovery says as `require_pushed_authorization_requests`. Turned on, a request of any client that was not pushed is refused, whatever the client's own setting says; turned off, a client may still be held to it by its own. Settings stored before this policy existed read as the default.
+
+The policy is set with `hodor-cli tenant pushed-requests --slug <slug> [--seconds <10 to 600>] [--required <on|off>]`, or with `PUT /pushed-authorization-requests` of [the administration interface](../../api/admin-api.md#pushed-authorization-requests), and applies to requests pushed or sent after it. A pushed request keeps the life it was given.
+
 ### Assurance levels
 
 An application names how strongly it wants the person to have proved who they are with an `acr` value, and every token says which level the sign-in reached ([OpenID Connect Core, section 2](https://openid.net/specs/openid-connect-core-1_0.html#IDToken)). A tenant chooses the names of its levels. Each level names one **requirement** from a closed set:
@@ -240,6 +251,7 @@ Resolving a request starts from a slug, before any tenant is known, so it cannot
 | `hodor-cli tenant group-depth --slug <slug> --depth <1 to 10>` | Sets the [group policy](#group-policy) | The depth now allowed |
 | `hodor-cli tenant email-sign-in --slug <slug> [--code <on\|off>] [--link <on\|off>]` | Sets the [email sign-in policy](#email-sign-in-policy); what is not given stays as it was | The policy now in force: `<slug> email-sign-in code <on\|off> link <on\|off>` |
 | `hodor-cli tenant scim-deprovisioning --slug <slug> --policy <deactivate\|delete>` | Sets the [SCIM deprovisioning policy](#scim-deprovisioning-policy) | The policy now in force |
+| `hodor-cli tenant pushed-requests --slug <slug> [--seconds <10 to 600>] [--required <on\|off>]` | Sets the [pushed authorization request policy](#pushed-authorization-request-policy); what is not given stays as it was | The policy now in force: `<slug> pushed-requests seconds <seconds> required <on\|off>` |
 | `hodor-cli tenant assurance-levels --slug <slug> [--level <name>=<requirement> …]` | Replaces the [assurance levels](#assurance-levels); without `--level`, prints them | One line per level: its name and its requirement |
 
 These commands connect with `HODOR_DATABASE_URL`, as a member of `hodor_app`. They need no cross-tenant role for the same reason the server does not. A command that fails prints the error's code and message and exits with a non-zero status.

@@ -50,6 +50,29 @@ At the project owner's request, signing in with external identities is built bef
 
 [Decision 0027](../decisions/0027-what-0.3.0-holds.md) says why and what stays in each phase.
 
+0.4.0 holds three parts the project owner asked for after 0.3.0, so that Hodor works with several service meshes, Linkerd included. They are Milestones 10 to 12 in [the epics](epics.md#milestone-10-workloads-prove-who-they-are-with-their-certificates), built in this order:
+
+1. Workloads prove who they are to Hodor with the certificates and JWT-SVIDs their mesh or SPIRE gave them.
+2. Hodor in a service mesh: the mesh's proxies check Hodor's tokens and ask Hodor's decisions, Linkerd through policies written from Hodor's roles, and Hodor runs inside a mesh itself.
+3. An optional certificate authority per tenant, which signs the intermediate certificates of the tenant's meshes, with its key in OpenBao.
+
+[Decision 0028](../decisions/0028-what-0.4.0-holds.md) says why, [Decision 0029](../decisions/0029-hodor-in-a-service-mesh.md) how Hodor fits a mesh, and [Decision 0030](../decisions/0030-optional-certificate-authority.md) what the authority may sign.
+
+0.5.0 and 0.6.0 hold what OpenID certification asks of an OpenID Provider, for every profile the OpenID Foundation certifies, as the project owner asked after 0.4.0. 0.5.0 is Milestones 13 to 16 in [the epics](epics.md#milestone-13-requests-that-say-what-they-need), every OpenID Connect and logout profile, built in this order:
+
+1. Requests that say what they need: request objects, pushed authorization requests, the `claims` parameter and the person's standard claims.
+2. Answers through the browser: every response type and response mode.
+3. Clients that register themselves.
+4. Sign-out and session state through the browser, every plan in continuous integration, and the certification of 0.5.0.
+
+0.6.0 is Milestones 17 to 19, FAPI and client-initiated backchannel authentication:
+
+1. The FAPI 2.0 Security Profile, with DPoP.
+2. FAPI 2.0 Message Signing and FAPI 1.0 Advanced, with encryption last.
+3. Client-initiated backchannel authentication and FAPI-CIBA, and the certification of 0.6.0.
+
+[Decision 0044](../decisions/0044-what-0.5.0-and-0.6.0-hold.md) says why two versions, what is left out and why, and which decisions settle the design. [The conformance page](../operations/conformance.md#the-target) lists, profile by profile, what each requires and where Hodor stands; [how certification is obtained](../operations/certification.md) says what the owner does.
+
 ## Console delivery
 
 The consoles trail their APIs by one phase so that the API is settled first.
@@ -73,6 +96,16 @@ The consoles trail their APIs by one phase so that the API is settled first.
 | Administrative role-based access control | Phase 5 / 7 | Fixed built-in admin roles in Phase 1 | The Admin API must be protected from its first endpoint |
 | Webhooks | Phase 8 | Phase 5 | First extension mechanism, and needed for security event management system delivery |
 | Native relationship-based access control | Phase 5 | Phase 5 stretch (Optional) | Large and separable; OpenFGA adapter is the alternative |
+| Mutual TLS client authentication and certificate-bound tokens | Phase 6 | 0.4.0, Milestone 10, with SPIFFE client authentication and certificates forwarded by trusted proxies | Workloads in a service mesh already hold a certificate; asking them for a second credential is the gap the owner asked to close |
+| Envoy external authorization and Linkerd policies | Not in the specification | 0.4.0, Milestone 11 | Meshes enforce at the proxy; Hodor stays the policy decision point ([Decision 0029](../decisions/0029-hodor-in-a-service-mesh.md)) |
+| A certificate authority per tenant | Not in the specification | 0.4.0, Milestone 12, Optional and off by default | One root per tenant across its meshes ([Decision 0030](../decisions/0030-optional-certificate-authority.md)) |
+| An external key provider | Phase 9 | OpenBao in 0.4.0, Milestone 12; the cloud's key management services stay in Phase 9 | The authority's key must never leave the provider that signs with it; the owner chose OpenBao, and the cloud's services fit the same port |
+| Pushed authorization requests, request objects, DPoP and dynamic client registration | Phase 4 | 0.5.0 (Milestones 13 and 15) and 0.6.0 (Milestone 17) | Every certification profile beyond Basic and Config needs them ([Decision 0044](../decisions/0044-what-0.5.0-and-0.6.0-hold.md)) |
+| Front-channel logout and session management | Phase 6 | 0.5.0, Milestone 16 | Each is a logout profile of its own ([Decision 0050](../decisions/0050-logout-and-session-state-in-the-browser.md)) |
+| The standard claims of a person | Phase 1 | 0.5.0, Milestone 13 | The scopes `profile`, `address` and `phone` are tested by every OpenID Connect plan |
+| The implicit grant | A non-goal | 0.5.0, Milestone 14, only for a client an administrator marks | The Implicit, Hybrid and Dynamic profiles need it ([Decision 0046](../decisions/0046-responses-through-the-browser.md)) |
+| FAPI 1.0 Advanced, FAPI 2.0 and FAPI-CIBA | A conformance target suggested for Phase 4 by the [competitive analysis](competitive-analysis.md#gaps-to-decide-on) | 0.6.0 | Certified programmes of their own; they stand on mutual TLS from 0.4.0 and on what 0.5.0 builds |
+| Full conformance and its publication | Phase 9 | Every plan in continuous integration from 0.5.0, certification asked for at 0.5.0 and 0.6.0 | [Decision 0051](../decisions/0051-conformance-runs-and-certification.md) |
 
 ## Sizing
 

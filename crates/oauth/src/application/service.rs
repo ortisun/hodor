@@ -6,6 +6,7 @@ use crate::domain::application::{
 };
 use crate::domain::client::{Client, ClientId, ClientSettings, ClientType, MAX_CLIENTS};
 use crate::domain::event::OauthEvent;
+use crate::domain::forwarded::WorkloadIdentity;
 use crate::domain::key::ClientKey;
 use crate::domain::pairwise::{
     MAX_SECTOR_DOCUMENT_BYTES, SECTOR_DOCUMENT_TIME_LIMIT, SubjectType, check_sector_document,
@@ -16,7 +17,7 @@ use crate::domain::resource_server::{
 use crate::domain::secret::{ClientSecret, ClientSecretId, ClientSecretValue};
 use hodor_kernel::{
     Caller, Clock, DestinationCheck, Digest, DomainError, EventEnvelope, EventMetadata, HttpClient,
-    HttpRequest, RandomSource, TenantContext, UnitOfWork, UnitOfWorkFactory,
+    HttpRequest, RandomSource, TenantContext, UnitOfWork, UnitOfWorkFactory, UserId,
 };
 use std::sync::Arc;
 use time::Duration;
@@ -53,6 +54,19 @@ pub struct CreateResourceServer {
     pub audience: String,
     /// Its name and scopes.
     pub settings: ResourceServerSettings,
+}
+
+/// A client, its application and that application's resource server,
+/// read together: what a resource server of Hodor's checks of the client a
+/// token was issued to.
+#[derive(Debug, Clone)]
+pub struct ClientWithApplication {
+    /// The client.
+    pub client: Client,
+    /// Its application, if the tenant still has it.
+    pub application: Option<Application>,
+    /// The application's resource server, if it has one.
+    pub resource_server: Option<ResourceServer>,
 }
 
 fn application_not_found() -> DomainError {
@@ -109,6 +123,55 @@ fn refused_sector_fetch(error: DomainError) -> DomainError {
         "http.destination_forbidden" => sector_forbidden(),
         _ => sector_unreachable(),
     }
+}
+
+/// What the guarded client said of a request object address, in the
+/// OAuth context's words.
+fn refused_request_address(error: DomainError) -> DomainError {
+    match error.code() {
+        "http.url_invalid" => crate::domain::request_uri::request_uri_invalid(
+            "the guarded client cannot call the address",
+        ),
+        "http.destination_forbidden" => request_address_forbidden(),
+        "http.unreachable" => DomainError::invalid(
+            "oauth.client_request_uri_unresolvable",
+            "the address's name does not resolve to any address",
+        ),
+        _ => error,
+    }
+}
+
+fn request_address_forbidden() -> DomainError {
+    DomainError::invalid(
+        "oauth.client_request_uri_forbidden",
+        "the address leads somewhere Hodor may not call: it must be public",
+    )
+}
+
+/// What the guarded client said of a key set address, in the OAuth
+/// context's words.
+fn refused_jwks_address(error: DomainError) -> DomainError {
+    match error.code() {
+        "http.url_invalid" => DomainError::invalid(
+            "oauth.client_jwks_uri_invalid",
+            "a key set address is an HTTPS address of at most 2000 characters, with a host and \
+             without a name and password or a fragment, for a client using `private_key_jwt` only",
+        )
+        .with_detail("the guarded client cannot call the address"),
+        "http.destination_forbidden" => jwks_address_forbidden(),
+        "http.unreachable" => DomainError::invalid(
+            "oauth.client_jwks_uri_unresolvable",
+            "the address's name does not resolve to any address",
+        ),
+        _ => error,
+    }
+}
+
+fn jwks_address_forbidden() -> DomainError {
+    DomainError::invalid(
+        "oauth.client_jwks_uri_forbidden",
+        "the address leads somewhere Hodor may not call: it must be public",
+    )
 }
 
 fn sector_forbidden() -> DomainError {
@@ -243,6 +306,36 @@ impl ApplicationService {
             return Err(sector_unreachable());
         }
         check_sector_document(&response.body, &settings.redirect_uris)
+    }
+
+    /// Whether each of `addresses`, request object addresses new to a
+    /// client, could be called now. See `docs/architecture/contexts/oauth.md`,
+    /// "Request object addresses".
+    async fn check_request_addresses(&self, addresses: &[&String]) -> Result<(), DomainError> {
+        if addresses.is_empty() {
+            return Ok(());
+        }
+        let Some(destinations) = &self.destinations else {
+            return Err(request_address_forbidden());
+        };
+        for address in addresses {
+            destinations
+                .check(address)
+                .await
+                .map_err(refused_request_address)?;
+        }
+        Ok(())
+    }
+
+    /// Whether a key set address could be called now. Nothing is fetched:
+    /// a client may publish its keys after it is saved. See
+    /// `docs/architecture/contexts/oauth.md`, "Keys at the client's
+    /// address".
+    async fn check_jwks_address(&self, url: &str) -> Result<(), DomainError> {
+        let Some(destinations) = &self.destinations else {
+            return Err(jwks_address_forbidden());
+        };
+        destinations.check(url).await.map_err(refused_jwks_address)
     }
 
     /// Whether a back-channel logout address could be called now. See
@@ -411,6 +504,29 @@ impl ApplicationService {
 
     // Clients.
 
+    /// The service account a workload's identity names in the tenant: the
+    /// principal the tenant's enabled clients bound to it act as, if any.
+    /// An identity binds the clients of one service account only
+    /// (Decision 0058), so there is at most one.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if storage fails.
+    pub async fn service_account_of(
+        &self,
+        tenant: &TenantContext,
+        identity: &WorkloadIdentity,
+    ) -> Result<Option<UserId>, DomainError> {
+        let mut uow = self.units_of_work.begin(tenant).await?;
+        Ok(self
+            .clients
+            .bound_to(uow.as_mut(), identity)
+            .await?
+            .into_iter()
+            .filter(Client::is_enabled)
+            .find_map(|client| client.principal()))
+    }
+
     /// Creates a client of an application, enabled. A confidential client
     /// with a secret method gets its first secret, returned once.
     ///
@@ -439,7 +555,12 @@ impl ApplicationService {
         if let Some(url) = client.backchannel_logout_uri() {
             self.check_backchannel_address(url).await?;
         }
+        if let Some(url) = client.jwks_uri() {
+            self.check_jwks_address(url).await?;
+        }
         let settings = &client.snapshot().settings;
+        self.check_request_addresses(&settings.request_uris.iter().collect::<Vec<_>>())
+            .await?;
         if settings.subject_type == SubjectType::Pairwise {
             self.check_sector_address(settings).await?;
         }
@@ -512,6 +633,19 @@ impl ApplicationService {
             && current.backchannel_logout_uri() != Some(url)
         {
             self.check_backchannel_address(url).await?;
+        }
+        // Only a request object address new to the client is checked.
+        let new_addresses: Vec<&String> = settings
+            .request_uris
+            .iter()
+            .filter(|address| !current.snapshot().settings.request_uris.contains(address))
+            .collect();
+        self.check_request_addresses(&new_addresses).await?;
+        // So is only a new or changed key set address.
+        if let Some(url) = settings.jwks_uri.as_deref()
+            && current.jwks_uri() != Some(url)
+        {
+            self.check_jwks_address(url).await?;
         }
         // The sector identifier document is fetched again only when what it
         // vouches for changes: its address, the redirect addresses it must
@@ -663,6 +797,66 @@ impl ApplicationService {
             .ok_or_else(client_not_found)
     }
 
+    /// The client with this identifier, its application and that
+    /// application's resource server, in one transaction.
+    ///
+    /// # Errors
+    ///
+    /// Returns `NotFound` if the tenant has no such client, and an error if
+    /// storage fails.
+    pub async fn client_with_application(
+        &self,
+        tenant: &TenantContext,
+        id: ClientId,
+    ) -> Result<ClientWithApplication, DomainError> {
+        let mut uow = self.units_of_work.begin(tenant).await?;
+        let client = self
+            .clients
+            .get(uow.as_mut(), id)
+            .await?
+            .ok_or_else(client_not_found)?;
+        let application_id = client.snapshot().application_id;
+        let application = self.applications.get(uow.as_mut(), application_id).await?;
+        let resource_server = match application {
+            Some(_) => {
+                self.resource_servers
+                    .find_by_application(uow.as_mut(), application_id)
+                    .await?
+            }
+            None => None,
+        };
+        Ok(ClientWithApplication {
+            client,
+            application,
+            resource_server,
+        })
+    }
+
+    /// The application with this identifier and its resource server, in one
+    /// transaction.
+    ///
+    /// # Errors
+    ///
+    /// Returns `NotFound` if the tenant has no such application, and an
+    /// error if storage fails.
+    pub async fn application_with_resource_server(
+        &self,
+        tenant: &TenantContext,
+        id: ApplicationId,
+    ) -> Result<(Application, Option<ResourceServer>), DomainError> {
+        let mut uow = self.units_of_work.begin(tenant).await?;
+        let application = self
+            .applications
+            .get(uow.as_mut(), id)
+            .await?
+            .ok_or_else(application_not_found)?;
+        let resource_server = self
+            .resource_servers
+            .find_by_application(uow.as_mut(), id)
+            .await?;
+        Ok((application, resource_server))
+    }
+
     /// The clients of an application, oldest first.
     ///
     /// # Errors
@@ -799,12 +993,9 @@ impl ApplicationService {
         application_id: ApplicationId,
     ) -> Result<Option<ResourceServer>, DomainError> {
         let mut uow = self.units_of_work.begin(tenant).await?;
-        Ok(self
-            .resource_servers
-            .list(uow.as_mut())
-            .await?
-            .into_iter()
-            .find(|server| server.snapshot().application_id == application_id))
+        self.resource_servers
+            .find_by_application(uow.as_mut(), application_id)
+            .await
     }
 
     /// The tenant's resource servers, oldest first.

@@ -10,9 +10,10 @@ use crate::application::service::ApplicationService;
 use crate::application::userinfo::published_keys;
 use crate::domain::application::ApplicationId;
 use crate::domain::client::ClientId;
+use crate::domain::forwarded::{ForwardedIdentity, presented_thumbprint};
 use crate::domain::openid::{BearerRefusal, read_access_token};
 use crate::domain::resource_server::ResourceServer;
-use hodor_kernel::{Clock, DomainError, ErrorKind, SignatureVerifier, TenantContext};
+use hodor_kernel::{Clock, Digest, DomainError, ErrorKind, SignatureVerifier, TenantContext};
 use hodor_keys::api::KeyService;
 use std::fmt;
 use std::sync::Arc;
@@ -28,6 +29,8 @@ pub struct ResourceAccessPorts {
     pub register: AccessTokenRegister,
     /// Reads the token's client, its application and its resource server.
     pub applications: ApplicationService,
+    /// SHA-256, for the thumbprint of a forwarded certificate.
+    pub digest: Arc<dyn Digest>,
     /// The time.
     pub clock: Arc<dyn Clock>,
 }
@@ -53,6 +56,9 @@ pub struct ResourceCaller {
     pub scopes: Vec<String>,
     /// The resource server of the client's application, if it has one.
     pub resource_server: Option<ResourceServer>,
+    /// The token's `principal_kind`, `service_account` or `agent`, when
+    /// its client acts as a workload: `subject` then names that workload.
+    pub principal_kind: Option<String>,
 }
 
 impl ResourceCaller {
@@ -85,8 +91,9 @@ impl ResourceAccessService {
     }
 
     /// The caller `token` names, if it is a token of the tenant whose
-    /// issuer is `issuer`, for `audience`, still in force, issued to an
-    /// enabled client of an enabled application.
+    /// issuer is `issuer`, for `audience`, presented with its certificate
+    /// when it is bound to one, as a trusted proxy `forwarded` it, still in
+    /// force, issued to an enabled client of an enabled application.
     ///
     /// # Errors
     ///
@@ -98,6 +105,7 @@ impl ResourceAccessService {
         issuer: &str,
         audience: &str,
         token: Option<&str>,
+        forwarded: Option<&ForwardedIdentity>,
     ) -> Result<Result<ResourceCaller, BearerRefusal>, DomainError> {
         use BearerRefusal::InvalidToken;
         let Some(token) = token else {
@@ -114,6 +122,10 @@ impl ResourceAccessService {
             Ok(read) => read,
             Err(reason) => return Ok(Err(InvalidToken(reason))),
         };
+        let presented = presented_thumbprint(forwarded, self.ports.digest.as_ref());
+        if let Err(reason) = read.check_certificate(presented.as_ref()) {
+            return Ok(Err(InvalidToken(reason)));
+        }
         if !read.audiences.iter().any(|given| given == audience) {
             return Ok(Err(InvalidToken(
                 "the token is not for this resource server",
@@ -130,43 +142,38 @@ impl ResourceAccessService {
         let Ok(client_id) = read.client_id.parse::<ClientId>() else {
             return Ok(Err(InvalidToken("the token names no client of the tenant")));
         };
-        let client = match self.ports.applications.client(tenant, client_id).await {
-            Ok(client) => client,
+        // The client, its application and its resource server are read in
+        // one transaction.
+        let found = match self
+            .ports
+            .applications
+            .client_with_application(tenant, client_id)
+            .await
+        {
+            Ok(found) => found,
             Err(error) if error.kind() == ErrorKind::NotFound => {
                 return Ok(Err(InvalidToken("the client does not exist")));
             }
             Err(error) => return Err(error),
         };
-        if !client.is_enabled() {
+        if !found.client.is_enabled() {
             return Ok(Err(InvalidToken("the client is disabled")));
         }
-        let application_id = client.snapshot().application_id;
-        let application = match self
-            .ports
-            .applications
-            .application(tenant, application_id)
-            .await
-        {
-            Ok(application) => application,
-            Err(error) if error.kind() == ErrorKind::NotFound => {
-                return Ok(Err(InvalidToken("the application does not exist")));
-            }
-            Err(error) => return Err(error),
+        let application_id = found.client.snapshot().application_id;
+        let Some(application) = found.application else {
+            return Ok(Err(InvalidToken("the application does not exist")));
         };
         if !application.is_enabled() {
             return Ok(Err(InvalidToken("the application is disabled")));
         }
-        let resource_server = self
-            .ports
-            .applications
-            .resource_server_of(tenant, application_id)
-            .await?;
+        let resource_server = found.resource_server;
         Ok(Ok(ResourceCaller {
             client_id,
             application_id,
             subject: read.subject,
             scopes: read.scopes,
             resource_server,
+            principal_kind: read.principal_kind,
         }))
     }
 }

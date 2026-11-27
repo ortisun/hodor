@@ -31,6 +31,7 @@ pub const PAGE_PATHS: &[&str] = &[
     "/account/reset-password",
     "/account/sign-out",
     "/account/security",
+    "/account/profile",
     "/account/consent",
     "/account/accept-invitation",
     "/account/sign-in-link",
@@ -66,6 +67,8 @@ pub const CONSOLE_PATHS: &[&str] = &[
     "/console/agents/{agent}",
     "/console/webhooks",
     "/console/webhooks/{endpoint}",
+    "/console/trust-domains",
+    "/console/trust-domains/{trust_domain}",
 ];
 
 /// Where the files of the admin console are served, outside any tenant.

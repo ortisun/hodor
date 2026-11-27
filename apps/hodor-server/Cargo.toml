@@ -6,6 +6,7 @@ edition.workspace = true
 rust-version.workspace = true
 publish.workspace = true
 repository.workspace = true
+license.workspace = true
 
 [dependencies]
 async-trait.workspace = true
@@ -13,6 +14,7 @@ axum.workspace = true
 clap.workspace = true
 hodor-adapters-crypto.workspace = true
 hodor-adapters-http.workspace = true
+hodor-adapters-kms.workspace = true
 hodor-adapters-ldap.workspace = true
 hodor-adapters-postgres.workspace = true
 hodor-audit.workspace = true
@@ -43,7 +45,15 @@ aws-lc-rs.workspace = true
 # The software authenticator, for the factors of the cross-tenant suite.
 hodor-adapters-crypto = { workspace = true, features = ["testing"] }
 base64.workspace = true
+# Envoy's types and gRPC, to ask hodor-ext-authz against the real server.
+envoy-types.workspace = true
+# The issuer's client, driven against the real server, and the Kubernetes
+# client its test on a real cluster writes cert-manager's resources with.
+hodor-cert-manager-issuer.workspace = true
+k8s-openapi.workspace = true
+kube.workspace = true
 form_urlencoded.workspace = true
+hodor-ext-authz.workspace = true
 jsonwebtoken = { workspace = true, features = ["aws_lc_rs"] }
 hodor-adapters-postgres = { workspace = true, features = ["testing"] }
 hodor-kernel = { workspace = true, features = ["testing"] }
@@ -52,6 +62,7 @@ hodor-oauth = { workspace = true, features = ["testing"] }
 reqwest = { workspace = true, features = ["json"] }
 serde_json.workspace = true
 sqlx.workspace = true
+tonic.workspace = true
 
 [lints]
 workspace = true

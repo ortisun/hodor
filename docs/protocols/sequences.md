@@ -76,8 +76,13 @@ sequenceDiagram
         Browser->>Server: POST /interaction/{id}/consent {granted_scopes}
     end
     OAuth->>OAuth: create Grant, AuthorizationCode (hash stored, time to live 60 s)
-    Server-->>Browser: 302 redirect_uri?code&state&iss
-    Browser->>Client: code, state, iss
+    alt response_mode=form_post
+        Server-->>Browser: 200 a page of Hodor's that posts code, state and iss to redirect_uri
+        Browser->>Client: POST redirect_uri with code, state, iss
+    else the query, by default
+        Server-->>Browser: 302 redirect_uri?code&state&iss
+        Browser->>Client: code, state, iss
+    end
     Client->>Client: verify state and iss
     Client->>Server: POST /t/acme/oauth2/token grant_type=authorization_code, code, code_verifier, redirect_uri + client auth
     Server->>OAuth: TokenRequest

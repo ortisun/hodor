@@ -8,10 +8,16 @@ use crate::domain::authorization::{
 use crate::domain::claim_mapper::{ClaimMapper, ClaimMapperId, PersonAttributes};
 use crate::domain::client::{Client, ClientId};
 use crate::domain::consent::{Consent, ConsentAnswer, ConsentHistoryEntry};
+use crate::domain::forwarded::WorkloadIdentity;
+use crate::domain::initial_access_token::{
+    InitialAccessToken, InitialAccessTokenHash, InitialAccessTokenId,
+};
 use crate::domain::introspection::AccessTokenRecord;
+use crate::domain::pushed::{PushedAuthorization, ReferenceHash};
 use crate::domain::refresh::{
     RefreshAsk, RefreshFamily, RefreshFamilyId, RefreshTokenHash, RefreshTokenRecord,
 };
+use crate::domain::registration::ClientRegistration;
 use crate::domain::resource_server::{Audience, ResourceServer, ResourceServerId};
 use hodor_kernel::{
     DomainError, GroupId, OrganizationId, TenantContext, Timestamp, UnitOfWork, UserId,
@@ -71,7 +77,10 @@ pub trait ClientStore: Send + Sync {
     /// # Errors
     ///
     /// Returns `oauth.application_not_found` if the tenant has no such
-    /// application.
+    /// application, and `oauth.client_spiffe_id_taken` or
+    /// `oauth.client_linkerd_identity_taken` if a client of the tenant
+    /// acting as another principal is bound to the client's identity: an
+    /// identity binds the clients of one service account (Decision 0058).
     async fn insert(&self, uow: &mut dyn UnitOfWork, client: &Client) -> Result<(), DomainError>;
 
     /// Stores a changed client with its secrets and keys, if its stored
@@ -80,8 +89,21 @@ pub trait ClientStore: Send + Sync {
     ///
     /// # Errors
     ///
-    /// Returns `oauth.client_modified_concurrently` otherwise.
+    /// Returns `oauth.client_modified_concurrently` otherwise, and the
+    /// errors of [`ClientStore::insert`] for its identity.
     async fn update(&self, uow: &mut dyn UnitOfWork, client: &Client) -> Result<(), DomainError>;
+
+    /// The clients of the tenant bound to `identity`, oldest first. They
+    /// all act as one service account.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if storage fails.
+    async fn bound_to(
+        &self,
+        uow: &mut dyn UnitOfWork,
+        identity: &WorkloadIdentity,
+    ) -> Result<Vec<Client>, DomainError>;
 
     /// The client with this identifier, if the tenant has it.
     ///
@@ -157,6 +179,18 @@ pub trait ResourceServerStore: Send + Sync {
         audience: &Audience,
     ) -> Result<Option<ResourceServer>, DomainError>;
 
+    /// The resource server of this application, if it has one: an
+    /// application has at most one.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if storage fails.
+    async fn find_by_application(
+        &self,
+        uow: &mut dyn UnitOfWork,
+        application_id: ApplicationId,
+    ) -> Result<Option<ResourceServer>, DomainError>;
+
     /// The tenant's resource servers, oldest first.
     ///
     /// # Errors
@@ -217,6 +251,35 @@ pub trait AuthorizationRequestStore: Send + Sync {
         id: PendingAuthorizationId,
         answer: ConsentAnswer,
     ) -> Result<bool, DomainError>;
+
+    /// Stores a pushed request. The oldest pushed requests of its client
+    /// are removed first, so that at most `keep` wait, this one included;
+    /// two pushes of one client at the same moment keep the bound too.
+    ///
+    /// # Errors
+    ///
+    /// Returns `oauth.client_not_found` if the tenant has no such client.
+    async fn push(
+        &self,
+        uow: &mut dyn UnitOfWork,
+        pushed: &PushedAuthorization,
+        keep: usize,
+    ) -> Result<(), DomainError>;
+
+    /// Takes the pushed request of `client` whose reference has this hash:
+    /// removes it and answers it, only if this call removed it, so that of
+    /// two uses at the same moment exactly one has it. An expired one is
+    /// taken too. A request of another client stays where it is.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if storage fails.
+    async fn take_pushed(
+        &self,
+        uow: &mut dyn UnitOfWork,
+        client: ClientId,
+        hash: &ReferenceHash,
+    ) -> Result<Option<PushedAuthorization>, DomainError>;
 }
 
 /// Stores grants.
@@ -723,4 +786,168 @@ pub trait PersonClaimSources: Send + Sync {
         tenant: &TenantContext,
         organization: OrganizationId,
     ) -> Result<Option<String>, DomainError>;
+}
+
+/// Reads the certificates a proxy forwards, and checks one against the
+/// authorities of a trust domain's bundle. The cryptography adapter
+/// implements it; the OAuth context holds no X.509 library.
+pub trait CertificateCheck: Send + Sync {
+    /// The URIs and DNS names of `certificate`, in DER, from its subject
+    /// alternative names; `None` when it does not read as a certificate.
+    fn names(&self, certificate: &[u8]) -> Option<crate::domain::forwarded::CertificateNames>;
+
+    /// Whether `certificate`, in DER, has a path to one of `authorities`
+    /// at `now`, through any of `chain`, for a TLS client. `authorities`
+    /// are the `x509-svid` elements of a bundle, each a JSON Web Key with
+    /// its certificate in `x5c`; an element whose certificate is not an
+    /// authority holding the element's key is passed over. No certificate
+    /// between `certificate` and the authority may hold a key of
+    /// `withdrawn`, each the SHA-256 of a subject public key info in
+    /// lowercase hexadecimal: the keys of the intermediates the tenant's
+    /// certificate authority signed and an administrator withdrew. Anything
+    /// that does not read is `false`.
+    fn chains_to(
+        &self,
+        certificate: &[u8],
+        chain: &[Vec<u8>],
+        authorities: &[&str],
+        withdrawn: &[String],
+        now: Timestamp,
+    ) -> bool;
+}
+
+/// Stores the client registration settings of a tenant: none, or one.
+#[async_trait::async_trait]
+pub trait ClientRegistrationStore: Send + Sync {
+    /// The tenant's settings, if it set them.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if storage fails.
+    async fn get(
+        &self,
+        uow: &mut dyn UnitOfWork,
+    ) -> Result<Option<ClientRegistration>, DomainError>;
+
+    /// The tenant's settings, if it set them, with their row locked until
+    /// the unit of work ends, so that what is decided from them holds
+    /// until it is stored.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if storage fails.
+    async fn lock(
+        &self,
+        uow: &mut dyn UnitOfWork,
+    ) -> Result<Option<ClientRegistration>, DomainError>;
+
+    /// Stores the tenant's first settings.
+    ///
+    /// # Errors
+    ///
+    /// Returns `oauth.client_registration_modified_concurrently` if the
+    /// tenant has settings already, and `oauth.client_registration_application_invalid`
+    /// for an application that is not one of the tenant's.
+    async fn insert(
+        &self,
+        uow: &mut dyn UnitOfWork,
+        registration: &ClientRegistration,
+    ) -> Result<(), DomainError>;
+
+    /// Stores replaced settings, if their stored version is the one they
+    /// were read with. The stored version becomes one more.
+    ///
+    /// # Errors
+    ///
+    /// Returns `oauth.client_registration_modified_concurrently` otherwise,
+    /// and `oauth.client_registration_application_invalid` for an
+    /// application that is not one of the tenant's.
+    async fn update(
+        &self,
+        uow: &mut dyn UnitOfWork,
+        registration: &ClientRegistration,
+    ) -> Result<(), DomainError>;
+}
+
+/// Stores the initial access tokens of a tenant.
+#[async_trait::async_trait]
+pub trait InitialAccessTokenStore: Send + Sync {
+    /// Stores a new token.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if storage fails.
+    async fn insert(
+        &self,
+        uow: &mut dyn UnitOfWork,
+        token: &InitialAccessToken,
+    ) -> Result<(), DomainError>;
+
+    /// A token of the tenant.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if storage fails.
+    async fn get(
+        &self,
+        uow: &mut dyn UnitOfWork,
+        id: InitialAccessTokenId,
+    ) -> Result<Option<InitialAccessToken>, DomainError>;
+
+    /// The token of the tenant with this hash, with its row locked until
+    /// the unit of work ends, so that it is spent one registration at a
+    /// time.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if storage fails.
+    async fn lock_by_hash(
+        &self,
+        uow: &mut dyn UnitOfWork,
+        hash: &InitialAccessTokenHash,
+    ) -> Result<Option<InitialAccessToken>, DomainError>;
+
+    /// Every token of the tenant, newest first.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if storage fails.
+    async fn list(&self, uow: &mut dyn UnitOfWork) -> Result<Vec<InitialAccessToken>, DomainError>;
+
+    /// How many tokens of the tenant are active at `now`: neither revoked,
+    /// expired nor used up.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if storage fails.
+    async fn count_active(
+        &self,
+        uow: &mut dyn UnitOfWork,
+        now: Timestamp,
+    ) -> Result<usize, DomainError>;
+
+    /// Stores how many registrations a token has allowed and when it last
+    /// allowed one.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if storage fails.
+    async fn record_use(
+        &self,
+        uow: &mut dyn UnitOfWork,
+        token: &InitialAccessToken,
+    ) -> Result<(), DomainError>;
+
+    /// Stores that a token was revoked, unless it already was. Answers
+    /// whether it was revoked now.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if storage fails.
+    async fn revoke(
+        &self,
+        uow: &mut dyn UnitOfWork,
+        id: InitialAccessTokenId,
+        at: Timestamp,
+    ) -> Result<bool, DomainError>;
 }

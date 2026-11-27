@@ -16,9 +16,10 @@ use hodor_keys::testing::{FakeKeyProvider, InMemoryKeys};
 use hodor_oauth::api::{
     ApplicationId, ApplicationPorts, ApplicationService, ApplicationSettings, AuthenticationMethod,
     AuthorizationCodePorts, AuthorizationCodeService, AuthorizationParameters, BasicCredentials,
-    ClientId, ClientSettings, ClientType, CreateClient, CreateResourceServer, FamilyStatus,
-    GrantStatus, GrantType, IssuedTokens, Issuer, ResourceServerSettings, ScopeDefinition,
-    SignedInPerson, TokenError, TokenPorts, TokenRequest, TokenService, s256_challenge,
+    CertificateThumbprint, ClientId, ClientSettings, ClientType, CreateClient,
+    CreateResourceServer, FamilyStatus, ForwardedIdentity, GrantStatus, GrantType, IssuedTokens,
+    Issuer, ResourceServerSettings, ScopeDefinition, SignedInPerson, TokenError, TokenPorts,
+    TokenRequest, TokenService, s256_challenge,
 };
 use hodor_oauth::testing::{
     DistinctRandom, FakeVerifier, InMemoryAccessTokenRecords, InMemoryAuthorizationCodes,
@@ -76,6 +77,7 @@ fn world_with_window(window: Duration) -> World {
         grants: Arc::new(grants.clone()),
         codes: Arc::new(code_store),
         memberships: Arc::new(memberships.clone()),
+        verifier: Arc::new(hodor_oauth::testing::FakeVerifier),
         digest: Arc::new(FakeDigest),
         random: Arc::new(DistinctRandom),
         clock: clock.clone(),
@@ -236,6 +238,18 @@ async fn client(
     client_type: ClientType,
     grants: Vec<GrantType>,
 ) -> Credentials {
+    client_bound(world, tenant, application, client_type, grants, false).await
+}
+
+/// A client that asks for certificate-bound access tokens when `bound`.
+async fn client_bound(
+    world: &World,
+    tenant: &TenantContext,
+    application: ApplicationId,
+    client_type: ClientType,
+    grants: Vec<GrantType>,
+    bound: bool,
+) -> Credentials {
     let redirects = if grants.contains(&GrantType::AuthorizationCode) {
         vec![REDIRECT.to_owned()]
     } else {
@@ -252,6 +266,7 @@ async fn client(
         "invoices".to_owned(),
         "groups".to_owned(),
     ];
+    settings.certificate_bound_access_tokens = bound;
     let (client, secret) = world
         .applications
         .create_client(
@@ -338,7 +353,12 @@ async fn signed_in_as(
     );
     let request = world
         .codes
-        .check(tenant, &parameters)
+        .check(
+            tenant,
+            "https://hodor.example.com/t/acme",
+            &parameters,
+            &hodor_oauth::api::PushedRequestPolicy::default(),
+        )
         .await
         .expect("storage")
         .expect("a valid request");
@@ -363,7 +383,18 @@ async fn ask(
     client: &Credentials,
     pairs: Vec<(String, String)>,
 ) -> Result<IssuedTokens, TokenError> {
-    let request = TokenRequest::parse(client.basic(), pairs)?;
+    ask_with(world, tenant, client, pairs, None).await
+}
+
+/// The same, with what a trusted proxy forwarded about the caller.
+async fn ask_with(
+    world: &World,
+    tenant: &TenantContext,
+    client: &Credentials,
+    pairs: Vec<(String, String)>,
+    forwarded: Option<ForwardedIdentity>,
+) -> Result<IssuedTokens, TokenError> {
+    let request = TokenRequest::parse(client.basic(), pairs)?.with_forwarded(forwarded);
     world
         .tokens
         .token(tenant, ISSUER_OF, request, CorrelationId::generate())
@@ -1018,4 +1049,273 @@ async fn a_client_not_allowed_client_credentials_is_refused() {
         ),
         "unauthorized_client"
     );
+}
+
+/// A certificate a trusted proxy forwarded: its DER, as far as the token
+/// service is concerned.
+fn certificate(name: &str) -> ForwardedIdentity {
+    ForwardedIdentity::Certificate {
+        certificate: name.as_bytes().to_vec(),
+        chain: Vec::new(),
+    }
+}
+
+/// The `cnf` that binds a token to the certificate `name`.
+fn bound_to(name: &str) -> Value {
+    CertificateThumbprint::of_certificate(name.as_bytes(), &FakeDigest).confirmation()
+}
+
+/// A code for `client`, issued to a new person for `scope`, and the form
+/// that redeems it.
+async fn code_form(
+    world: &World,
+    tenant: &TenantContext,
+    client: &Credentials,
+    scope: &str,
+) -> Vec<(String, String)> {
+    let challenge = s256_challenge(VERIFIER, &FakeDigest);
+    let id = client.id.to_string();
+    let parameters = AuthorizationParameters::from_pairs(
+        [
+            ("response_type", "code"),
+            ("client_id", id.as_str()),
+            ("redirect_uri", REDIRECT),
+            ("scope", scope),
+            ("code_challenge", challenge.as_str()),
+            ("code_challenge_method", "S256"),
+        ]
+        .iter()
+        .map(|(k, v)| ((*k).to_owned(), (*v).to_owned())),
+    );
+    let request = world
+        .codes
+        .check(
+            tenant,
+            ISSUER,
+            &parameters,
+            &hodor_oauth::api::PushedRequestPolicy::default(),
+        )
+        .await
+        .expect("storage")
+        .expect("a valid request");
+    let code = world
+        .codes
+        .issue_code(tenant, &request, &person(world), Caller::system())
+        .await
+        .expect("code");
+    let mut form = vec![
+        ("grant_type".to_owned(), "authorization_code".to_owned()),
+        ("code".to_owned(), code.expose().to_owned()),
+        ("redirect_uri".to_owned(), REDIRECT.to_owned()),
+        ("code_verifier".to_owned(), VERIFIER.to_owned()),
+    ];
+    form.extend(client.fields());
+    form
+}
+
+fn refresh_form(client: &Credentials, token: &str) -> Vec<(String, String)> {
+    let mut form = vec![
+        ("grant_type".to_owned(), "refresh_token".to_owned()),
+        ("refresh_token".to_owned(), token.to_owned()),
+    ];
+    form.extend(client.fields());
+    form
+}
+
+#[tokio::test]
+async fn a_bound_public_client_s_tokens_and_refresh_tokens_are_bound_to_its_certificate() {
+    let world = world();
+    let (tenant, application) = tenant(&world).await;
+    let client = client_bound(
+        &world,
+        &tenant,
+        application,
+        ClientType::Public,
+        vec![GrantType::AuthorizationCode, GrantType::RefreshToken],
+        true,
+    )
+    .await;
+
+    // Without a certificate, the code is not even redeemed: it still works
+    // once the certificate comes.
+    let form = code_form(&world, &tenant, &client, "openid read").await;
+    let refused = ask_with(&world, &tenant, &client, form.clone(), None).await;
+    assert_eq!(error_of(refused), "invalid_request");
+    let tokens = ask_with(&world, &tenant, &client, form, Some(certificate("A")))
+        .await
+        .expect("tokens with the certificate");
+    assert_eq!(claims(&tokens)["cnf"], bound_to("A"));
+    assert_eq!(tokens.token_type, "Bearer");
+    let first = refresh_token(&tokens);
+
+    // The family is bound to the first certificate.
+    let other = ask_with(
+        &world,
+        &tenant,
+        &client,
+        refresh_form(&client, &first),
+        Some(certificate("B")),
+    )
+    .await;
+    assert_eq!(error_of(other), "invalid_grant");
+    let none = ask_with(
+        &world,
+        &tenant,
+        &client,
+        refresh_form(&client, &first),
+        None,
+    )
+    .await;
+    assert_eq!(error_of(none), "invalid_request");
+    let refreshed = ask_with(
+        &world,
+        &tenant,
+        &client,
+        refresh_form(&client, &first),
+        Some(certificate("A")),
+    )
+    .await
+    .expect("refreshed with the certificate: nothing was revoked");
+    assert_eq!(claims(&refreshed)["cnf"], bound_to("A"));
+    assert!(
+        !event_types(&world)
+            .iter()
+            .any(|event| event == "oauth.refresh_token_family_revoked"),
+        "presenting the token without its certificate ends nothing"
+    );
+
+    // The family stays bound even when the client stops asking.
+    let mut settings = world
+        .applications
+        .client(&tenant, client.id)
+        .await
+        .expect("client")
+        .snapshot()
+        .settings
+        .clone();
+    settings.certificate_bound_access_tokens = false;
+    world
+        .applications
+        .change_client(&tenant, client.id, settings, Caller::system())
+        .await
+        .expect("changed");
+    let next = refresh_token(&refreshed);
+    let unbound = ask_with(&world, &tenant, &client, refresh_form(&client, &next), None).await;
+    assert_eq!(error_of(unbound), "invalid_grant");
+    let later = ask_with(
+        &world,
+        &tenant,
+        &client,
+        refresh_form(&client, &next),
+        Some(certificate("A")),
+    )
+    .await
+    .expect("the family's certificate");
+    assert!(
+        claims(&later).get("cnf").is_none(),
+        "the access token follows the client"
+    );
+}
+
+#[tokio::test]
+async fn a_confidential_client_s_tokens_follow_the_certificate_of_each_request() {
+    let world = world();
+    let (tenant, application) = tenant(&world).await;
+    let workload = client_bound(
+        &world,
+        &tenant,
+        application,
+        ClientType::Confidential,
+        vec![GrantType::ClientCredentials],
+        true,
+    )
+    .await;
+    let form = || {
+        vec![
+            ("grant_type".to_owned(), "client_credentials".to_owned()),
+            ("scope".to_owned(), "read".to_owned()),
+        ]
+    };
+    let first = ask_with(&world, &tenant, &workload, form(), Some(certificate("A")))
+        .await
+        .expect("a token");
+    assert_eq!(claims(&first)["cnf"], bound_to("A"));
+    // A renewed certificate binds the next token.
+    let renewed = ask_with(&world, &tenant, &workload, form(), Some(certificate("B")))
+        .await
+        .expect("a token");
+    assert_eq!(claims(&renewed)["cnf"], bound_to("B"));
+    assert_eq!(
+        error_of(ask_with(&world, &tenant, &workload, form(), None).await),
+        "invalid_request"
+    );
+    // Envoy's hash, forwarded with the names alone, binds as the
+    // certificate would.
+    let hash = CertificateThumbprint::of_certificate(b"C", &FakeDigest);
+    let names = ForwardedIdentity::Names {
+        uris: vec!["spiffe://cluster.local/ns/shop/sa/web".to_owned()],
+        dns_names: Vec::new(),
+        hash: Some(hash),
+    };
+    let hashed = ask_with(&world, &tenant, &workload, form(), Some(names))
+        .await
+        .expect("a token");
+    assert_eq!(claims(&hashed)["cnf"], bound_to("C"));
+    // A Linkerd identity has no certificate to bind to.
+    let linkerd = ForwardedIdentity::Linkerd(
+        "web.shop.serviceaccount.identity.linkerd.cluster.local".to_owned(),
+    );
+    assert_eq!(
+        error_of(ask_with(&world, &tenant, &workload, form(), Some(linkerd)).await),
+        "invalid_request"
+    );
+
+    // A confidential client's refresh tokens are bound by its secret: each
+    // access token by the certificate of its own request.
+    let refreshing = client_bound(
+        &world,
+        &tenant,
+        application,
+        ClientType::Confidential,
+        vec![GrantType::AuthorizationCode, GrantType::RefreshToken],
+        true,
+    )
+    .await;
+    let form = code_form(&world, &tenant, &refreshing, "openid read").await;
+    let tokens = ask_with(&world, &tenant, &refreshing, form, Some(certificate("A")))
+        .await
+        .expect("tokens");
+    assert_eq!(claims(&tokens)["cnf"], bound_to("A"));
+    let refreshed = ask_with(
+        &world,
+        &tenant,
+        &refreshing,
+        refresh_form(&refreshing, &refresh_token(&tokens)),
+        Some(certificate("B")),
+    )
+    .await
+    .expect("refreshed with a renewed certificate");
+    assert_eq!(claims(&refreshed)["cnf"], bound_to("B"));
+}
+
+#[tokio::test]
+async fn a_client_that_does_not_ask_gets_tokens_bound_to_nothing() {
+    let world = world();
+    let (tenant, application) = tenant(&world).await;
+    let client = refreshing_client(&world, &tenant, application).await;
+    let form = code_form(&world, &tenant, &client, "openid read").await;
+    let tokens = ask_with(&world, &tenant, &client, form, Some(certificate("A")))
+        .await
+        .expect("tokens");
+    assert!(claims(&tokens).get("cnf").is_none());
+    let refreshed = ask_with(
+        &world,
+        &tenant,
+        &client,
+        refresh_form(&client, &refresh_token(&tokens)),
+        None,
+    )
+    .await
+    .expect("its family is bound to nothing");
+    assert!(claims(&refreshed).get("cnf").is_none());
 }

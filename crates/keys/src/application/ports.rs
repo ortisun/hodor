@@ -1,7 +1,18 @@
 //! What the keys context needs from storage and from a key provider.
 
-use crate::domain::key::{GeneratedKey, KeyAlgorithm, KeyUse, KeyVersion, KeyVersionId};
-use hodor_kernel::{DomainError, SealedSecret, Secret, TenantContext, Timestamp, UnitOfWork};
+use crate::domain::authority::{
+    AuthorityId, AuthorityProfile, CertificateAuthority, CertificateFacts,
+};
+use crate::domain::intermediate::{
+    IntermediateConstraints, IntermediateId, RequestFacts, SignedIntermediate,
+};
+use crate::domain::key::{
+    GeneratedKey, KeyAlgorithm, KeyUse, KeyVersion, KeyVersionId, SignatureEncoding,
+};
+use crate::domain::trust_domain::{TrustDomain, TrustDomainId};
+use hodor_kernel::{
+    DomainError, PublicKey, SealedSecret, Secret, TenantContext, TenantId, Timestamp, UnitOfWork,
+};
 
 /// Stores and loads key versions. Every method works inside the tenant
 /// the unit of work is bound to.
@@ -59,12 +70,31 @@ pub trait KeyStore: Send + Sync {
 /// operation.
 ///
 /// A provider must refuse material made for another tenant, version or
-/// algorithm than the one it is told.
+/// algorithm than the one it is told, and material made by another
+/// provider. The contract every provider passes is
+/// `testing::run_provider_contract`.
 #[async_trait::async_trait]
 pub trait KeyProvider: Send + Sync {
     /// The provider's name, stored with every version it makes, such as
-    /// `local`.
+    /// `local` or `openbao`.
     fn name(&self) -> &'static str;
+
+    /// The name of the provider that makes keys of `algorithm`, stored
+    /// with the version: this provider's own, unless it hands keys of some
+    /// algorithms to another, as [`crate::api::KeyProviders`] does.
+    fn name_for(&self, algorithm: KeyAlgorithm) -> &'static str {
+        let _ = algorithm;
+        self.name()
+    }
+
+    /// Whether the keys this provider makes are made and used inside it,
+    /// where Hodor cannot read them, so that whoever holds Hodor's
+    /// database and configuration still cannot sign with them. A
+    /// certificate authority is created only on such a provider, outside
+    /// development.
+    fn signs_inside(&self) -> bool {
+        false
+    }
 
     /// Makes a new key for `version` of `algorithm` in `tenant`.
     ///
@@ -78,17 +108,21 @@ pub trait KeyProvider: Send + Sync {
         algorithm: KeyAlgorithm,
     ) -> Result<GeneratedKey, DomainError>;
 
-    /// Signs `message` with a signing key.
+    /// Signs `message` with a signing key, and writes the signature in
+    /// `encoding`.
     ///
     /// # Errors
     ///
-    /// Returns an error if the version is not a signing key or its material
-    /// does not open for this tenant, version and algorithm.
+    /// Returns `keys.unusable` if the version is not a signing key or its
+    /// material is not this provider's for this tenant, version and
+    /// algorithm, and `keys.provider_unavailable` if the provider cannot
+    /// be reached. A provider never signs with any other key instead.
     async fn sign(
         &self,
         tenant: &TenantContext,
         version: &KeyVersion,
         message: &[u8],
+        encoding: SignatureEncoding,
     ) -> Result<Vec<u8>, DomainError>;
 
     /// Encrypts `plaintext` with a data key. `associated` is authenticated
@@ -165,4 +199,349 @@ pub trait FirstFormatSecrets: Send + Sync {
         purpose: &str,
         sealed: &SealedSecret,
     ) -> Result<Secret<Vec<u8>>, DomainError>;
+}
+
+/// Stores the trust domains of a tenant. Every method works inside the
+/// tenant the unit of work is bound to.
+#[async_trait::async_trait]
+pub trait TrustDomainStore: Send + Sync {
+    /// Stores a new trust domain.
+    ///
+    /// # Errors
+    ///
+    /// Returns `keys.trust_domain_name_taken` if the tenant has one of the
+    /// same name.
+    async fn insert(
+        &self,
+        uow: &mut dyn UnitOfWork,
+        domain: &TrustDomain,
+    ) -> Result<(), DomainError>;
+
+    /// Reads a trust domain of the tenant.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if storage fails.
+    async fn get(
+        &self,
+        uow: &mut dyn UnitOfWork,
+        id: TrustDomainId,
+    ) -> Result<Option<TrustDomain>, DomainError>;
+
+    /// The tenant's trust domain of a name.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if storage fails.
+    async fn find_by_name(
+        &self,
+        uow: &mut dyn UnitOfWork,
+        name: &str,
+    ) -> Result<Option<TrustDomain>, DomainError>;
+
+    /// Up to `limit` trust domains of the tenant whose identifier comes
+    /// after `after`, in the order of their identifiers.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if storage fails.
+    async fn list(
+        &self,
+        uow: &mut dyn UnitOfWork,
+        after: Option<TrustDomainId>,
+        limit: u32,
+    ) -> Result<Vec<TrustDomain>, DomainError>;
+
+    /// How many trust domains the tenant has. Until the unit of work ends,
+    /// a second count of the same tenant waits, so that two additions count
+    /// one after the other.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if storage fails.
+    async fn count(&self, uow: &mut dyn UnitOfWork) -> Result<u32, DomainError>;
+
+    /// Stores a changed trust domain if it still has the version it was
+    /// read at, and increments its version.
+    ///
+    /// # Errors
+    ///
+    /// Returns `keys.trust_domain_changed` if it changed meanwhile, and
+    /// `keys.trust_domain_not_found` if the tenant has no such trust
+    /// domain.
+    async fn update(
+        &self,
+        uow: &mut dyn UnitOfWork,
+        domain: &TrustDomain,
+    ) -> Result<(), DomainError>;
+
+    /// Removes a trust domain. Answers whether there was one.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if storage fails.
+    async fn remove(
+        &self,
+        uow: &mut dyn UnitOfWork,
+        id: TrustDomainId,
+    ) -> Result<bool, DomainError>;
+
+    /// Takes a trust domain for a lease: holds it until the unit of work
+    /// ends. Finds nothing if another unit of work holds it: it is skipped,
+    /// not waited for.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if storage fails.
+    async fn take(
+        &self,
+        uow: &mut dyn UnitOfWork,
+        id: TrustDomainId,
+    ) -> Result<Option<TrustDomain>, DomainError>;
+
+    /// Reads a trust domain and holds it until the unit of work ends,
+    /// waiting for whoever holds it now.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if storage fails.
+    async fn lock(
+        &self,
+        uow: &mut dyn UnitOfWork,
+        id: TrustDomainId,
+    ) -> Result<Option<TrustDomain>, DomainError>;
+}
+
+/// Finds the trust domains whose bundle is due to be fetched, across
+/// tenants. Not bound to a tenant; only the worker is given it.
+#[async_trait::async_trait]
+pub trait DueRefreshes: Send + Sync {
+    /// Up to `limit` trust domains of a bundle endpoint due at `now` and
+    /// not leased past it, the longest waiting first.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if storage fails.
+    async fn due(
+        &self,
+        now: Timestamp,
+        limit: u32,
+    ) -> Result<Vec<(TenantId, TrustDomainId)>, DomainError>;
+}
+
+/// Stores the tenant's certificate authority. Every method works inside
+/// the tenant the unit of work is bound to; a tenant has at most one.
+#[async_trait::async_trait]
+pub trait AuthorityStore: Send + Sync {
+    /// Stores a new authority.
+    ///
+    /// # Errors
+    ///
+    /// Returns `keys.authority_exists` if the tenant has one.
+    async fn insert(
+        &self,
+        uow: &mut dyn UnitOfWork,
+        authority: &CertificateAuthority,
+    ) -> Result<(), DomainError>;
+
+    /// The tenant's authority.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if storage fails.
+    async fn get(
+        &self,
+        uow: &mut dyn UnitOfWork,
+    ) -> Result<Option<CertificateAuthority>, DomainError>;
+
+    /// The tenant's authority, held until the unit of work ends.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if storage fails.
+    async fn lock(
+        &self,
+        uow: &mut dyn UnitOfWork,
+    ) -> Result<Option<CertificateAuthority>, DomainError>;
+
+    /// Stores a changed authority if it still has the version it was read
+    /// at, and increments its version.
+    ///
+    /// # Errors
+    ///
+    /// Returns `keys.authority_changed` if it changed meanwhile, and
+    /// `keys.authority_not_found` if the tenant has none.
+    async fn update(
+        &self,
+        uow: &mut dyn UnitOfWork,
+        authority: &CertificateAuthority,
+    ) -> Result<(), DomainError>;
+
+    /// Removes the tenant's authority. Answers whether there was one.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if storage fails.
+    async fn remove(&self, uow: &mut dyn UnitOfWork) -> Result<bool, DomainError>;
+}
+
+/// The part to be signed of an authority's certificate, and its serial
+/// number.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ToBeSigned {
+    /// The `TBSCertificate`, in DER.
+    pub bytes: Vec<u8>,
+    /// The serial number it holds, in lowercase hexadecimal.
+    pub serial_number: String,
+}
+
+/// Writes and reads the certificates of an authority. It signs nothing:
+/// the key provider signs what it writes.
+pub trait CertificateWriter: Send + Sync {
+    /// The part to be signed of a root's certificate: its subject as its
+    /// issuer, `public_key`, a new serial number, the validity given, an
+    /// authority's basic constraints and key usage, and the name
+    /// constraints of `profile`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an internal error if it cannot be written.
+    fn root_to_be_signed(
+        &self,
+        profile: &AuthorityProfile,
+        public_key: &PublicKey,
+        not_before: Timestamp,
+        not_after: Timestamp,
+    ) -> Result<ToBeSigned, DomainError>;
+
+    /// The part to be signed of an intermediate's certificate signing
+    /// request (PKCS#10), asking for the same as a root's certificate.
+    ///
+    /// # Errors
+    ///
+    /// Returns an internal error if it cannot be written.
+    fn request_to_be_signed(
+        &self,
+        profile: &AuthorityProfile,
+        public_key: &PublicKey,
+    ) -> Result<Vec<u8>, DomainError>;
+
+    /// The certificate or request made of a part to be signed and its
+    /// ECDSA signature with SHA-256, in DER.
+    fn signed(&self, to_be_signed: &[u8], signature: &[u8]) -> Vec<u8>;
+
+    /// Reads a certificate in PEM.
+    ///
+    /// # Errors
+    ///
+    /// Returns `keys.authority_certificate_unsuitable` if it does not read.
+    fn read(&self, pem: &str) -> Result<CertificateFacts, DomainError>;
+
+    /// Reads a certificate signing request (PKCS#10) in PEM, and checks
+    /// its signature with its own public key.
+    ///
+    /// # Errors
+    ///
+    /// Returns `keys.intermediate_request_invalid`, with the reason, if it
+    /// does not read, is larger than 16 kibibytes, its signature does not
+    /// check, or its subject is empty.
+    fn read_request(&self, pem: &str) -> Result<RequestFacts, DomainError>;
+
+    /// The part to be signed of an intermediate's certificate: the
+    /// subject of `authority_certificate` (in DER) as its issuer, the
+    /// request's subject, public key and subject alternative names, a new
+    /// serial number, the validity given, basic constraints with a path
+    /// length of zero, `keyCertSign` and `cRLSign`, the key identifiers,
+    /// and `constraints`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an internal error if it cannot be written.
+    fn intermediate_to_be_signed(
+        &self,
+        authority_certificate: &[u8],
+        request: &RequestFacts,
+        constraints: &IntermediateConstraints,
+        not_before: Timestamp,
+        not_after: Timestamp,
+    ) -> Result<ToBeSigned, DomainError>;
+}
+
+/// Stores the intermediates the tenant's authority signs. Every method
+/// works inside the tenant the unit of work is bound to.
+#[async_trait::async_trait]
+pub trait IntermediateStore: Send + Sync {
+    /// Stores a new intermediate.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if storage fails.
+    async fn insert(
+        &self,
+        uow: &mut dyn UnitOfWork,
+        intermediate: &SignedIntermediate,
+    ) -> Result<(), DomainError>;
+
+    /// One intermediate.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if storage fails.
+    async fn get(
+        &self,
+        uow: &mut dyn UnitOfWork,
+        id: IntermediateId,
+    ) -> Result<Option<SignedIntermediate>, DomainError>;
+
+    /// The intermediates of `authority`, newest first, those older than
+    /// `before` when it is given, at most `limit`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if storage fails.
+    async fn list(
+        &self,
+        uow: &mut dyn UnitOfWork,
+        authority: AuthorityId,
+        before: Option<IntermediateId>,
+        limit: u32,
+    ) -> Result<Vec<SignedIntermediate>, DomainError>;
+
+    /// Every intermediate of the tenant signed for the key whose subject
+    /// public key info has this SHA-256, in hexadecimal, oldest first.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if storage fails.
+    async fn of_key(
+        &self,
+        uow: &mut dyn UnitOfWork,
+        public_key_sha256: &str,
+    ) -> Result<Vec<SignedIntermediate>, DomainError>;
+
+    /// Stores a withdrawn intermediate if it still has the version it was
+    /// read at, and increments its version.
+    ///
+    /// # Errors
+    ///
+    /// Returns `keys.intermediate_changed` if it changed meanwhile, and
+    /// `keys.intermediate_not_found` if the tenant has no such
+    /// intermediate.
+    async fn update(
+        &self,
+        uow: &mut dyn UnitOfWork,
+        intermediate: &SignedIntermediate,
+    ) -> Result<(), DomainError>;
+
+    /// The SHA-256 of the subject public key info of every intermediate
+    /// of the tenant withdrawn and still valid at `now`, each once.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if storage fails.
+    async fn withdrawn_keys(
+        &self,
+        uow: &mut dyn UnitOfWork,
+        now: Timestamp,
+    ) -> Result<Vec<String>, DomainError>;
 }

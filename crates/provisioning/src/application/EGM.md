@@ -29,12 +29,12 @@ Implemented by `PgProvisionedUserRepository` and `PgProvisionedGroupRepository`
 ### `ProvisioningService` (`service.rs`)
 
 - `new(ProvisioningPorts)`.
-- `create_user(tenant, &UserRequest, caller) -> UserResource`: `IdentityService::create_in` with kind `human`, `confirmed` and every address verified; `active: false` deactivates at once; a supplement that is not empty is put, with `provisioning.user_attributes_changed`.
+- `create_user(tenant, &UserRequest, caller) -> UserResource`: `IdentityService::create_with_claims_in` with the request's standard claims, kind `human`, `confirmed` and every address verified; `active: false` deactivates at once; a supplement that is not empty is put, with `provisioning.user_attributes_changed`.
 - `replace_user` and `patch_user(tenant, id, …, precondition: Option<&Precondition>, caller) -> Option<UserResource>`: check the version against the user as loaded in the unit of work (`provisioning.version_mismatch`), apply the request or the `PATCH` to the user's JSON and read the result as a `PUT`; `active: false` deprovisions; `None` when the policy deleted the user.
 - `delete_user(tenant, id, precondition, caller)`: deprovisions and marks the user removed, so SCIM no longer shows them while Deactivated.
 - Deprovisioning (`deprovision_in`): reads `DeprovisioningPolicy`, deactivates, under `Delete` marks Deleted (`IdentityService::mark_deleted_in`) and removes what is kept, then `AccessRevoker::revoke_access` with `DEPROVISIONED`, all in the same unit of work.
 - `get_user(tenant, id) -> UserResource`: `NotFound` `provisioning.user_not_found` for no user, a service account, an agent or a user marked Deleted (`shown`); with the supplement and the direct groups and their names.
-- `replace_user(tenant, id, &UserRequest, caller)`: `IdentityService::change_in` with the domain's `replace_user`; the supplement is put only when it differs.
+- `replace_user(tenant, id, &UserRequest, caller)`: `IdentityService::change_in` with the domain's `replace_user`, which also replaces the standard claims SCIM names; the supplement is put only when it differs.
 - `list_users(tenant, &ListQuery<UserAttribute>) -> Listed<UserResource>`.
 - `create_group`, `get_group`, `replace_group`, `patch_group`, `delete_group`, `list_groups` (the changes take a precondition; `patch_group` bounds the members its operations name at 1000; current members are not looked up again): through `GroupService::create_in`, `get_in`, `change_in` (the description kept), `add_member_in`, `remove_member_in`, `all_members_in`, `delete_in`. A member is a user `shown`, or a group of the tenant; otherwise `provisioning.invalid_value`. `NotFound` is `provisioning.group_not_found`.
 

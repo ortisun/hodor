@@ -8,7 +8,7 @@ It implements the kernel port `HttpClient` (see [the kernel contract](../kernel/
 
 - `impl HttpClient for GuardedHttpClient` (`src/client.rs`), for addresses other people chose;
 - `impl DestinationCheck for GuardedHttpClient` (`src/client.rs`), which says whether such an address could be called now, without calling it;
-- `impl HttpClient for ServiceHttpClient` (`src/service.rs`), for the services the operator configured (Open Policy Agent).
+- `impl HttpClient for ServiceHttpClient` (`src/service.rs`), for the services the operator configured (Open Policy Agent, OpenBao).
 
 ## Subdirectories & Boundaries
 

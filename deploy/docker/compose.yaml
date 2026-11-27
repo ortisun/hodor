@@ -1,5 +1,6 @@
 # Local development stack: PostgreSQL, migrations, the server, the worker,
-# a mail server that delivers nothing, VictoriaMetrics and VictoriaTraces.
+# a mail server that delivers nothing, VictoriaMetrics, VictoriaTraces and
+# OpenBao.
 # Not for production: credentials are placeholders and nothing is persisted
 # outside named volumes.
 #
@@ -14,12 +15,19 @@
 #                   http://localhost:9400
 # What the development receiver of webhooks got:
 #                   http://localhost:9600/received
+# OpenBao, whose root token is development-root-token:
+#                   http://localhost:8200
+#
+# The tenants' signing keys are made by the local provider. To make them in
+# OpenBao instead (docs/operations/keys-in-openbao.md):
+#
+#   HODOR_KEY_PROVIDER=openbao docker compose -f deploy/docker/compose.yaml up --build --wait
 #
 # If a port is taken on your machine, override it:
 #
 #   HODOR_HTTP_PORT=18080 HODOR_OPS_PORT=19090 HODOR_VM_PORT=18428 \
 #   HODOR_TRACES_PORT=20428 HODOR_MAIL_PORT=18025 HODOR_PROVIDER_PORT=19400 \
-#   HODOR_WEBHOOK_RECEIVER_PORT=19600 \
+#   HODOR_WEBHOOK_RECEIVER_PORT=19600 HODOR_OPENBAO_PORT=18200 \
 #     docker compose -f deploy/docker/compose.yaml up --build --wait
 
 name: hodor
@@ -174,6 +182,40 @@ services:
       timeout: 2s
       retries: 60
 
+  # OpenBao in development mode. It keeps everything in memory: the keys
+  # made in it are lost when its container is removed, and the versions
+  # that name them stop signing; `down --volumes` starts everything afresh.
+  # Prepared for Hodor by deploy/openbao/setup.sh, as an operator prepares
+  # theirs. Reachable from inside the stack as `openbao`.
+  openbao:
+    image: openbao/openbao:2.7.2
+    command: ["server", "-dev", "-dev-listen-address=0.0.0.0:8200", "-dev-no-store-token"]
+    environment:
+      BAO_DEV_ROOT_TOKEN_ID: development-root-token
+    ports:
+      - "127.0.0.1:${HODOR_OPENBAO_PORT:-8200}:8200"
+    healthcheck:
+      test: ["CMD", "bao", "status", "-address=http://127.0.0.1:8200"]
+      interval: 2s
+      timeout: 2s
+      retries: 30
+
+  # Mounts Transit at hodor-transit, writes Hodor's policy and an AppRole
+  # that gives it. Its identifiers are placeholders like every credential
+  # here.
+  openbao-setup:
+    image: openbao/openbao:2.7.2
+    entrypoint: ["/bin/sh", "/openbao-setup/setup.sh"]
+    environment:
+      BAO_ADDR: http://openbao:8200
+      BAO_TOKEN: development-root-token
+    volumes:
+      - ../openbao:/openbao-setup:ro
+    depends_on:
+      openbao:
+        condition: service_healthy
+    restart: "no"
+
   server:
     image: hodor:dev
     environment:
@@ -185,6 +227,14 @@ services:
       # identity providers and the signing keys encrypted in this stack
       # and nowhere else.
       HODOR_SECRET_KEYS: development:gV8TjmTiZoYOlhsN4OdTTiWMwWa1t/o5RPNGCdbBNro=
+      # Which provider makes the tenants' signing keys: `local`, or
+      # `openbao` when the stack is started with HODOR_KEY_PROVIDER=openbao.
+      # Keys made in OpenBao sign there whichever it is.
+      HODOR_KEY_PROVIDER: ${HODOR_KEY_PROVIDER:-local}
+      HODOR_OPENBAO_ADDRESS: http://openbao:8200
+      HODOR_OPENBAO_AUTH_METHOD: approle
+      HODOR_OPENBAO_APPROLE_ROLE_ID: development-hodor-role
+      HODOR_OPENBAO_APPROLE_SECRET_ID: development-hodor-secret
       # The development provider and the receiver of webhooks are at
       # private addresses, over plain HTTP. This is the setting that allows
       # them; never set it anywhere real.
@@ -213,6 +263,8 @@ services:
       # Compose takes a service that exits as a failure of `up --wait`
       # unless another service waits for it to complete.
       system-tenant:
+        condition: service_completed_successfully
+      openbao-setup:
         condition: service_completed_successfully
       victoriametrics:
         condition: service_started
@@ -247,6 +299,13 @@ services:
       # The server's placeholder key: the worker makes the tenants'
       # signing keys under it, and the server signs with them.
       HODOR_SECRET_KEYS: development:gV8TjmTiZoYOlhsN4OdTTiWMwWa1t/o5RPNGCdbBNro=
+      # The same key providers as the server's: the worker makes the keys
+      # the server signs with.
+      HODOR_KEY_PROVIDER: ${HODOR_KEY_PROVIDER:-local}
+      HODOR_OPENBAO_ADDRESS: http://openbao:8200
+      HODOR_OPENBAO_AUTH_METHOD: approle
+      HODOR_OPENBAO_APPROLE_ROLE_ID: development-hodor-role
+      HODOR_OPENBAO_APPROLE_SECRET_ID: development-hodor-secret
       # The server's address: the issuer of the logout tokens it sends to
       # clients starts with it.
       HODOR_PUBLIC_URL: http://localhost:${HODOR_HTTP_PORT:-8080}
@@ -272,6 +331,8 @@ services:
         condition: service_started
       mail:
         condition: service_started
+      openbao-setup:
+        condition: service_completed_successfully
     healthcheck:
       test: ["CMD", "/usr/local/bin/hodor-cli", "probe", "--addr", "127.0.0.1:9090", "--path", "/readyz"]
       interval: 5s

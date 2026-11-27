@@ -17,8 +17,9 @@ use hodor_oauth::api::{
     AuthenticationMethod, AuthorizationCodePorts, AuthorizationCodeService,
     AuthorizationParameters, BasicCredentials, ClientId, ClientSecretValue, ClientSettings,
     ClientType, CreateClient, CreateResourceServer, GrantStatus, GrantStore, GrantType,
-    IssuedTokens, Issuer, ResourceServerSettings, ScopeDefinition, SignedInPerson, Status,
-    TokenError, TokenPorts, TokenRequest, TokenService, access_token_hash, s256_challenge,
+    IdTokenAlgorithm, IssuedTokens, Issuer, ResourceServerSettings, ScopeDefinition,
+    SignedInPerson, Status, TokenError, TokenPorts, TokenRequest, TokenService, access_token_hash,
+    s256_challenge,
 };
 use hodor_oauth::testing::{
     AssertionStorePorts, DistinctRandom, FakeVerifier, InMemoryAccessTokenRecords,
@@ -67,6 +68,7 @@ fn world() -> World {
         grants: Arc::new(grants.clone()),
         codes: Arc::new(code_store),
         memberships: Arc::new(MembershipsOf::default()),
+        verifier: Arc::new(hodor_oauth::testing::FakeVerifier),
         digest: Arc::new(FakeDigest),
         random: Arc::new(DistinctRandom),
         clock: clock.clone(),
@@ -283,7 +285,12 @@ async fn code_for(
     );
     let request = world
         .codes
-        .check(tenant, &parameters)
+        .check(
+            tenant,
+            "https://hodor.example.com/t/acme",
+            &parameters,
+            &hodor_oauth::api::PushedRequestPolicy::default(),
+        )
         .await
         .expect("storage")
         .expect("a valid request");
@@ -412,7 +419,10 @@ async fn a_public_client_exchanges_its_code_for_a_signed_access_token() {
     assert_eq!(id_claims["aud"], id, "the client alone");
     assert_eq!(id_claims["sub"], claims["sub"]);
     assert_eq!(id_claims["auth_time"], claims["auth_time"]);
-    assert_eq!(id_claims["at_hash"], access_token_hash(token, &FakeDigest));
+    assert_eq!(
+        id_claims["at_hash"],
+        access_token_hash(token, IdTokenAlgorithm::Es256, &FakeDigest)
+    );
     assert_eq!(id_claims["amr"], json!(["pwd"]));
     assert_eq!(id_claims["acr"], "urn:hodor:acr:single-factor");
     assert!(id_claims.get("nonce").is_none(), "the request had none");

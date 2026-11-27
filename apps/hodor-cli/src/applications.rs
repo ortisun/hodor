@@ -13,13 +13,15 @@ use hodor_adapters_postgres::{
     Database, PgApplicationStore, PgClaimMapperStore, PgClientStore, PgResourceServerStore,
     PgTenantDirectory, PgTenantRepository,
 };
+use hodor_identity::api::UserKind;
 use hodor_kernel::{DomainError, ErrorKind, SystemClock, TenantContext, UserId};
 use hodor_oauth::api::{
     Application, ApplicationId, ApplicationPorts, ApplicationService, ApplicationSettings,
     AuthenticationMethod, ClaimMapper, ClaimMapperId, ClaimMapperPorts, ClaimMapperService,
     ClaimMapperSettings, ClaimSource, ClaimTarget, Client, ClientId, ClientSettings, ClientType,
-    CreateClient, CreateResourceServer, ExchangeRule, GrantType, IdTokenAlgorithm,
-    ResourceServerSettings, RotateSecret, ScopeDefinition, Status, SubjectType,
+    CreateClient, CreateResourceServer, ExchangeRule, GrantType, IdTokenAlgorithm, LinkerdIdentity,
+    RequestObjectAlgorithm, ResourceServerSettings, RotateSecret, ScopeDefinition, SpiffeId,
+    Status, SubjectType,
 };
 use hodor_tenant::api::TenantService;
 use std::fmt::Write as _;
@@ -115,9 +117,29 @@ pub(crate) enum ClientCommand {
         /// does.
         #[arg(long)]
         without_pkce: bool,
-        /// How its ID tokens are signed: `ES256` unless given, or `RS256`.
+        /// How its ID tokens are signed: `ES256` unless given, or `RS256`,
+        /// `PS256` or `EdDSA`.
         #[arg(long)]
         id_token_algorithm: Option<String>,
+        /// How its UserInfo answers are signed: `ES256`, `RS256`, `PS256`
+        /// or `EdDSA`. Answered in JSON, unsigned, unless given.
+        #[arg(long)]
+        userinfo_signed_response_alg: Option<String>,
+        /// How it signs its request objects: `ES256`, `RS256` or `PS256`,
+        /// which accepts only that one, or `none`, which accepts only
+        /// unsigned objects. Any of the three unless given.
+        #[arg(long)]
+        request_object_signing_alg: Option<String>,
+        /// Has every request of it pushed to the pushed authorization
+        /// request endpoint first, and refuses any other.
+        #[arg(long)]
+        require_pushed_authorization_requests: bool,
+        /// An address where it keeps request objects; a `request_uri` is
+        /// fetched only when it starts with one. Given once per address,
+        /// and checked as the server checks it: the name must lead to
+        /// public addresses only.
+        #[arg(long = "request-uri")]
+        request_uris: Vec<String>,
         /// Where its logout tokens are sent when a session it signed a
         /// person in with ends. Checked as the server checks it: the name
         /// must lead to public addresses only.
@@ -136,6 +158,11 @@ pub(crate) enum ClientCommand {
         /// Fetched now, as the server fetches it.
         #[arg(long)]
         sector_identifier_uri: Option<String>,
+        /// For a client using `private_key_jwt`: the address where it
+        /// publishes its keys itself, in place of keys added one by one.
+        /// Checked as the server checks it, and not fetched now.
+        #[arg(long)]
+        jwks_uri: Option<String>,
         /// The service account or agent it acts as; only with the
         /// `client_credentials` grant alone.
         #[arg(long)]
@@ -144,6 +171,22 @@ pub(crate) enum ClientCommand {
         /// `<subject audience>=><audience>`; given once for each.
         #[arg(long = "exchange-rule")]
         exchange_rules: Vec<String>,
+        /// The one SPIFFE identifier of a service account's client, such as
+        /// `spiffe://cluster.local/ns/payroll/sa/export`: required with the
+        /// methods `spiffe_jwt` and `spiffe_x509`, allowed with
+        /// `tls_client_auth`.
+        #[arg(long)]
+        spiffe_id: Option<String>,
+        /// The one Linkerd identity of a service account's client:
+        /// required with the method `linkerd_identity`, allowed with
+        /// `tls_client_auth`.
+        #[arg(long)]
+        linkerd_identity: Option<String>,
+        /// Bind every access token of the client to the certificate its
+        /// request comes with, and a public client's refresh tokens too:
+        /// `tls_client_certificate_bound_access_tokens` of RFC 8705.
+        #[arg(long)]
+        bound_tokens: bool,
     },
     /// List an application's clients.
     List {
@@ -290,7 +333,7 @@ fn written(moment: time::OffsetDateTime) -> String {
     moment.format(&Rfc3339).unwrap_or_default()
 }
 
-fn application_id(value: &str) -> Result<ApplicationId, DomainError> {
+pub(crate) fn application_id(value: &str) -> Result<ApplicationId, DomainError> {
     value.parse().map_err(|_| {
         DomainError::not_found(
             "oauth.application_not_found",
@@ -306,7 +349,7 @@ fn client_id(value: &str) -> Result<ClientId, DomainError> {
 }
 
 /// The tenant a command names, and the use cases to run it with.
-async fn open(
+pub(crate) async fn open(
     database: &Database,
     slug: &str,
 ) -> Result<(TenantContext, ApplicationService), DomainError> {
@@ -462,12 +505,20 @@ pub(crate) async fn run_client(
             secret_days,
             without_pkce,
             id_token_algorithm,
+            userinfo_signed_response_alg,
+            request_object_signing_alg,
+            require_pushed_authorization_requests,
+            request_uris,
             backchannel_logout_uri,
             backchannel_logout_session_required,
             subject_type,
             sector_identifier_uri,
+            jwks_uri,
             principal,
             exchange_rules,
+            spiffe_id,
+            linkerd_identity,
+            bound_tokens,
         } => {
             let (tenant, service) = open(database, &tenant).await?;
             // The addresses are checked, and a sector identifier address
@@ -498,8 +549,18 @@ pub(crate) async fn run_client(
             settings.post_logout_redirect_uris = post_logout_redirect_uris;
             settings.allowed_scopes = scopes;
             settings.require_pkce = !without_pkce;
+            settings.require_pushed_requests = require_pushed_authorization_requests;
+            settings.request_uris = request_uris;
             if let Some(algorithm) = id_token_algorithm {
                 settings.id_token_algorithm = IdTokenAlgorithm::parse(&algorithm)?;
+            }
+            if let Some(algorithm) = userinfo_signed_response_alg {
+                settings.userinfo_algorithm =
+                    Some(IdTokenAlgorithm::parse_for_userinfo(&algorithm)?);
+            }
+            if let Some(algorithm) = request_object_signing_alg {
+                settings.request_object_algorithm =
+                    Some(RequestObjectAlgorithm::parse(&algorithm)?);
             }
             settings.exchange_rules = exchange_rules
                 .iter()
@@ -511,12 +572,25 @@ pub(crate) async fn run_client(
                 settings.subject_type = SubjectType::parse(&subject_type)?;
             }
             settings.sector_identifier_uri = sector_identifier_uri;
+            settings.jwks_uri = jwks_uri;
+            settings.spiffe_id = spiffe_id.as_deref().map(SpiffeId::parse).transpose()?;
+            settings.linkerd_identity = linkerd_identity
+                .as_deref()
+                .map(LinkerdIdentity::parse)
+                .transpose()?;
+            settings.certificate_bound_access_tokens = bound_tokens;
             if let Some(principal) = principal {
-                let agent_only = settings.grant_types.contains(&GrantType::TokenExchange);
-                settings.principal = Some(
-                    crate::workloads::principal_of(database, &tenant, principal, agent_only)
-                        .await?,
-                );
+                // Only an agent acts on a person's behalf, and only a
+                // service account proves who it is with its identity.
+                let kind = if settings.grant_types.contains(&GrantType::TokenExchange) {
+                    Some(UserKind::Agent)
+                } else if settings.authentication_method.uses_workload_identity() {
+                    Some(UserKind::ServiceAccount)
+                } else {
+                    None
+                };
+                settings.principal =
+                    Some(crate::workloads::principal_of(database, &tenant, principal, kind).await?);
             }
             let (client, secret) = service
                 .create_client(

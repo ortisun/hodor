@@ -18,6 +18,8 @@ struct Rows {
     endpoints: BTreeMap<(TenantId, EndpointId), Endpoint>,
     secrets: BTreeMap<(TenantId, SigningSecretId), SigningSecret>,
     deliveries: BTreeMap<(TenantId, DeliveryId), Delivery>,
+    /// When each subscription began, by tenant, endpoint and event type.
+    since: BTreeMap<(TenantId, EndpointId, String), Timestamp>,
 }
 
 /// Endpoints, secrets and deliveries kept in memory. Implements the three
@@ -59,6 +61,25 @@ impl InMemoryWebhooks {
     }
 }
 
+/// Keeps the moment each subscription of `endpoint` began: a type it
+/// already had keeps its own, a type added begins at the endpoint's change.
+fn keep_since(rows: &mut Rows, tenant: TenantId, endpoint: &Endpoint) {
+    let state = endpoint.snapshot();
+    let types: Vec<String> = state
+        .event_types
+        .iter()
+        .map(|event_type| event_type.as_str().to_owned())
+        .collect();
+    rows.since.retain(|(owner, id, event_type), _| {
+        !(*owner == tenant && *id == endpoint.id() && !types.contains(event_type))
+    });
+    for event_type in types {
+        rows.since
+            .entry((tenant, endpoint.id(), event_type))
+            .or_insert(state.updated_at);
+    }
+}
+
 fn tenant_of(uow: &dyn UnitOfWork) -> TenantId {
     uow.tenant().tenant_id()
 }
@@ -77,9 +98,11 @@ impl EndpointStore for InMemoryWebhooks {
         uow: &mut dyn UnitOfWork,
         endpoint: &Endpoint,
     ) -> Result<(), DomainError> {
-        self.rows()
-            .endpoints
-            .insert((tenant_of(uow), endpoint.id()), endpoint.clone());
+        let tenant = tenant_of(uow);
+        let mut rows = self.rows();
+        rows.endpoints
+            .insert((tenant, endpoint.id()), endpoint.clone());
+        keep_since(&mut rows, tenant, endpoint);
         Ok(())
     }
 
@@ -141,6 +164,7 @@ impl EndpointStore for InMemoryWebhooks {
         let mut state = endpoint.snapshot().clone();
         state.version += 1;
         rows.endpoints.insert(key, Endpoint::from_snapshot(state));
+        keep_since(&mut rows, key.0, endpoint);
         Ok(())
     }
 
@@ -153,6 +177,8 @@ impl EndpointStore for InMemoryWebhooks {
         rows.deliveries.retain(|(owner, _), delivery| {
             !(*owner == tenant && delivery.snapshot().endpoint_id == id)
         });
+        rows.since
+            .retain(|(owner, endpoint, _), _| !(*owner == tenant && *endpoint == id));
         Ok(removed)
     }
 
@@ -160,14 +186,20 @@ impl EndpointStore for InMemoryWebhooks {
         &self,
         uow: &mut dyn UnitOfWork,
         event_type: &str,
+        happened_at: Timestamp,
     ) -> Result<Vec<EndpointId>, DomainError> {
         let tenant = tenant_of(uow);
-        Ok(self
-            .rows()
+        let rows = self.rows();
+        Ok(rows
             .endpoints
             .iter()
-            .filter(|((owner, _), endpoint)| {
-                *owner == tenant && endpoint.is_subscribed_to(event_type)
+            .filter(|((owner, id), endpoint)| {
+                *owner == tenant
+                    && endpoint.is_subscribed_to(event_type)
+                    && rows
+                        .since
+                        .get(&(tenant, *id, event_type.to_owned()))
+                        .is_some_and(|since| *since <= happened_at)
             })
             .map(|((_, id), _)| *id)
             .collect())
@@ -614,6 +646,7 @@ pub async fn run_contract(ports: Ports<'_>) {
     a_change_on_a_stale_version_is_refused(&ports).await;
     removing_an_endpoint_removes_its_secrets_and_deliveries(&ports).await;
     the_fan_out_finds_only_subscribed_endpoints_of_the_tenant(&ports).await;
+    an_endpoint_is_found_only_for_what_happened_since_it_subscribed(&ports).await;
     secrets_are_kept_newest_first_ended_and_removed(&ports).await;
     a_delivery_is_made_once_per_endpoint_and_event(&ports).await;
     a_delivery_comes_back_as_it_was_after_every_change(&ports).await;
@@ -789,15 +822,60 @@ async fn the_fan_out_finds_only_subscribed_endpoints_of_the_tenant(ports: &Ports
     let store = ports.endpoints;
     let (started, revoked, nothing) = in_tenant!(ports, &tenant, |uow| {
         Ok((
-            store.subscribed_to(uow, "session.started").await?,
-            store.subscribed_to(uow, "session.revoked").await?,
-            store.subscribed_to(uow, "oauth.grant_revoked").await?,
+            store.subscribed_to(uow, "session.started", at(1)).await?,
+            store.subscribed_to(uow, "session.revoked", at(1)).await?,
+            store
+                .subscribed_to(uow, "oauth.grant_revoked", at(1))
+                .await?,
         ))
     })
     .expect("subscribed");
     assert_eq!(started, [subscribed.id()]);
     assert_eq!(revoked, [elsewhere.id()]);
     assert!(nothing.is_empty());
+}
+
+async fn an_endpoint_is_found_only_for_what_happened_since_it_subscribed(ports: &Ports<'_>) {
+    let tenant = tenant();
+    let registered = endpoint("https://hooks.example.com/since");
+    insert_endpoint(ports, &tenant, &registered).await;
+    let store = ports.endpoints;
+    let id = registered.id();
+    let owner = &tenant;
+    let found = |event_type: &'static str, happened_at: Timestamp| async move {
+        in_tenant!(ports, owner, |uow| store
+            .subscribed_to(uow, event_type, happened_at)
+            .await)
+        .expect("subscribed")
+    };
+    // Registered at MOMENT with `session.started`: what happened before is
+    // not for it.
+    assert!(found("session.started", at(-1)).await.is_empty());
+    assert_eq!(found("session.started", MOMENT).await, [id]);
+
+    // Given `session.revoked` at 10: that type counts from 10, and the type
+    // it kept still counts from MOMENT.
+    let mut changed = get_endpoint(ports, &tenant, id).await.expect("stored");
+    changed
+        .replace_subscriptions(&["session.started", "session.revoked"], at(10))
+        .expect("valid");
+    in_tenant!(ports, &tenant, |uow| store.update(uow, &changed).await).expect("update");
+    assert!(found("session.revoked", at(5)).await.is_empty());
+    assert_eq!(found("session.revoked", at(10)).await, [id]);
+    assert_eq!(found("session.started", at(5)).await, [id]);
+
+    // Dropped at 20 and given again at 30: it counts from 30.
+    for (types, moment) in [
+        (&["session.revoked"][..], at(20)),
+        (&["session.revoked", "session.started"][..], at(30)),
+    ] {
+        let mut changed = get_endpoint(ports, &tenant, id).await.expect("stored");
+        changed.replace_subscriptions(types, moment).expect("valid");
+        in_tenant!(ports, &tenant, |uow| store.update(uow, &changed).await).expect("update");
+    }
+    assert!(found("session.started", at(25)).await.is_empty());
+    assert_eq!(found("session.started", at(30)).await, [id]);
+    assert_eq!(found("session.revoked", at(15)).await, [id]);
 }
 
 async fn secrets_are_kept_newest_first_ended_and_removed(ports: &Ports<'_>) {

@@ -7,9 +7,9 @@ use axum::routing::{get, post};
 use axum::{Extension, Router};
 use hodor_kernel::{DomainError, ErrorKind, TenantContext, TenantId};
 use hodor_protocol_http::{
-    ClientAddress, ForwardedHeader, Health, Limits, Problem, ReadinessCheck, ResolvedTenant,
-    TenantResolver, TenantStatus, TrustedProxies, ops_router, parse_ranges, public_router,
-    public_router_behind, serve,
+    ClientAddress, ForwardedHeader, Health, IdentityHeader, Limits, Problem, ReadinessCheck,
+    ResolvedTenant, TenantResolver, TenantStatus, TrustedProxies, ops_router, parse_gateways,
+    parse_ranges, public_router, public_router_behind, serve,
 };
 use http_body_util::BodyExt as _;
 use std::sync::Arc;
@@ -449,6 +449,78 @@ async fn address_seen(router: &Router, peer: &str, forwarded: Option<&str>) -> S
     let reply = send(router, request).await;
     assert_eq!(reply.status, StatusCode::OK);
     reply.body
+}
+
+/// The client address a request from `peer` with these headers is given.
+async fn address_with(router: &Router, peer: &str, headers: &[(&str, &str)]) -> String {
+    let mut request = Request::get("/address");
+    for (name, value) in headers {
+        request = request.header(*name, *value);
+    }
+    let mut request = request.body(Body::empty()).expect("request");
+    request.extensions_mut().insert(axum::extract::ConnectInfo(
+        peer.parse::<std::net::SocketAddr>()
+            .expect("a socket address"),
+    ));
+    let reply = send(router, request).await;
+    assert_eq!(reply.status, StatusCode::OK);
+    reply.body
+}
+
+#[tokio::test]
+async fn behind_a_mesh_proxy_only_a_gateway_forwards_the_address() {
+    const GATEWAY: &str =
+        "spiffe://cluster.local/ns/istio-system/sa/istio-ingressgateway-service-account";
+    let proxies = TrustedProxies::new(
+        parse_ranges("127.0.0.6").expect("ranges"),
+        ForwardedHeader::XForwardedFor,
+    )
+    .with_identity_header(Some(IdentityHeader::XForwardedClientCert))
+    .with_gateways(
+        parse_gateways(GATEWAY).expect("gateways"),
+        Arc::new(hodor_adapters_crypto::X509CertificateCheck),
+    );
+    let router = address_echo(proxies);
+    let element =
+        |caller: &str| format!("By=spiffe://cluster.local/ns/hodor/sa/hodor;URI={caller}");
+    assert_eq!(
+        address_with(
+            &router,
+            "127.0.0.6:5000",
+            &[
+                ("x-forwarded-for", "203.0.113.7"),
+                ("x-forwarded-client-cert", &element(GATEWAY)),
+            ]
+        )
+        .await,
+        "203.0.113.7"
+    );
+    assert_eq!(
+        address_with(
+            &router,
+            "127.0.0.6:5000",
+            &[
+                ("x-forwarded-for", "198.51.100.1"),
+                (
+                    "x-forwarded-client-cert",
+                    &element("spiffe://cluster.local/ns/shop/sa/web")
+                ),
+            ]
+        )
+        .await,
+        "127.0.0.6",
+        "another workload is known by the proxy's address"
+    );
+    assert_eq!(
+        address_with(
+            &router,
+            "127.0.0.6:5000",
+            &[("x-forwarded-for", "198.51.100.1")]
+        )
+        .await,
+        "127.0.0.6",
+        "with no identity, the forwarded address is ignored"
+    );
 }
 
 #[tokio::test]

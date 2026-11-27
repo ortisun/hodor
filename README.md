@@ -726,3 +726,8 @@ cargo fmt --check && cargo clippy --workspace --all-targets --all-features -- -D
 - Commits follow [Conventional Commits](https://www.conventionalcommits.org/), with no co-author trailers.
 - Branching follows Gitflow: feature branches are cut from `develop` and merged back through pull requests; `main` holds releases.
 - A pull request is merged only when continuous integration is green.
+- Contributions are offered under the project's license.
+
+## License
+
+Hodor is licensed under the [MIT License](LICENSE): anyone may use, change, distribute and sell it, keeping the copyright notice and the license text. What it bundles, the crates and packages it depends on and the fonts of its pages, keeps its own license ([Decision 0038](docs/decisions/0038-the-license.md)).

@@ -1,0 +1,129 @@
+# Envoy Gateway in front of Linkerd, for the demonstration of Milestone 11. Its proxies are meshed through
+# the EnvoyProxy below, so that they reach Hodor, hodor-ext-authz and Orders over Linkerd's mutual TLS and
+# Hodor's proxy names them by their identity. Their listeners' ports are left out of Linkerd's proxy on the
+# way in: a client outside the mesh connects to Envoy itself, which sees the client's own address and adds
+# it to X-Forwarded-For. Through the proxy, every client would arrive from the pod's own address.
+#
+# Two listeners: login.example.com, Hodor itself, in plain HTTP; and orders.example.com, the protected
+# application, over TLS with a certificate the script makes, since Envoy names the destination of a check by
+# the certificate of the listener that received the request, and a listener without TLS names none.
+#
+#   python3 deploy/demo/service_mesh.py applies it; see docs/operations/quick-start.md.
+
+apiVersion: gateway.envoyproxy.io/v1alpha1
+kind: EnvoyProxy
+metadata:
+  name: meshed
+  namespace: envoy-gateway-system
+spec:
+  # The caller sends the claims of its token beside it, which hodor-ext-authz believes only once the token is
+  # checked: the JWT check comes first, which Envoy Gateway's own order of filters does not do.
+  filterOrder:
+    - name: envoy.filters.http.jwt_authn
+      before: envoy.filters.http.ext_authz
+  provider:
+    type: Kubernetes
+    kubernetes:
+      # Fixed names, so that the gateway's Linkerd identity is
+      # edge-gateway.envoy-gateway-system.serviceaccount.identity.linkerd.cluster.local.
+      envoyServiceAccount:
+        name: edge-gateway
+      envoyDeployment:
+        name: edge-gateway
+        replicas: 1
+        pod:
+          annotations:
+            linkerd.io/inject: enabled
+            config.linkerd.io/skip-inbound-ports: "8080,8443"
+      envoyService:
+        name: edge-gateway
+        type: ClusterIP
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: GatewayClass
+metadata:
+  name: meshed
+spec:
+  controllerName: gateway.envoyproxy.io/gatewayclass-controller
+  parametersRef:
+    group: gateway.envoyproxy.io
+    kind: EnvoyProxy
+    name: meshed
+    namespace: envoy-gateway-system
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: Gateway
+metadata:
+  name: edge
+  namespace: edge
+spec:
+  gatewayClassName: meshed
+  listeners:
+    - name: login
+      protocol: HTTP
+      port: 8080
+      hostname: login.example.com
+      allowedRoutes:
+        namespaces:
+          from: All
+    - name: orders
+      protocol: HTTPS
+      port: 8443
+      hostname: orders.example.com
+      tls:
+        mode: Terminate
+        certificateRefs:
+          - name: orders-tls
+      allowedRoutes:
+        namespaces:
+          from: All
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: hodor
+  namespace: hodor
+spec:
+  parentRefs:
+    - name: edge
+      namespace: edge
+      sectionName: login
+  hostnames:
+    - login.example.com
+  rules:
+    - backendRefs:
+        - name: hodor
+          port: 8080
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: orders
+  namespace: shop
+spec:
+  parentRefs:
+    - name: edge
+      namespace: edge
+      sectionName: orders
+  hostnames:
+    - orders.example.com
+  rules:
+    - backendRefs:
+        - name: orders
+          port: 8080
+---
+# The SecurityPolicy of Orders, in the namespace shop, names hodor-ext-authz, a Service of the namespace hodor.
+apiVersion: gateway.networking.k8s.io/v1beta1
+kind: ReferenceGrant
+metadata:
+  name: orders-asks-hodor-ext-authz
+  namespace: hodor
+spec:
+  from:
+    - group: gateway.envoyproxy.io
+      kind: SecurityPolicy
+      namespace: shop
+  to:
+    - group: ""
+      kind: Service
+      name: hodor-ext-authz

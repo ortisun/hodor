@@ -3,10 +3,15 @@
 //! applications, recovery codes and checking the audit log.
 
 mod applications;
+mod authority;
 mod decisions;
 mod memberships;
+mod mesh;
 mod policies;
+mod registration;
 mod roles;
+mod trust_domains;
+mod users;
 mod webhooks;
 mod workloads;
 
@@ -14,6 +19,8 @@ use clap::{Parser, Subcommand, ValueEnum};
 use hodor_adapters_crypto::{
     AwsLcHmacSha1, BundleSigningKey, LocalKeyProvider, OsRandom, SecretKeys, Sha256Digest,
 };
+use hodor_adapters_http::{OutboundPolicy, ServiceHttpClient};
+use hodor_adapters_kms::KeyProviderSettings;
 use hodor_adapters_postgres::{
     Database, PgAccessTokenStore, PgAuditLog, PgBundleStore, PgGroupRepository,
     PgInstanceStatusStore, PgInstanceStore, PgKeyStore, PgLinkStore, PgOrganizationRepository,
@@ -33,11 +40,11 @@ use hodor_identity::api::{
     CreateUser, IdentifierKind, IdentityService, NormalizedIdentifier, Profile, UserKind,
 };
 use hodor_kernel::{
-    Actor, CorrelationId, DomainError, Secret, SecretBox, SystemClock, TenantContext,
+    Actor, CorrelationId, DomainError, HttpClient, Secret, SecretBox, SystemClock, TenantContext,
 };
 use hodor_keys::api::{
-    KeyAlgorithm, KeyService, KeyState, KeyUse, KeyVersion, KeyVersionId, RotationPolicy,
-    TenantSecretBox,
+    KeyAlgorithm, KeyProvider, KeyProviders, KeyService, KeyState, KeyUse, KeyVersion,
+    KeyVersionId, RotationPolicy, TenantSecretBox,
 };
 use hodor_tenant::api::{
     AssuranceLevel, AssuranceLevels, AssuranceRequirement, Caller, CreateTenant, Deprovisioning,
@@ -191,6 +198,20 @@ enum Command {
         command: memberships::GroupCommand,
     },
 
+    /// Manage a person's standard claims.
+    User {
+        /// Connection URL of the application role.
+        #[arg(
+            long,
+            env = "HODOR_DATABASE_URL",
+            hide_env_values = true,
+            global = true
+        )]
+        database_url: Option<String>,
+        #[command(subcommand)]
+        command: users::UserCommand,
+    },
+
     /// Manage a tenant's organizations, their units and members, and invite
     /// people to them.
     Organization {
@@ -281,6 +302,21 @@ enum Command {
         command: applications::ClientCommand,
     },
 
+    /// Turn client registration on or off in a tenant, and make, list and
+    /// revoke its initial access tokens.
+    ClientRegistration {
+        /// Connection URL of the application role.
+        #[arg(
+            long,
+            env = "HODOR_DATABASE_URL",
+            hide_env_values = true,
+            global = true
+        )]
+        database_url: Option<String>,
+        #[command(subcommand)]
+        command: registration::RegistrationCommand,
+    },
+
     /// Manage a tenant's resource servers.
     ResourceServer {
         /// Connection URL of the application role.
@@ -293,6 +329,21 @@ enum Command {
         database_url: Option<String>,
         #[command(subcommand)]
         command: applications::ResourceServerCommand,
+    },
+
+    /// Write the policies of a service mesh from Hodor's roles, for the
+    /// operator to apply.
+    Mesh {
+        /// Connection URL of the application role.
+        #[arg(
+            long,
+            env = "HODOR_DATABASE_URL",
+            hide_env_values = true,
+            global = true
+        )]
+        database_url: Option<String>,
+        #[command(subcommand)]
+        command: mesh::MeshCommand,
     },
 
     /// Manage a tenant's webhook endpoints and their deliveries.
@@ -322,6 +373,31 @@ enum Command {
         development_hosts: Vec<String>,
         #[command(subcommand)]
         command: webhooks::WebhookCommand,
+    },
+
+    /// Manage the SPIFFE trust domains a tenant trusts, and their bundles.
+    TrustDomain {
+        /// Connection URL of the application role.
+        #[arg(
+            long,
+            env = "HODOR_DATABASE_URL",
+            hide_env_values = true,
+            global = true
+        )]
+        database_url: Option<String>,
+        /// Hosts with their ports that a bundle endpoint may name at a
+        /// private address and over plain HTTP, separated by commas, as the
+        /// server has them. For a development stack; never set it anywhere
+        /// real.
+        #[arg(
+            long,
+            env = "HODOR_OUTBOUND_DEVELOPMENT_HOSTS",
+            value_delimiter = ',',
+            global = true
+        )]
+        development_hosts: Vec<String>,
+        #[command(subcommand)]
+        command: trust_domains::TrustDomainCommand,
     },
 
     /// Manage people's authenticator applications, until people can do it
@@ -370,6 +446,28 @@ enum Command {
         key_overlap_hours: i64,
         #[command(subcommand)]
         command: KeysCommand,
+    },
+
+    /// Sign, list and withdraw the intermediates a tenant's certificate
+    /// authority signs for its meshes.
+    Authority {
+        /// Connection URL of the application role.
+        #[arg(
+            long,
+            env = "HODOR_DATABASE_URL",
+            hide_env_values = true,
+            global = true
+        )]
+        database_url: Option<String>,
+        /// The keys that wrap the tenants' keys, as the server has them.
+        #[arg(long, env = "HODOR_SECRET_KEYS", hide_env_values = true, global = true)]
+        secret_keys: Option<String>,
+        /// The certificate authority of the tenants, as the server has it:
+        /// `on` or `development`.
+        #[arg(long, env = "HODOR_CERTIFICATE_AUTHORITY", global = true)]
+        certificate_authority: Option<String>,
+        #[command(subcommand)]
+        command: authority::AuthorityCommand,
     },
 
     /// Manage people's recovery codes, until people can do it themselves
@@ -528,7 +626,7 @@ struct RoleArgs {
     /// The user's identifier.
     #[arg(long)]
     user: hodor_kernel::UserId,
-    /// `tenant_administrator` or `tenant_auditor`.
+    /// `tenant_administrator`, `tenant_auditor` or `certificate_signer`.
     #[arg(long)]
     role: String,
 }
@@ -613,6 +711,12 @@ enum ProviderCommand {
         /// addresses the organization itself hands out.
         #[arg(long)]
         trust_email: bool,
+        /// For a directory or a SAML provider: the attribute that gives a
+        /// standard claim of a person it creates, as `claim=attribute`,
+        /// such as `given_name=givenName` or `address.locality=l`. May be
+        /// given once per claim.
+        #[arg(long = "claim-attribute")]
+        claim_attributes: Vec<String>,
     },
     /// List a tenant's providers.
     List {
@@ -906,6 +1010,20 @@ enum TenantCommand {
         #[arg(long, value_enum)]
         link: Option<OnOffArg>,
     },
+    /// Set how long a request a client pushes waits for its browser, and
+    /// whether every client must push its requests. What is not given
+    /// stays as it was.
+    PushedRequests {
+        /// The tenant's slug.
+        #[arg(long)]
+        slug: String,
+        /// The life of a pushed request, in seconds: 10 to 600.
+        #[arg(long)]
+        seconds: Option<u16>,
+        /// Whether every client must push its requests.
+        #[arg(long, value_enum)]
+        required: Option<OnOffArg>,
+    },
     /// Set what deprovisioning a person through SCIM does: `DELETE` of a
     /// user or `active: false`. Either way their sessions and grants end.
     ScimDeprovisioning {
@@ -1068,6 +1186,34 @@ async fn run_tenant(
                 entry.slug,
                 on_off(policy.code),
                 on_off(policy.link)
+            ))
+        }
+        TenantCommand::PushedRequests {
+            slug,
+            seconds,
+            required,
+        } => {
+            let entry = existing(service, &slug).await?;
+            let tenant = TenantContext::assume(entry.tenant_id);
+            let mut settings = service.get(&tenant).await?.snapshot().settings.clone();
+            let policy = &mut settings.pushed_requests;
+            if let Some(seconds) = seconds {
+                policy.lifetime_seconds = seconds;
+            }
+            if let Some(required) = required {
+                policy.required = required.is_on();
+            }
+            let now = if seconds.is_some() || required.is_some() {
+                service.change_settings(&tenant, settings, caller()).await?
+            } else {
+                service.get(&tenant).await?
+            };
+            let policy = now.snapshot().settings.pushed_requests;
+            Ok(format!(
+                "{} pushed-requests seconds {} required {}",
+                entry.slug,
+                policy.lifetime_seconds,
+                on_off(policy.required)
             ))
         }
         TenantCommand::ScimDeprovisioning { slug, policy } => {
@@ -1380,8 +1526,19 @@ async fn run_provider(
             name_attribute,
             sign_on_address,
             certificate,
+            claim_attributes,
             ..
         } => {
+            let mut claims = hodor_federation::api::ClaimAttributes::new();
+            for pair in claim_attributes {
+                let Some((claim, attribute)) = pair.split_once('=') else {
+                    return Err(DomainError::invalid(
+                        "federation.claim_attribute_invalid",
+                        "a claim attribute is written claim=attribute",
+                    ));
+                };
+                claims.insert(claim.trim().to_owned(), attribute.trim().to_owned());
+            }
             let kind = match kind {
                 ProviderKindArg::OpenidConnect => ProviderKind::OpenIdConnect,
                 ProviderKindArg::Github => ProviderKind::GitHub,
@@ -1398,6 +1555,7 @@ async fn run_provider(
                     subject_attribute,
                     email_attribute: email_attribute.clone().unwrap_or_else(|| "mail".to_owned()),
                     name_attribute: name_attribute.clone().unwrap_or_else(|| "cn".to_owned()),
+                    claim_attributes: claims.clone(),
                 }),
             };
             // The same for a SAML identity provider's settings.
@@ -1414,9 +1572,16 @@ async fn run_provider(
                     if let Some(name) = name_attribute {
                         settings.name_attribute = name;
                     }
+                    settings.claim_attributes = claims.clone();
                     Some(settings)
                 }
             };
+            if !claims.is_empty() && directory.is_none() && saml.is_none() {
+                return Err(DomainError::invalid(
+                    "federation.claim_attribute_invalid",
+                    "claim attributes are for a directory or a SAML provider",
+                ));
+            }
             // A SAML identity provider is not proved anything with a secret.
             let client_secret = if kind == ProviderKind::Saml {
                 String::new()
@@ -1746,9 +1911,7 @@ async fn run_keys(
     let keys = KeyService::new(
         units(),
         Arc::new(PgKeyStore),
-        Arc::new(LocalKeyProvider::new(Arc::new(SecretKeys::parse(
-            &Secret::from(setting),
-        )?))),
+        key_provider(Arc::new(SecretKeys::parse(&Secret::from(setting))?))?,
         clock,
     );
     let slug = match &command {
@@ -2158,6 +2321,13 @@ async fn main() -> Result<(), Box<dyn Error>> {
             let database = connect(database_url).await?;
             print(memberships::run_group(&database, command).await)?;
         }
+        Command::User {
+            database_url,
+            command,
+        } => {
+            let database = connect(database_url).await?;
+            print(users::run(&database, command).await)?;
+        }
         Command::ServiceAccount {
             database_url,
             command,
@@ -2195,12 +2365,26 @@ async fn main() -> Result<(), Box<dyn Error>> {
             let database = connect(database_url).await?;
             print(applications::run_client(&database, command, &development_hosts).await)?;
         }
+        Command::ClientRegistration {
+            database_url,
+            command,
+        } => {
+            let database = connect(database_url).await?;
+            print(registration::run(&database, command).await)?;
+        }
         Command::ResourceServer {
             database_url,
             command,
         } => {
             let database = connect(database_url).await?;
             print(applications::run_resource_server(&database, command).await)?;
+        }
+        Command::Mesh {
+            database_url,
+            command,
+        } => {
+            let database = connect(database_url).await?;
+            print(mesh::run(&database, command).await)?;
         }
         Command::Webhook {
             database_url,
@@ -2220,6 +2404,14 @@ async fn main() -> Result<(), Box<dyn Error>> {
                 )
                 .await,
             )?;
+        }
+        Command::TrustDomain {
+            database_url,
+            development_hosts,
+            command,
+        } => {
+            let database = connect(database_url).await?;
+            print(trust_domains::run(&database, &development_hosts, command).await)?;
         }
         Command::Totp {
             database_url,
@@ -2246,6 +2438,35 @@ async fn main() -> Result<(), Box<dyn Error>> {
                 .map_err(|error| format!("{}: {}", error.code(), error.message()))?;
             if !output.is_empty() {
                 writeln!(std::io::stdout(), "{output}")?;
+            }
+        }
+        Command::Authority {
+            database_url,
+            secret_keys,
+            certificate_authority,
+            command,
+        } => {
+            let database = connect(database_url).await?;
+            let printed = authority::run(
+                &database,
+                authority::Installation {
+                    secret_keys,
+                    setting: certificate_authority,
+                },
+                command,
+            )
+            .await
+            .map_err(|error| match error.detail() {
+                Some(detail) if !detail.is_empty() => {
+                    format!("{}: {}\n{detail}", error.code(), error.message())
+                }
+                _ => format!("{}: {}", error.code(), error.message()),
+            })?;
+            if let Some(note) = printed.note {
+                writeln!(std::io::stderr(), "{note}")?;
+            }
+            if !printed.output.is_empty() {
+                writeln!(std::io::stdout(), "{}", printed.output)?;
             }
         }
         Command::RecoveryCodes {
@@ -2317,4 +2538,45 @@ async fn main() -> Result<(), Box<dyn Error>> {
         }
     }
     Ok(())
+}
+
+/// The key provider of the keys context: the local one, wrapping keys
+/// under `root`, and OpenBao when `HODOR_OPENBAO_ADDRESS` is set, reached
+/// through a client that calls its address alone. New signing keys are
+/// made where `HODOR_KEY_PROVIDER` says, and every version is used by the
+/// provider that made it (`docs/operations/keys-in-openbao.md`).
+fn key_provider(root: Arc<SecretKeys>) -> Result<Arc<dyn KeyProvider>, DomainError> {
+    Ok(Arc::new(key_providers(root)?))
+}
+
+/// Every key provider, as [`key_provider`] has them, with the one that
+/// makes the keys of certificate authorities.
+fn key_providers(root: Arc<SecretKeys>) -> Result<KeyProviders, DomainError> {
+    let settings = KeyProviderSettings::from_lookup(|name| std::env::var(name).ok())?;
+    let providers = settings.providers(Arc::new(LocalKeyProvider::new(root)), |openbao| {
+        let origins = [openbao.address.clone()];
+        let policy = OutboundPolicy {
+            timeout: openbao.time_limit,
+            connect_timeout: openbao.time_limit.min(std::time::Duration::from_secs(5)),
+            ..OutboundPolicy::default()
+        };
+        let client = match &openbao.certificate_authorities {
+            Some(path) => {
+                let authorities = std::fs::read(path).map_err(|error| {
+                    DomainError::invalid(
+                        "keys.provider_settings_invalid",
+                        "the settings of the key provider are not valid",
+                    )
+                    .with_detail(format!(
+                        "HODOR_OPENBAO_CA_FILE cannot be read: {}",
+                        error.kind()
+                    ))
+                })?;
+                ServiceHttpClient::trusting_only(&origins, policy, &authorities)?
+            }
+            None => ServiceHttpClient::new(&origins, policy)?,
+        };
+        Ok(Arc::new(client) as Arc<dyn HttpClient>)
+    })?;
+    Ok(providers)
 }

@@ -43,7 +43,7 @@ also used by `frontend/admin-console` and `frontend/design-system/showcase`.
     [messages](./src/messages/EGM.md), [pages](./src/pages/EGM.md),
     [parts](./src/parts/EGM.md) and [themes](./src/themes/EGM.md) folders.
   - [browser-tests](./browser-tests/EGM.md) - Playwright scenarios for
-    registration, sign-in, recovery, identity providers, directories, SAML,
+    registration, sign-in, recovery, the profile page, identity providers, directories, SAML,
     keyboard use, accessibility and the Content Security Policy.
 
 ## Invariants

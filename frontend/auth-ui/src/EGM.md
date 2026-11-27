@@ -22,22 +22,24 @@ its header); the pages see plain values.
   `client={new Client(place.tenant)}`, `go` (`window.location.assign(pathOf(...))`)
   and `leave` (`window.location.assign(url)`).
 - `App.tsx:App(AppProps)` - `AppProps` is `{ place, client, text, notice,
-  token, go, leave, providerAnswer, signInAgain?, loginHint?, afterSignIn?,
-  reauthenticate? }`; `signInAgain`, `loginHint` and `afterSignIn` go to
-  `SignInPage`; `main.tsx` sets `signInAgain`, `afterSignIn` and
+  token, go, leave, providerAnswer, signInAgain?, forApplication?,
+  loginHint?, afterSignIn?, reauthenticate? }`; `signInAgain`, `loginHint`
+  and `afterSignIn` go to `SignInPage`, `forApplication` (from
+  `continuesAuthorization`) to the registration `AskPage`; `main.tsx` sets `signInAgain`, `afterSignIn` and
   `reauthenticate` from `continuationOf(location.search)` and
   `signInAgainPath`. It renders `sign-in` as `SignInPage`,
   `register` / `recover` as `AskPage`, `complete-registration` /
   `reset-password` as `FinishPage`, `account` as `AccountPage`, `sign-out`
-  as `SignOutPage`, `security` as `SecurityPage`, `sign-in-link` as
+  as `SignOutPage`, `security` as `SecurityPage`, `profile` as
+  `ProfilePage`, `sign-in-link` as
   `SignInLinkPage` (`main.tsx` reads the token and takes the fragment out of
   the address for it),
   `provider-callback` as `ComingBackPage`, and anything else as a "page not
   found" frame with a link to sign-in.
 - `address.ts`:
   - `PAGES` / `PageName` - `sign-in`, `register`, `complete-registration`,
-    `recover`, `reset-password`, `consent`, `account`, `security`,
-    `accept-invitation`, `sign-in-link`.
+    `recover`, `reset-password`, `consent`, `account`, `sign-out`,
+    `security`, `profile`, `accept-invitation`, `sign-in-link`.
   - `continuationOf(search)` - `"authorization"`, `"security"` or `null`, from
     `?continue=`; `signInAgainPath(tenant)` is
     `/t/{tenant}/account/sign-in?continue=security`.
@@ -63,13 +65,23 @@ its header); the pages see plain values.
     `binding` (`"saml"` or `null`) and `receipt` from the query string.
 - `client.ts`:
   - `Failure` - `code` (the problem document's `code`), `status` (`0` when
-    unreachable), `requestId`, `retryAfterSeconds`; getter `unreachable`.
+    unreachable), `requestId`, `retryAfterSeconds`, `detail` (the problem's
+    English `detail`, which names what was wrong and never a typed value);
+    getter `unreachable`.
   - Types `SignInStatus` (`pending | rejected | failed | completed`),
     `SignInAnswer` (`status`, `step`, `attemptsLeft`, `continueTo?`, and
     `recoveryCodes?` when the answer holds a non-empty `recovery_codes`),
     `EnrollmentKind` (`authenticator_application | security_key | passkey`), `OfferedProvider`
     (`alias`, `displayName`, `isDirectory` when `kind === "ldap"`), `Session`
     (`userId`, `sessionId`, `signedInAt`, `expiresAt`).
+  - `CLAIM_FIELDS` / `ClaimField` - the seventeen fields of a person's
+    standard claims the pages edit: `given_name`, `middle_name`,
+    `family_name`, `nickname`, `gender`, `birthdate`, `zoneinfo`, `profile`,
+    `picture`, `website`, `phone_number`, and the parts of the address as
+    `address.formatted`, `address.street_address`, `address.locality`,
+    `address.region`, `address.postal_code`, `address.country`.
+  - `Profile` - `displayName`, `claims` (a text for every `ClaimField`, empty
+    when the person has no value) and `phoneNumberVerified`.
   - `Client(tenant, fetch?)` - base path `/t/{tenant}/interaction`; methods
     and the requests they send:
 
@@ -94,6 +106,8 @@ its header); the pages see plain values.
     | `answerConsent("allow" or "deny")` | `POST /consent` (answers `continue`, refused unless it is an address of the tenant's authorization endpoint) |
     | `consents()` | `GET /consents` (answers `GivenConsent`s) |
     | `withdrawConsent(clientId)` | `DELETE /consents/{clientId}` (404 is not an error) |
+    | `profile()` | `GET /profile` (answers a `Profile`) |
+    | `saveProfile(displayName, claims)` | `PUT /profile` `{ display_name?, claims }` (answers the `Profile` kept) |
     | `passkeyOptions()` | `POST /sign-in/steps/passkey/options` (answers `public_key`) |
     | `submitPasskey(answer)` | `POST /sign-in/steps/passkey` |
     | `alternatives()` | `GET /sign-in/alternatives` (answers the keys) |
@@ -121,8 +135,9 @@ its header); the pages see plain values.
   `ThemeSlug`, `defaultThemeSlug = "hodor"`; imports
   `./themes/hodor/hodor.js` and `./themes/hodor/hodor.css`.
 - `auth-ui.css` - page layout only (`.auth-page`, `.auth-card`,
-  `.auth-title`, `.auth-ways`, `.auth-hidden`, `.auth-divider`), using theme
-  tokens only.
+  `.auth-title`, `.auth-ways`, `.auth-hidden`, `.auth-divider`, and
+  `.auth-fieldset`, a group of fields whose legend reads as a heading,
+  without a frame), using theme tokens only.
 - `testing.ts` (unit test support) - `json`, `problem` (a problem document
   with `type: urn:hodor:error:{code}` and `request_id: "request-1"`),
   `empty`, and `scripted(script)`, which returns a `Client` of tenant `acme`
@@ -133,7 +148,8 @@ its header); the pages see plain values.
   - [messages](./messages/EGM.md) - the English and Portuguese catalogs,
     `chooseMessages`, `describe`, `fieldProblem`.
   - [pages](./pages/EGM.md) - `SignInPage`, `AskPage`, `FinishPage`,
-    `AccountPage`, `SignOutPage`, `ComingBackPage`, `PageProps`.
+    `AccountPage`, `ProfilePage`, `SignOutPage`, `ComingBackPage`,
+    `PageProps`.
   - [parts](./parts/EGM.md) - `Frame`, `Form`, `Field`, `PasswordField`,
     `Submit`, `Action`, `Notice`, `Words`, `PageLink`, `Ways`.
   - [themes](./themes/EGM.md) - the Hodor theme source and its compiled
@@ -153,8 +169,8 @@ its header); the pages see plain values.
 - Every request is sent with `Accept: application/json`, `credentials:
   "same-origin"`, `cache: "no-store"` and `redirect: "error"`. A network
   error becomes `Failure(null, 0)`; a non-success status becomes a `Failure`
-  carrying `code`, `request_id` (or the `X-Request-Id` header) and a positive
-  `Retry-After`.
+  carrying `code`, `request_id` (or the `X-Request-Id` header), a positive
+  `Retry-After` and `detail`.
 - `chooseProvider` accepts only an `http://` or `https://` redirect address;
   anything else is a `Failure`. An answer with an unknown sign-in `status`,
   or a session missing a field, is also a `Failure`.
@@ -162,6 +178,11 @@ its header); the pages see plain values.
   gone); it does fail when unreachable or on a status of 500 or more.
 - `completeRegistration` sends `display_name` only when the trimmed name is
   not empty.
+- `saveProfile` replaces the whole profile: it trims every field and sends
+  only those not empty, so a field left empty removes the claim; it sends
+  `address` as an object of its parts only when one part has a value,
+  `display_name` only when not empty, and never `phone_number_verified`,
+  which is the server's to say.
 - What a provider sent back and any `notice` are taken out of the address
   with `history.replaceState` once read (`main.tsx`), so the code stays out
   of the browser history and a reload does not repeat the notice.

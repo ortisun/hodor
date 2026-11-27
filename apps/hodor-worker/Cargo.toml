@@ -6,12 +6,14 @@ edition.workspace = true
 rust-version.workspace = true
 publish.workspace = true
 repository.workspace = true
+license.workspace = true
 
 [dependencies]
 async-trait.workspace = true
 clap.workspace = true
 hodor-adapters-crypto.workspace = true
 hodor-adapters-http.workspace = true
+hodor-adapters-kms.workspace = true
 hodor-adapters-policy-check.workspace = true
 hodor-adapters-postgres.workspace = true
 hodor-adapters-smtp.workspace = true
@@ -39,6 +41,7 @@ hodor-session.workspace = true
 tower.workspace = true
 hodor-adapters-postgres = { workspace = true, features = ["testing"] }
 hodor-kernel = { workspace = true, features = ["testing"] }
+hodor-keys = { workspace = true, features = ["testing"] }
 hodor-notification = { workspace = true, features = ["testing"] }
 hodor-webhooks = { workspace = true, features = ["testing"] }
 http.workspace = true
@@ -47,6 +50,7 @@ serde.workspace = true
 serde_json.workspace = true
 sqlx.workspace = true
 standardwebhooks.workspace = true
+hodor-test-containers.workspace = true
 testcontainers.workspace = true
 
 [lints]

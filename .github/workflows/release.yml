@@ -1,11 +1,13 @@
 # Publishes the image and the chart of a release, signed. See
 # docs/security/supply-chain.md, "What a release publishes".
 #
-# On the tag of a release (v0.3.0): builds the image for each architecture
-# on a machine of that architecture, joins them under one tag, signs the
-# image and the chart with cosign and the workflow's own identity, and
-# publishes the chart. On a pull request that changes this workflow or the
-# Dockerfile: the same builds, and nothing published or signed.
+# On the tag of a release (v0.3.0): builds each image, Hodor's, that of
+# hodor-ext-authz and that of hodor-cert-manager-issuer, for each
+# architecture on a machine of that architecture, joins each image's
+# architectures under one tag, signs the images and the chart with cosign
+# and the workflow's own identity, and publishes the chart. On a pull request
+# that changes this workflow or a Dockerfile: the same builds, and nothing
+# published or signed.
 name: Release
 
 on:
@@ -16,11 +18,15 @@ on:
     paths:
       - .github/workflows/release.yml
       - deploy/docker/Dockerfile
+      - deploy/docker/ext-authz.Dockerfile
+      - deploy/docker/cert-manager-issuer.Dockerfile
 
 permissions:
   contents: read
 
 env:
+  # Where the images are: Hodor's, and hodor-ext-authz's and hodor-cert-manager-issuer's beside it.
+  REGISTRY: ghcr.io/${{ github.repository_owner }}
   IMAGE: ghcr.io/${{ github.repository_owner }}/hodor
   CHARTS: oci://ghcr.io/${{ github.repository_owner }}/charts
   CHART: deploy/install/helm/hodor
@@ -48,15 +54,23 @@ jobs:
           echo "version=$binaries" >> "$GITHUB_OUTPUT"
 
   image:
-    name: Image for ${{ matrix.architecture }}
+    name: Image ${{ matrix.image }} for ${{ matrix.architecture }}
     needs: version
     strategy:
       matrix:
+        image: [hodor, hodor-ext-authz, hodor-cert-manager-issuer]
+        architecture: [amd64, arm64]
         include:
           - architecture: amd64
             runner: ubuntu-latest
           - architecture: arm64
             runner: ubuntu-24.04-arm
+          - image: hodor
+            dockerfile: deploy/docker/Dockerfile
+          - image: hodor-ext-authz
+            dockerfile: deploy/docker/ext-authz.Dockerfile
+          - image: hodor-cert-manager-issuer
+            dockerfile: deploy/docker/cert-manager-issuer.Dockerfile
     runs-on: ${{ matrix.runner }}
     permissions:
       contents: read
@@ -76,7 +90,7 @@ jobs:
         uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
           context: .
-          file: deploy/docker/Dockerfile
+          file: ${{ matrix.dockerfile }}
           platforms: linux/${{ matrix.architecture }}
           labels: |
             org.opencontainers.image.source=https://github.com/${{ github.repository }}
@@ -84,17 +98,19 @@ jobs:
             org.opencontainers.image.revision=${{ github.sha }}
           sbom: true
           provenance: mode=max
-          outputs: type=image,name=${{ env.IMAGE }},push-by-digest=true,name-canonical=true,push=${{ env.PUBLISH }}
+          outputs: type=image,name=${{ env.REGISTRY }}/${{ matrix.image }},push-by-digest=true,name-canonical=true,push=${{ env.PUBLISH }}
       - name: Keep the digest for the job that joins the architectures
         env:
           DIGEST: ${{ steps.build.outputs.digest }}
+          IMAGE_NAME: ${{ matrix.image }}
         run: |
-          mkdir -p digests
-          touch "digests/${DIGEST#sha256:}"
+          mkdir -p "digests/$IMAGE_NAME"
+          touch "digests/$IMAGE_NAME/${DIGEST#sha256:}"
+      # The whole directory, so that each digest keeps its image's folder.
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: digest-${{ matrix.architecture }}
-          path: digests/*
+          name: digest-${{ matrix.image }}-${{ matrix.architecture }}
+          path: digests/
           retention-days: 1
 
   publish:
@@ -124,18 +140,24 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
       - uses: sigstore/cosign-installer@756fe2d284c7292c4e9b62c8a28f1e5629c59532 # v4.1.3
       - uses: azure/setup-helm@2f5e7bc67f1f9972ab16657bb795f36d8f04de0e # v5.1.0
-      - name: Join the architectures under the version's tag
+      - name: Join each image's architectures under the version's tag
         working-directory: digests
         run: |
-          sources=()
-          for digest in *; do sources+=("$IMAGE@sha256:$digest"); done
-          test "${#sources[@]}" -eq 2
-          docker buildx imagetools create --tag "$IMAGE:$VERSION" "${sources[@]}"
-          docker buildx imagetools inspect "$IMAGE:$VERSION"
-      - name: Sign the image
+          for name in hodor hodor-ext-authz hodor-cert-manager-issuer; do
+            image="$REGISTRY/$name"
+            sources=()
+            for digest in "$name"/*; do sources+=("$image@sha256:${digest#"$name"/}"); done
+            test "${#sources[@]}" -eq 2
+            docker buildx imagetools create --tag "$image:$VERSION" "${sources[@]}"
+            docker buildx imagetools inspect "$image:$VERSION"
+          done
+      - name: Sign the images
         run: |
-          digest="$(docker buildx imagetools inspect "$IMAGE:$VERSION" --format '{{json .Manifest}}' | jq -r .digest)"
-          cosign sign --yes "$IMAGE@$digest"
+          for name in hodor hodor-ext-authz hodor-cert-manager-issuer; do
+            image="$REGISTRY/$name"
+            digest="$(docker buildx imagetools inspect "$image:$VERSION" --format '{{json .Manifest}}' | jq -r .digest)"
+            cosign sign --yes "$image@$digest"
+          done
       - name: Package, publish and sign the chart
         run: |
           helm package "$CHART" --destination chart
@@ -145,10 +167,10 @@ jobs:
           digest="$(echo "$pushed" | sed -n 's/^Digest: //p')"
           test -n "$digest"
           cosign sign --yes "${CHARTS#oci://}/hodor@$digest"
-      - name: Check both signatures as a person would
+      - name: Check every signature as a person would
         run: |
           identity='^https://github[.]com/${{ github.repository }}/[.]github/workflows/release[.]yml@refs/tags/v'
-          for artifact in "$IMAGE:$VERSION" "${CHARTS#oci://}/hodor:$VERSION"; do
+          for artifact in "$IMAGE:$VERSION" "$REGISTRY/hodor-ext-authz:$VERSION" "$REGISTRY/hodor-cert-manager-issuer:$VERSION" "${CHARTS#oci://}/hodor:$VERSION"; do
             cosign verify "$artifact" \
               --certificate-identity-regexp "$identity" \
               --certificate-oidc-issuer https://token.actions.githubusercontent.com > /dev/null

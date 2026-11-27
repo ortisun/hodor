@@ -1,0 +1,36 @@
+[package]
+name = "hodor-cert-manager-issuer"
+description = "cert-manager's outside issuer, signing intermediates through a tenant's certificate authority in Hodor."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+repository.workspace = true
+license.workspace = true
+
+[dependencies]
+async-trait.workspace = true
+aws-lc-rs.workspace = true
+axum.workspace = true
+base64.workspace = true
+clap.workspace = true
+form_urlencoded.workspace = true
+futures.workspace = true
+hodor-observability.workspace = true
+k8s-openapi.workspace = true
+kube.workspace = true
+opentelemetry.workspace = true
+reqwest = { workspace = true, features = ["rustls", "json"] }
+serde.workspace = true
+serde_json.workspace = true
+time.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+
+# k8s-openapi is not named in the code: it is here for the version of
+# Kubernetes its feature chooses, which kube needs exactly once in the build.
+[package.metadata.cargo-machete]
+ignored = ["k8s-openapi"]
+
+[lints]
+workspace = true

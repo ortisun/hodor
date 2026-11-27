@@ -87,22 +87,48 @@ impl ClientKey {
         let Value::Object(key) = value else {
             return Err(key_invalid("the key is not a JSON object"));
         };
+        Self::checked(key, true, now)
+    }
+
+    /// Reads a key of a set a client publishes at its address: checked as
+    /// an administrator's key is, but a key without a `kid` is kept, with
+    /// an empty `key_id`, and signs only what names no `kid`. `None` for a
+    /// key Hodor would refuse, a key with a private part above all.
+    #[must_use]
+    pub(crate) fn published(key: &Value, now: Timestamp) -> Option<Self> {
+        let Value::Object(key) = key else {
+            return None;
+        };
+        if serde_json::to_string(key).map_or(true, |text| text.len() > MAX_KEY_BYTES) {
+            return None;
+        }
+        Self::checked(key.clone(), false, now).ok()
+    }
+
+    fn checked(
+        key: Map<String, Value>,
+        kid_required: bool,
+        now: Timestamp,
+    ) -> Result<Self, DomainError> {
         if PRIVATE_MEMBERS
             .iter()
             .any(|member| key.contains_key(*member))
         {
             return Err(key_invalid("the key has a private part"));
         }
-        let key_id = key
-            .get("kid")
-            .and_then(Value::as_str)
-            .filter(|kid| {
-                !kid.is_empty()
-                    && kid.chars().count() <= MAX_KEY_ID_LENGTH
-                    && kid.bytes().all(|b| b.is_ascii_graphic())
-            })
-            .ok_or_else(|| key_invalid("the `kid` is missing or unusable"))?
-            .to_owned();
+        let usable = |kid: &&str| {
+            !kid.is_empty()
+                && kid.chars().count() <= MAX_KEY_ID_LENGTH
+                && kid.bytes().all(|b| b.is_ascii_graphic())
+        };
+        let key_id = match key.get("kid") {
+            None if !kid_required => String::new(),
+            given => given
+                .and_then(Value::as_str)
+                .filter(usable)
+                .ok_or_else(|| key_invalid("the `kid` is missing or unusable"))?
+                .to_owned(),
+        };
         let kind = key
             .get("kty")
             .and_then(Value::as_str)
@@ -166,39 +192,51 @@ impl ClientKey {
     /// Ed25519 are kept but fit no algorithm Hodor checks yet.
     #[must_use]
     pub fn verifying_key(&self, algorithm: SignatureAlgorithm) -> Option<PublicKey> {
-        let key: Map<String, Value> = serde_json::from_str(&self.jwk).ok()?;
-        let member = |name: &str| {
-            key.get(name)
-                .and_then(Value::as_str)
-                .and_then(|value| URL_SAFE_NO_PAD.decode(value).ok())
-        };
-        let named = match algorithm {
-            SignatureAlgorithm::Es256 => "ES256",
-            SignatureAlgorithm::Rs256 => "RS256",
-            SignatureAlgorithm::Ps256 => "PS256",
-        };
-        if key
-            .get("alg")
-            .is_some_and(|given| given.as_str() != Some(named))
-        {
-            return None;
-        }
-        let public = match (
-            key.get("kty").and_then(Value::as_str),
-            key.get("crv").and_then(Value::as_str),
-        ) {
-            (Some("EC"), Some("P-256")) => PublicKey::P256 {
-                x: member("x")?,
-                y: member("y")?,
-            },
-            (Some("RSA"), _) => PublicKey::Rsa {
-                modulus: member("n")?,
-                exponent: member("e")?,
-            },
-            _ => return None,
-        };
-        algorithm.fits(&public).then_some(public)
+        verifying_key_of(&self.jwk, algorithm)
     }
+}
+
+/// The key a JSON Web Key `jwk`, written as JSON, checks signatures of
+/// `algorithm` with, if it fits: a P-256 key for `ES256`, an RSA key for
+/// `RS256` and `PS256`, and the key's own `alg` when it has one. Used for
+/// a client's keys and for the keys of a trust domain's bundle.
+#[must_use]
+pub(crate) fn verifying_key_of(jwk: &str, algorithm: SignatureAlgorithm) -> Option<PublicKey> {
+    let key: Map<String, Value> = serde_json::from_str(jwk).ok()?;
+    let member = |name: &str| {
+        key.get(name)
+            .and_then(Value::as_str)
+            .and_then(|value| URL_SAFE_NO_PAD.decode(value).ok())
+    };
+    let named = match algorithm {
+        SignatureAlgorithm::Es256 => "ES256",
+        SignatureAlgorithm::Rs256 => "RS256",
+        SignatureAlgorithm::Ps256 => "PS256",
+        // No client key is read for EdDSA yet: the kernel checks it for a
+        // tenant's own keys only.
+        SignatureAlgorithm::EdDsa => return None,
+    };
+    if key
+        .get("alg")
+        .is_some_and(|given| given.as_str() != Some(named))
+    {
+        return None;
+    }
+    let public = match (
+        key.get("kty").and_then(Value::as_str),
+        key.get("crv").and_then(Value::as_str),
+    ) {
+        (Some("EC"), Some("P-256")) => PublicKey::P256 {
+            x: member("x")?,
+            y: member("y")?,
+        },
+        (Some("RSA"), _) => PublicKey::Rsa {
+            modulus: member("n")?,
+            exponent: member("e")?,
+        },
+        _ => return None,
+    };
+    algorithm.fits(&public).then_some(public)
 }
 
 #[cfg(test)]

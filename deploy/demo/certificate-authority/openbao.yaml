@@ -1,0 +1,84 @@
+# OpenBao for the demonstration of Milestone 12: one server in development mode, which keeps everything in
+# memory and is unsealed with a known root token, NOT FOR ANYTHING REAL. The script prepares it as
+# docs/operations/keys-in-openbao.md says an operator prepares theirs: Transit at hodor-transit, Hodor's policy,
+# and Kubernetes authentication, for which OpenBao's own service account may review tokens.
+#
+#   python3 deploy/demo/certificate_authority.py applies it; see docs/operations/quick-start.md.
+
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: openbao
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: openbao
+  namespace: openbao
+---
+# Kubernetes authentication asks the cluster whether the token Hodor presents is good.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: openbao-reviews-tokens
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: system:auth-delegator
+subjects:
+  - kind: ServiceAccount
+    name: openbao
+    namespace: openbao
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: openbao
+  namespace: openbao
+  labels:
+    app: openbao
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: openbao
+  template:
+    metadata:
+      labels:
+        app: openbao
+    spec:
+      serviceAccountName: openbao
+      containers:
+        - name: openbao
+          image: openbao/openbao:2.7.2
+          args: ["server", "-dev", "-dev-listen-address=0.0.0.0:8200", "-dev-no-store-token"]
+          env:
+            - name: BAO_DEV_ROOT_TOKEN_ID
+              value: demonstration-root-token
+            - name: SKIP_SETCAP
+              value: "true"
+          ports:
+            - containerPort: 8200
+          readinessProbe:
+            httpGet:
+              path: /v1/sys/health
+              port: 8200
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              memory: 256Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: openbao
+  namespace: openbao
+spec:
+  selector:
+    app: openbao
+  ports:
+    - name: http
+      port: 8200
+      targetPort: 8200

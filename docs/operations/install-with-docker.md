@@ -54,7 +54,7 @@ From 0.3.0, every release publishes its image, `ghcr.io/ortisun/hodor:<version>`
 For an earlier version, or for a checkout of `develop`, build the image instead:
 
 ```bash
-docker build --file deploy/docker/Dockerfile --tag hodor:0.3.0 .
+docker build --file deploy/docker/Dockerfile --tag hodor:0.4.0 .
 ```
 
 The first build takes several minutes. The image holds the three programs, the hosted pages and the admin console.
@@ -90,7 +90,7 @@ openssl rand -hex 24
 Make the key with the image you built, and write it after an identifier of your choice, such as `2026-11:` followed by what is printed:
 
 ```bash
-docker run --rm --entrypoint /usr/local/bin/hodor-cli hodor:0.3.0 secrets generate-key
+docker run --rm --entrypoint /usr/local/bin/hodor-cli hodor:0.4.0 secrets generate-key
 ```
 
 Keep a copy of the key outside the machine. What it encrypted cannot be read without it; [secrets at rest](../security/secrets-at-rest.md#root-keys) explains the format and how to change the key later.
@@ -168,6 +168,7 @@ Change it when that is not true:
 | Stop | `docker compose -f deploy/install/docker/compose.yaml down`. The data stays in the volumes. Adding `--volumes` deletes the database and the certificates, for good |
 | Change a setting | Edit `.env`, then run the command of [step 3](#3-start) again. Only the containers whose settings changed are replaced |
 | Send metrics and traces somewhere | Set `HODOR_OTLP_METRICS_ENDPOINT` and `HODOR_OTLP_TRACES_ENDPOINT`. [Deployment](deployment.md#observability) says what is sent |
+| Keep the signing keys in OpenBao | Set `HODOR_KEY_PROVIDER=openbao` and the `HODOR_OPENBAO_*` settings of [keys in OpenBao](keys-in-openbao.md#settings), with an AppRole. The server, the worker and `cli` all get them |
 
 ### Backing up
 

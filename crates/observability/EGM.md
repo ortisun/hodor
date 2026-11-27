@@ -14,7 +14,7 @@ The telemetry bootstrap crate (package `hodor-observability`). Its manifest desc
 From `Cargo.toml`, every dependency comes from the workspace:
 
 - Runtime: `opentelemetry`, `opentelemetry-otlp`, `opentelemetry_sdk`, `thiserror`, `tracing`, `tracing-opentelemetry`, `tracing-subscriber`.
-- Development only: `opentelemetry`, `reqwest` (features `json`, `query`), `serde_json`, `testcontainers`, `tokio`.
+- Development only: `hodor-test-containers` (starts VictoriaMetrics), `opentelemetry`, `reqwest` (features `json`, `query`), `serde_json`, `testcontainers`, `tokio`.
 
 ## Verification
 

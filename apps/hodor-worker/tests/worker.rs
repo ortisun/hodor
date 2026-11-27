@@ -141,20 +141,17 @@ async fn a_running_worker_delivers_queued_messages_to_the_mail_server() {
     use hodor_adapters_postgres::PgMessageQueue;
     use hodor_notification::api::MessageQueue;
     use hodor_notification::testing::verification_message;
+    use hodor_test_containers::HOST;
     use testcontainers::core::IntoContainerPort as _;
-    use testcontainers::runners::AsyncRunner as _;
 
-    let mail = testcontainers::GenericImage::new("axllent/mailpit", "v1.27")
-        .with_exposed_port(1025.tcp())
-        .with_exposed_port(8025.tcp())
-        .start()
-        .await
-        .expect("start the mail server");
-    let smtp_port = mail.get_host_port_ipv4(1025).await.expect("port");
-    let api = format!(
-        "http://127.0.0.1:{}/api/v1",
-        mail.get_host_port_ipv4(8025).await.expect("port")
-    );
+    let mail = hodor_test_containers::start(
+        "the mail server",
+        || testcontainers::GenericImage::new("axllent/mailpit", "v1.27"),
+        &[1025.tcp(), 8025.tcp()],
+    )
+    .await;
+    let smtp_port = mail.port(1025);
+    let api = format!("http://{HOST}:{}/api/v1", mail.port(8025));
     for _ in 0..100 {
         if received(&api).await.is_some() {
             break;
@@ -182,7 +179,7 @@ async fn a_running_worker_delivers_queued_messages_to_the_mail_server() {
     }
 
     let worker = worker_command(&database)
-        .env("HODOR_SMTP_URL", format!("smtp://127.0.0.1:{smtp_port}"))
+        .env("HODOR_SMTP_URL", format!("smtp://{HOST}:{smtp_port}"))
         .env("HODOR_MAIL_FROM", "Hodor <no-reply@example.com>")
         .env("HODOR_MAIL_POLL_INTERVAL_MS", "50")
         .spawn()

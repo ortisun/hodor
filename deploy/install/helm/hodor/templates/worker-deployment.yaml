@@ -1,3 +1,4 @@
+{{- if include "hodor.installsHodor" . }}
 {{- if and .Values.mail.enabled (not .Values.mail.from) }}
 {{- fail "mail.from is required when mail.enabled is true: the address messages come from, such as \"Hodor <no-reply@example.com>\"" }}
 {{- end }}
@@ -19,9 +20,11 @@ spec:
       labels:
         {{- include "hodor.labels" . | nindent 8 }}
         app.kubernetes.io/component: worker
-      {{- with .Values.worker.podAnnotations }}
-      annotations:
-        {{- toYaml . | nindent 8 }}
+        {{- with include "hodor.meshLabels" (list . true) }}
+        {{- . | nindent 8 }}
+        {{- end }}
+      {{- with include "hodor.podAnnotations" (list . true .Values.worker.podAnnotations) }}
+      {{- . | nindent 6 }}
       {{- end }}
     spec:
       serviceAccountName: {{ include "hodor.serviceAccountName" . }}
@@ -51,6 +54,7 @@ spec:
             {{- include "hodor.secretEnvironment" (list . "HODOR_DATABASE_URL" .Values.secret.keys.workerDatabaseUrl) | nindent 12 }}
             {{- include "hodor.secretEnvironment" (list . "HODOR_PLATFORM_DATABASE_URL" .Values.secret.keys.workerPlatformDatabaseUrl) | nindent 12 }}
             {{- include "hodor.secretEnvironment" (list . "HODOR_SECRET_KEYS" .Values.secret.keys.secretKeys) | nindent 12 }}
+            {{- include "hodor.keyProviderEnvironment" . | nindent 12 }}
             # The server's address: the issuer of the logout tokens the worker sends starts with it.
             - name: HODOR_PUBLIC_URL
               value: {{ include "hodor.publicUrl" . | quote }}
@@ -61,12 +65,21 @@ spec:
             - name: HODOR_MAIL_FROM
               value: {{ .Values.mail.from | quote }}
             {{- end }}
+            {{- include "hodor.authoritiesEnvironment" . | nindent 12 }}
             {{- with .Values.worker.extraEnvironment }}
             {{- toYaml . | nindent 12 }}
             {{- end }}
+          {{- with printf "%s\n%s" (include "hodor.keyProviderVolumeMounts" . | trim) (include "hodor.authoritiesVolumeMounts" . | trim) | trim }}
+          volumeMounts:
+            {{- . | nindent 12 }}
+          {{- end }}
           {{- include "hodor.probes" . | nindent 10 }}
           resources:
             {{- toYaml .Values.worker.resources | nindent 12 }}
+      {{- with printf "%s\n%s" (include "hodor.keyProviderVolumes" . | trim) (include "hodor.authoritiesVolumes" . | trim) | trim }}
+      volumes:
+        {{- . | nindent 8 }}
+      {{- end }}
       {{- include "hodor.spread" (list . "worker") | nindent 6 }}
       {{- with .Values.worker.nodeSelector }}
       nodeSelector:
@@ -80,3 +93,5 @@ spec:
       affinity:
         {{- toYaml . | nindent 8 }}
       {{- end }}
+
+{{- end }}

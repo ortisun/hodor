@@ -17,7 +17,15 @@ words (comment on `index.ts:describe`).
   `attemptsLeft(count)`, `checkMailbox(email)`, `signedInSince(moment)`,
   `continueWith(provider)`, `directoryIdentifierLabel(directory)`,
   `tryAgainInSeconds(seconds)`, `tryAgainInMinutes(minutes)`,
-  `requestIdentifier(identifier)`.
+  `requestIdentifier(identifier)`. The profile page has `profileLink`,
+  `profileTitle`, `profileLead`, the headings `profileNamesHeading`,
+  `profileAboutHeading`, `profilePagesHeading`, `profilePhoneHeading` and
+  `profileAddressHeading`, `profileSave`, `profileSaved`, `phoneVerified`,
+  `phoneNotVerified`, and the functions `claimLabel(field)` (the label of a
+  claim of `CLAIM_FIELDS`, the field's own name when unknown),
+  `claimHint(field)` (how to write `birthdate`, `zoneinfo`, the three
+  addresses and `phone_number`, `null` for the others) and
+  `claimInvalid(label)`.
 - `en.ts:Messages` - `typeof en`, the shape every language must have.
 - `pt-BR.ts:ptBR` - the Brazilian Portuguese catalog (`locale: "pt-BR"`),
   typed as `Messages`, with the same keys as `en`.
@@ -48,7 +56,9 @@ words (comment on `index.ts:describe`).
   catalog that lacks a key of `en` or gives one the wrong shape.
 - `chooseMessages` always returns a catalog; English is the fallback.
 - The server's `detail` is never shown; only `code`, `status`, `requestId` and
-  `retryAfterSeconds` of `Failure` (`../client.ts`) decide the words.
+  `retryAfterSeconds` of `Failure` (`../client.ts`) decide the words. The
+  profile page uses the first word of a `detail` only to know which field to
+  mark (see [pages](../pages/EGM.md)).
 
 ## Side Effects
 

@@ -6,10 +6,16 @@ edition.workspace = true
 rust-version.workspace = true
 publish.workspace = true
 repository.workspace = true
+license.workspace = true
 
 [features]
 # Disposable PostgreSQL in a container, for integration tests.
-testing = ["dep:testcontainers", "dep:testcontainers-modules", "dep:tokio"]
+testing = [
+    "dep:hodor-test-containers",
+    "dep:testcontainers",
+    "dep:testcontainers-modules",
+    "dep:tokio",
+]
 
 [dependencies]
 async-trait.workspace = true
@@ -31,6 +37,7 @@ hodor-webhooks.workspace = true
 serde_json.workspace = true
 sqlx.workspace = true
 time.workspace = true
+hodor-test-containers = { workspace = true, optional = true }
 testcontainers = { workspace = true, optional = true }
 testcontainers-modules = { workspace = true, optional = true }
 tokio = { workspace = true, optional = true }

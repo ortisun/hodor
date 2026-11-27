@@ -4,9 +4,9 @@
 use hodor_adapters_smtp::{ConfigurationError, SmtpSender};
 use hodor_kernel::Secret;
 use hodor_notification::api::{Email, EmailSender};
+use hodor_test_containers::HOST;
 use std::time::Duration;
 use testcontainers::core::IntoContainerPort as _;
-use testcontainers::runners::AsyncRunner as _;
 use testcontainers::{ContainerAsync, GenericImage};
 
 struct MailServer {
@@ -17,18 +17,18 @@ struct MailServer {
 
 impl MailServer {
     async fn start() -> Self {
-        let container = GenericImage::new("axllent/mailpit", "v1.27")
-            .with_exposed_port(1025.tcp())
-            .with_exposed_port(8025.tcp())
-            .start()
-            .await
-            .expect("start the mail server");
-        let smtp_port = container.get_host_port_ipv4(1025).await.expect("port");
-        let api_port = container.get_host_port_ipv4(8025).await.expect("port");
+        let started = hodor_test_containers::start(
+            "the mail server",
+            || GenericImage::new("axllent/mailpit", "v1.27"),
+            &[1025.tcp(), 8025.tcp()],
+        )
+        .await;
+        let smtp_port = started.port(1025);
+        let api_port = started.port(8025);
         let server = Self {
-            _container: container,
+            _container: started.into_container(),
             smtp_port,
-            api: format!("http://127.0.0.1:{api_port}/api/v1"),
+            api: format!("http://{HOST}:{api_port}/api/v1"),
         };
         for _ in 0..100 {
             if server.get("messages").await.is_some() {
@@ -46,7 +46,7 @@ impl MailServer {
     }
 
     fn sender(&self) -> SmtpSender {
-        let url = Secret::from(format!("smtp://127.0.0.1:{}", self.smtp_port));
+        let url = Secret::from(format!("smtp://{HOST}:{}", self.smtp_port));
         SmtpSender::new(&url, "Hodor <no-reply@example.com>").expect("valid configuration")
     }
 

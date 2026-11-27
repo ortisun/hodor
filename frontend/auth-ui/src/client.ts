@@ -15,6 +15,8 @@ export class Failure {
     readonly requestId: string | null = null,
     /** How long to wait before trying again, when the server said. */
     readonly retryAfterSeconds: number | null = null,
+    /** The problem's `detail`, in English: what was wrong, never a value the person typed. */
+    readonly detail: string | null = null,
   ) {}
 
   get unreachable(): boolean {
@@ -127,6 +129,61 @@ export interface GivenConsent {
   expiresAt: string;
 }
 
+/**
+ * The standard claims a person keeps, by the names the server gives them:
+ * `given_name` and the others, and the parts of the address as
+ * `address.locality` and so on. Each is text; an empty one is no value.
+ */
+export const CLAIM_FIELDS = [
+  "given_name",
+  "middle_name",
+  "family_name",
+  "nickname",
+  "gender",
+  "birthdate",
+  "zoneinfo",
+  "profile",
+  "picture",
+  "website",
+  "phone_number",
+  "address.formatted",
+  "address.street_address",
+  "address.locality",
+  "address.region",
+  "address.postal_code",
+  "address.country",
+] as const;
+
+export type ClaimField = (typeof CLAIM_FIELDS)[number];
+
+/** What the account page shows and changes of the person. */
+export interface Profile {
+  displayName: string;
+  claims: Record<ClaimField, string>;
+  /** Whether someone vouched for the telephone number. The person cannot. */
+  phoneNumberVerified: boolean;
+}
+
+function profileOf(body: Record<string, unknown>): Profile {
+  const given =
+    typeof body["claims"] === "object" && body["claims"] !== null ? (body["claims"] as Record<string, unknown>) : {};
+  const address =
+    typeof given["address"] === "object" && given["address"] !== null
+      ? (given["address"] as Record<string, unknown>)
+      : {};
+  const claims = Object.fromEntries(
+    CLAIM_FIELDS.map((field) => {
+      const value = field.startsWith("address.") ? address[field.slice("address.".length)] : given[field];
+      return [field, typeof value === "string" ? value : ""];
+    }),
+  ) as Record<ClaimField, string>;
+  return {
+    displayName: text(body["display_name"]) ?? "",
+    claims,
+    phoneNumberVerified: given["phone_number_verified"] === true,
+  };
+}
+
 type Fetch = typeof globalThis.fetch;
 
 function keyOf(value: unknown): Key | null {
@@ -207,6 +264,7 @@ export class Client {
         response.status,
         text(fields["request_id"]) ?? response.headers.get("X-Request-Id"),
         Number.isFinite(seconds) && seconds > 0 ? seconds : null,
+        text(fields["detail"]),
       );
     }
     const token = text(fields["csrf_token"]);
@@ -545,6 +603,41 @@ export class Client {
         ? [{ clientId, application, scopes, givenAt, expiresAt }]
         : [];
     });
+  }
+
+  /** The person's display name and standard claims. */
+  async profile(): Promise<Profile> {
+    const reply = await this.#send("GET", "/profile");
+    return profileOf(reply.body);
+  }
+
+  /**
+   * Replaces the person's display name and standard claims. A field left
+   * empty is removed. Whether the number is verified is the server's to say.
+   */
+  async saveProfile(displayName: string, claims: Record<ClaimField, string>): Promise<Profile> {
+    const body: Record<string, unknown> = {};
+    const address: Record<string, string> = {};
+    for (const field of CLAIM_FIELDS) {
+      const value = claims[field].trim();
+      if (value === "") {
+        continue;
+      }
+      if (field.startsWith("address.")) {
+        address[field.slice("address.".length)] = value;
+      } else {
+        body[field] = value;
+      }
+    }
+    if (Object.keys(address).length > 0) {
+      body["address"] = address;
+    }
+    const name = displayName.trim();
+    const reply = await this.#send("PUT", "/profile", {
+      ...(name === "" ? {} : { display_name: name }),
+      claims: body,
+    });
+    return profileOf(reply.body);
   }
 
   /** Withdraws the person's agreement to one application. One already withdrawn is not an error. */

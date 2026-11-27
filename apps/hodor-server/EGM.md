@@ -16,7 +16,7 @@ migrations (doc comment on `Command::Migrate` in `apps/hodor-cli/src/main.rs`).
 ## Dependencies
 
 From `Cargo.toml`: `async-trait`, `axum`, `clap`, `time`, `tokio`, `tracing`,
-and the workspace crates `hodor-adapters-crypto`, `hodor-adapters-http`,
+and the workspace crates `hodor-adapters-crypto`, `hodor-adapters-http`, `hodor-adapters-kms`,
 `hodor-adapters-ldap`, `hodor-adapters-postgres`, `hodor-audit`,
 `hodor-authentication`, `hodor-authorization`, `hodor-authorization-native`,
 `hodor-authorization-opa`,
@@ -29,3 +29,7 @@ with the `testing` feature.
 ## Verification
 
 - Run: `cargo test -p hodor-server`
+- `tests/cert_manager_issuer.rs` drives the client of `hodor-cert-manager-issuer` (a development dependency) against the real server: its access token for `urn:hodor:certificate-authority` by `private_key_jwt` and by a forwarded certificate, signing, and every refusal of such a token.
+- The tests that need a running server start the binary through `tests/support/mod.rs`. The server is given `127.0.0.1:0` for both listeners and chooses its own ports; the harness reads them from the line `hodor-server started`, written in JSON, and then waits for `/readyz`. A port chosen by the test and handed to the server would be free when chosen, not when the server binds it: under load another test or connection can take it in between, and the server then stops at once.
+- The tests that need a database start one with `TestDatabase` of `hodor-adapters-postgres`, whose port is published on `127.0.0.1` alone and which the server is given as `127.0.0.1` too: a port published on every address may be shared, on Docker Desktop for macOS, with a server another test started on `127.0.0.1`, which would then receive the connections meant for PostgreSQL (`docs/architecture/testing.md`, "Containers in tests").
+- The harness reads everything the server writes, on its standard output and its standard error, so that the server never waits on a full pipe. If the server stops before it is ready, the test fails at once with its exit status and the last lines it wrote; if it is not ready within thirty seconds, or a test fails while it runs, those lines are shown too.

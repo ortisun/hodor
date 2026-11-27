@@ -134,6 +134,8 @@ const RULES: &[Rule] = &[
             "hodor-audit",
             "hodor-notification",
             "hodor-webhooks",
+            // The database its tests start comes with its `testing` feature.
+            "hodor-test-containers",
         ],
     ),
     adapter(
@@ -163,7 +165,11 @@ const RULES: &[Rule] = &[
         "hodor-adapters-policy-check",
         &["hodor-kernel", "hodor-authorization-opa"],
     ),
-    adapter("hodor-adapters-ldap", &["hodor-kernel", "hodor-federation"]),
+    // The directory its tests start comes with its `testing` feature.
+    adapter(
+        "hodor-adapters-ldap",
+        &["hodor-kernel", "hodor-federation", "hodor-test-containers"],
+    ),
     adapter(
         "hodor-adapters-smtp",
         &["hodor-kernel", "hodor-notification"],
@@ -192,8 +198,19 @@ const RULES: &[Rule] = &[
     app("hodor-server"),
     app("hodor-worker"),
     app("hodor-cli"),
+    // Envoy's external authorization asks Hodor over the Authorization API
+    // like any application, so it holds no decision of its own and no
+    // context crate (Decision 0058).
+    adapter("hodor-ext-authz", &["hodor-observability"]),
+    // cert-manager's outside issuer asks Hodor over its token endpoint and
+    // the signing operation like any program of the tenant, so it holds no
+    // decision of its own and no context crate (Decision 0074).
+    adapter("hodor-cert-manager-issuer", &["hodor-observability"]),
     // Test support.
     adapter("hodor-architecture-tests", &[]),
+    // How tests start containers and reach their ports; a dependency of
+    // tests only, or of the `testing` feature of an adapter.
+    adapter("hodor-test-containers", &[]),
 ];
 
 /// Libraries that domain and application crates must not depend on.
@@ -389,6 +406,36 @@ mod tests {
             ),
         ];
         assert_eq!(violations(&workspace), Vec::<String>::new());
+    }
+
+    #[test]
+    fn the_external_authorization_adapter_reaches_no_context() {
+        let workspace = [
+            krate("hodor-observability", &[]),
+            krate("hodor-oauth", &[]),
+            krate(
+                "hodor-ext-authz",
+                &["hodor-observability", "tonic", "reqwest", "hodor-oauth"],
+            ),
+        ];
+        let found = violations(&workspace);
+        assert_eq!(found.len(), 1, "{found:?}");
+        assert!(found[0].contains("`hodor-oauth`"), "{found:?}");
+    }
+
+    #[test]
+    fn the_certificate_issuer_reaches_no_context() {
+        let workspace = [
+            krate("hodor-observability", &[]),
+            krate("hodor-keys", &[]),
+            krate(
+                "hodor-cert-manager-issuer",
+                &["hodor-observability", "kube", "reqwest", "hodor-keys"],
+            ),
+        ];
+        let found = violations(&workspace);
+        assert_eq!(found.len(), 1, "{found:?}");
+        assert!(found[0].contains("`hodor-keys`"), "{found:?}");
     }
 
     #[test]

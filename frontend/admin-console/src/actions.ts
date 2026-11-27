@@ -123,6 +123,12 @@ export const ACTIONS = {
   removeEndpoint: { level: 2, permission: "webhooks:write" },
   /** The endpoint receives the event again, with the same webhook-id. */
   redeliver: { level: 1, permission: "webhooks:write" },
+  /** Workloads of the trust domain are trusted, as its bundle or the mesh says, from the next request. */
+  addTrustDomain: { level: 1, permission: "keys:write" },
+  /** The trust domain trusts what its new source says from the next request; a refusal keeps what it had. */
+  replaceTrustDomain: { level: 1, permission: "keys:write" },
+  /** Every workload of the trust domain is refused from the next request; its bundle goes with it. */
+  removeTrustDomain: { level: 2, permission: "keys:write" },
 } as const satisfies Record<string, Action>;
 
 export type ActionName = keyof typeof ACTIONS;

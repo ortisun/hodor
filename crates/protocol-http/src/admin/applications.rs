@@ -21,8 +21,9 @@ use hodor_kernel::{DomainError, ErrorKind, TenantContext, UserId};
 use hodor_oauth::api::{
     Application, ApplicationId, ApplicationSettings, AuthenticationMethod, Client, ClientId,
     ClientSecret, ClientSecretId, ClientSettings, ClientType, CreateClient, CreateResourceServer,
-    ExchangeRule, GrantType, IdTokenAlgorithm, ResourceServer, ResourceServerId,
-    ResourceServerSettings, RotateSecret, ScopeDefinition, Status, SubjectType, TokenPolicy,
+    ExchangeRule, GrantType, IdTokenAlgorithm, LinkerdIdentity, RequestObjectAlgorithm,
+    ResourceServer, ResourceServerId, ResourceServerSettings, RotateSecret, ScopeDefinition,
+    SpiffeId, Status, SubjectType, TokenPolicy,
 };
 use serde::{Deserialize, Serialize};
 use time::Duration;
@@ -405,6 +406,14 @@ struct ClientBody {
     allowed_scopes: Vec<String>,
     require_pkce: bool,
     id_token_signed_response_alg: &'static str,
+    /// How its UserInfo answers are signed, or `null` for answers in JSON.
+    userinfo_signed_response_alg: Option<&'static str>,
+    /// How it signs its request objects, or `null` when none is chosen.
+    request_object_signing_alg: Option<&'static str>,
+    /// Whether every request of it must be pushed first.
+    require_pushed_authorization_requests: bool,
+    /// Where it keeps request objects Hodor may fetch.
+    request_uris: Vec<String>,
     /// Where its logout tokens are sent, or `null`.
     backchannel_logout_uri: Option<String>,
     backchannel_logout_session_required: bool,
@@ -412,9 +421,25 @@ struct ClientBody {
     subject_type: &'static str,
     /// The sector identifier address of a pairwise client, or `null`.
     sector_identifier_uri: Option<String>,
+    /// Where a client using `private_key_jwt` publishes its keys, or
+    /// `null`. What the address answers is never shown.
+    jwks_uri: Option<String>,
+    /// The `max_age` of a request that names none, or `null`.
+    default_max_age: Option<u32>,
+    /// The `acr_values` of a request that names none, in order.
+    default_acr_values: Vec<String>,
+    require_auth_time: bool,
     /// The service account or agent it acts as, or `null`.
     principal: Option<String>,
     exchange_rules: Vec<ExchangeRuleBody>,
+    /// The SPIFFE identifier of a client using `spiffe_jwt` or
+    /// `spiffe_x509`, or of one using `tls_client_auth`, or `null`.
+    spiffe_id: Option<String>,
+    /// The Linkerd identity of a client using `linkerd_identity`, or of
+    /// one using `tls_client_auth`, or `null`.
+    linkerd_identity: Option<String>,
+    /// Whether its access tokens are bound to its certificate (RFC 8705).
+    tls_client_certificate_bound_access_tokens: bool,
     token_policy: TokenPolicyBody,
     /// What identifies each secret and when it expires: never the secret
     /// or its hash.
@@ -442,10 +467,20 @@ impl From<&Client> for ClientBody {
             allowed_scopes: settings.allowed_scopes.clone(),
             require_pkce: settings.require_pkce,
             id_token_signed_response_alg: settings.id_token_algorithm.as_str(),
+            userinfo_signed_response_alg: settings.userinfo_algorithm.map(IdTokenAlgorithm::as_str),
+            request_object_signing_alg: settings
+                .request_object_algorithm
+                .map(RequestObjectAlgorithm::as_str),
+            require_pushed_authorization_requests: settings.require_pushed_requests,
+            request_uris: settings.request_uris.clone(),
             backchannel_logout_uri: settings.backchannel_logout_uri.clone(),
             backchannel_logout_session_required: settings.backchannel_logout_session_required,
             subject_type: settings.subject_type.as_str(),
             sector_identifier_uri: settings.sector_identifier_uri.clone(),
+            jwks_uri: settings.jwks_uri.clone(),
+            default_max_age: settings.default_max_age,
+            default_acr_values: settings.default_acr_values.clone(),
+            require_auth_time: settings.require_auth_time,
             principal: settings.principal.map(|principal| principal.to_string()),
             exchange_rules: settings
                 .exchange_rules
@@ -455,6 +490,15 @@ impl From<&Client> for ClientBody {
                     audience: rule.audience.clone(),
                 })
                 .collect(),
+            spiffe_id: settings
+                .spiffe_id
+                .as_ref()
+                .map(|spiffe_id| spiffe_id.as_str().to_owned()),
+            linkerd_identity: settings
+                .linkerd_identity
+                .as_ref()
+                .map(|identity| identity.as_str().to_owned()),
+            tls_client_certificate_bound_access_tokens: settings.certificate_bound_access_tokens,
             token_policy: TokenPolicyBody {
                 access_token_seconds: policy.access_token.whole_seconds(),
                 id_token_seconds: policy.id_token.whole_seconds(),
@@ -511,14 +555,25 @@ struct NewClientBody {
     allowed_scopes: Option<Vec<String>>,
     require_pkce: Option<bool>,
     id_token_signed_response_alg: Option<String>,
+    userinfo_signed_response_alg: Option<String>,
+    request_object_signing_alg: Option<String>,
+    require_pushed_authorization_requests: Option<bool>,
+    request_uris: Option<Vec<String>>,
     backchannel_logout_uri: Option<String>,
     backchannel_logout_session_required: Option<bool>,
     subject_type: Option<String>,
     sector_identifier_uri: Option<String>,
+    jwks_uri: Option<String>,
+    default_max_age: Option<u32>,
+    default_acr_values: Option<Vec<String>>,
+    require_auth_time: Option<bool>,
     token_policy: Option<TokenPolicyInput>,
     secret_lifetime_days: Option<u32>,
     principal: Option<String>,
     exchange_rules: Option<Vec<ExchangeRuleBody>>,
+    spiffe_id: Option<String>,
+    linkerd_identity: Option<String>,
+    tls_client_certificate_bound_access_tokens: Option<bool>,
 }
 
 /// One exchange rule, as the interface writes it.
@@ -550,6 +605,14 @@ struct ClientChangesBody {
     allowed_scopes: Option<Vec<String>>,
     require_pkce: Option<bool>,
     id_token_signed_response_alg: Option<String>,
+    /// Left out: unchanged; `null`: answers in JSON; a name: replaced.
+    #[serde(default, deserialize_with = "present")]
+    userinfo_signed_response_alg: Option<Option<String>>,
+    /// Left out: unchanged; `null`: none chosen; a name: replaced.
+    #[serde(default, deserialize_with = "present")]
+    request_object_signing_alg: Option<Option<String>>,
+    require_pushed_authorization_requests: Option<bool>,
+    request_uris: Option<Vec<String>>,
     /// Left out: unchanged; `null`: removed; an address: replaced.
     #[serde(default, deserialize_with = "present")]
     backchannel_logout_uri: Option<Option<String>>,
@@ -558,19 +621,70 @@ struct ClientChangesBody {
     /// Left out: unchanged; `null`: removed; an address: replaced.
     #[serde(default, deserialize_with = "present")]
     sector_identifier_uri: Option<Option<String>>,
+    /// Left out: unchanged, unless the change gives the client another
+    /// method than `private_key_jwt`; `null`: removed; an address:
+    /// replaced.
+    #[serde(default, deserialize_with = "present")]
+    jwks_uri: Option<Option<String>>,
+    /// Left out: unchanged; `null`: removed; a number: replaced.
+    #[serde(default, deserialize_with = "present")]
+    default_max_age: Option<Option<u32>>,
+    default_acr_values: Option<Vec<String>>,
+    require_auth_time: Option<bool>,
     token_policy: Option<TokenPolicyInput>,
     /// Left out: unchanged; `null`: removed; an identifier: replaced.
     #[serde(default, deserialize_with = "present")]
     principal: Option<Option<String>>,
     exchange_rules: Option<Vec<ExchangeRuleBody>>,
+    /// Left out: unchanged, unless the change gives the client the other
+    /// identity or a method that takes none; `null`: removed; an
+    /// identifier: replaced.
+    #[serde(default, deserialize_with = "present")]
+    spiffe_id: Option<Option<String>>,
+    /// Left out: unchanged, unless the change gives the client the other
+    /// identity or a method that takes none; `null`: removed; an
+    /// identity: replaced.
+    #[serde(default, deserialize_with = "present")]
+    linkerd_identity: Option<Option<String>>,
+    tls_client_certificate_bound_access_tokens: Option<bool>,
+}
+
+/// The identities a change leaves a client bound to. A field left out keeps
+/// what the client had, unless the change gives the other identity, since
+/// a client has one, or a method that does not take it, as a client that
+/// moves away from a method loses its secrets or its keys.
+fn changed_identities(
+    changes: &ClientChangesBody,
+    now: &ClientSettings,
+    method: AuthenticationMethod,
+) -> Result<(Option<SpiffeId>, Option<LinkerdIdentity>), Box<Response>> {
+    let takes_spiffe_id = method.uses_spiffe_id() || method == AuthenticationMethod::TlsClientAuth;
+    let takes_linkerd_identity = matches!(
+        method,
+        AuthenticationMethod::LinkerdIdentity | AuthenticationMethod::TlsClientAuth
+    );
+    let spiffe_id = match &changes.spiffe_id {
+        Some(Some(given)) => Some(SpiffeId::parse(given).map_err(failed)?),
+        Some(None) => None,
+        None if !takes_spiffe_id || matches!(changes.linkerd_identity, Some(Some(_))) => None,
+        None => now.spiffe_id.clone(),
+    };
+    let linkerd_identity = match &changes.linkerd_identity {
+        Some(Some(given)) => Some(LinkerdIdentity::parse(given).map_err(failed)?),
+        Some(None) => None,
+        None if !takes_linkerd_identity || matches!(changes.spiffe_id, Some(Some(_))) => None,
+        None => now.linkerd_identity.clone(),
+    };
+    Ok((spiffe_id, linkerd_identity))
 }
 
 /// A field that may be given as `null`, told apart from one left out.
-fn present<'de, D>(deserializer: D) -> Result<Option<Option<String>>, D::Error>
+fn present<'de, D, T>(deserializer: D) -> Result<Option<Option<T>>, D::Error>
 where
     D: serde::Deserializer<'de>,
+    T: Deserialize<'de>,
 {
-    Option::<String>::deserialize(deserializer).map(Some)
+    Option::<T>::deserialize(deserializer).map(Some)
 }
 
 /// The workload `given` names, if it is a service account or an agent of
@@ -581,13 +695,18 @@ async fn principal_of(
     tenant: &TenantContext,
     given: &str,
     grants: &[GrantType],
+    method: AuthenticationMethod,
 ) -> Result<UserId, Box<Response>> {
-    // Only an agent acts on a person's behalf.
+    // Only an agent acts on a person's behalf, and only a service account
+    // proves who it is with its SPIFFE identifier or its Linkerd identity.
     let exchanges = grants.contains(&GrantType::TokenExchange);
+    let spiffe = method.uses_workload_identity();
     let refused = || {
         failed(DomainError::invalid(
             "oauth.client_principal_invalid",
-            "a client's principal is a service account or an agent of the tenant",
+            "a client's principal is a service account or an agent of the tenant; an agent \
+             with the token exchange grant, a service account with `spiffe_jwt`, \
+             `tls_client_auth`, `spiffe_x509` or `linkerd_identity`",
         ))
     };
     let id: UserId = given.parse().map_err(|_| refused())?;
@@ -595,7 +714,8 @@ async fn principal_of(
         Ok(user)
             if user.kind().is_workload()
                 && user.status() != UserStatus::Deleted
-                && (!exchanges || user.kind() == UserKind::Agent) =>
+                && (!exchanges || user.kind() == UserKind::Agent)
+                && (!spiffe || user.kind() == UserKind::ServiceAccount) =>
         {
             Ok(id)
         }
@@ -703,6 +823,17 @@ async fn create_client(
                 settings.id_token_algorithm =
                     IdTokenAlgorithm::parse(&algorithm).map_err(failed)?;
             }
+            if let Some(algorithm) = new.userinfo_signed_response_alg {
+                settings.userinfo_algorithm =
+                    Some(IdTokenAlgorithm::parse_for_userinfo(&algorithm).map_err(failed)?);
+            }
+            if let Some(algorithm) = new.request_object_signing_alg {
+                settings.request_object_algorithm =
+                    Some(RequestObjectAlgorithm::parse(&algorithm).map_err(failed)?);
+            }
+            settings.require_pushed_requests =
+                new.require_pushed_authorization_requests.unwrap_or(false);
+            settings.request_uris = new.request_uris.unwrap_or_default();
             settings.backchannel_logout_uri = new.backchannel_logout_uri;
             settings.backchannel_logout_session_required =
                 new.backchannel_logout_session_required.unwrap_or(false);
@@ -710,15 +841,37 @@ async fn create_client(
                 settings.subject_type = SubjectType::parse(&subject_type).map_err(failed)?;
             }
             settings.sector_identifier_uri = new.sector_identifier_uri;
+            settings.jwks_uri = new.jwks_uri;
+            settings.default_max_age = new.default_max_age;
+            settings.default_acr_values = new.default_acr_values.unwrap_or_default();
+            settings.require_auth_time = new.require_auth_time.unwrap_or(false);
             if let Some(policy) = new.token_policy {
                 settings.token_policy = policy.over(settings.token_policy);
             }
             if let Some(rules) = new.exchange_rules {
                 settings.exchange_rules = exchange_rules(rules);
             }
+            if let Some(spiffe_id) = &new.spiffe_id {
+                settings.spiffe_id = Some(SpiffeId::parse(spiffe_id).map_err(failed)?);
+            }
+            if let Some(linkerd_identity) = &new.linkerd_identity {
+                settings.linkerd_identity =
+                    Some(LinkerdIdentity::parse(linkerd_identity).map_err(failed)?);
+            }
+            settings.certificate_bound_access_tokens = new
+                .tls_client_certificate_bound_access_tokens
+                .unwrap_or_default();
             if let Some(principal) = &new.principal {
-                settings.principal =
-                    Some(principal_of(&state, &tenant, principal, &settings.grant_types).await?);
+                settings.principal = Some(
+                    principal_of(
+                        &state,
+                        &tenant,
+                        principal,
+                        &settings.grant_types,
+                        settings.authentication_method,
+                    )
+                    .await?,
+                );
             }
             let (client, secret) = state
                 .applications
@@ -787,16 +940,18 @@ async fn change_client(
                 .await
                 .map_err(failed)?;
             let now = current.snapshot().settings.clone();
+            let method = match &changes.authentication_method {
+                Some(method) => AuthenticationMethod::parse(method).map_err(failed)?,
+                None => now.authentication_method,
+            };
+            let (spiffe_id, linkerd_identity) = changed_identities(&changes, &now, method)?;
             let grants = match changes.grant_types {
                 Some(given) => grant_types(&given)?,
                 None => now.grant_types.clone(),
             };
             let settings = ClientSettings {
                 name: changes.name.unwrap_or(now.name),
-                authentication_method: match changes.authentication_method {
-                    Some(method) => AuthenticationMethod::parse(&method).map_err(failed)?,
-                    None => now.authentication_method,
-                },
+                authentication_method: method,
                 grant_types: grants.clone(),
                 redirect_uris: changes.redirect_uris.unwrap_or(now.redirect_uris),
                 post_logout_redirect_uris: changes
@@ -808,6 +963,24 @@ async fn change_client(
                     Some(algorithm) => IdTokenAlgorithm::parse(&algorithm).map_err(failed)?,
                     None => now.id_token_algorithm,
                 },
+                userinfo_algorithm: match changes.userinfo_signed_response_alg {
+                    None => now.userinfo_algorithm,
+                    Some(None) => None,
+                    Some(Some(algorithm)) => {
+                        Some(IdTokenAlgorithm::parse_for_userinfo(&algorithm).map_err(failed)?)
+                    }
+                },
+                request_object_algorithm: match changes.request_object_signing_alg {
+                    None => now.request_object_algorithm,
+                    Some(None) => None,
+                    Some(Some(algorithm)) => {
+                        Some(RequestObjectAlgorithm::parse(&algorithm).map_err(failed)?)
+                    }
+                },
+                require_pushed_requests: changes
+                    .require_pushed_authorization_requests
+                    .unwrap_or(now.require_pushed_requests),
+                request_uris: changes.request_uris.unwrap_or(now.request_uris),
                 backchannel_logout_uri: changes
                     .backchannel_logout_uri
                     .unwrap_or(now.backchannel_logout_uri),
@@ -821,23 +994,47 @@ async fn change_client(
                 sector_identifier_uri: changes
                     .sector_identifier_uri
                     .unwrap_or(now.sector_identifier_uri),
+                // A client that moves away from `private_key_jwt` loses its
+                // address, as it loses its keys.
+                jwks_uri: match changes.jwks_uri {
+                    Some(given) => given,
+                    None if method == AuthenticationMethod::PrivateKeyJwt => now.jwks_uri,
+                    None => None,
+                },
+                default_max_age: changes.default_max_age.unwrap_or(now.default_max_age),
+                default_acr_values: changes.default_acr_values.unwrap_or(now.default_acr_values),
+                require_auth_time: changes.require_auth_time.unwrap_or(now.require_auth_time),
                 token_policy: changes
                     .token_policy
                     .map_or(now.token_policy, |given| given.over(now.token_policy)),
                 principal: match &changes.principal {
-                    // Kept, but checked again when the grants now exchange.
+                    // Kept, but checked again when the grants now exchange
+                    // or the method now uses a SPIFFE identifier.
                     None => match now.principal {
-                        Some(kept) if grants.contains(&GrantType::TokenExchange) => {
-                            Some(principal_of(&state, &tenant, &kept.to_string(), &grants).await?)
+                        Some(kept)
+                            if grants.contains(&GrantType::TokenExchange)
+                                || method.uses_workload_identity() =>
+                        {
+                            Some(
+                                principal_of(&state, &tenant, &kept.to_string(), &grants, method)
+                                    .await?,
+                            )
                         }
                         kept => kept,
                     },
                     Some(None) => None,
-                    Some(Some(given)) => Some(principal_of(&state, &tenant, given, &grants).await?),
+                    Some(Some(given)) => {
+                        Some(principal_of(&state, &tenant, given, &grants, method).await?)
+                    }
                 },
                 exchange_rules: changes
                     .exchange_rules
                     .map_or(now.exchange_rules, exchange_rules),
+                spiffe_id,
+                linkerd_identity,
+                certificate_bound_access_tokens: changes
+                    .tls_client_certificate_bound_access_tokens
+                    .unwrap_or(now.certificate_bound_access_tokens),
             };
             let client = state
                 .applications

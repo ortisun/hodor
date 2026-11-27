@@ -1,0 +1,32 @@
+# Orders protected by Envoy Gateway, as the service mesh guide writes it: one SecurityPolicy on its route
+# checks the tenant's tokens and asks hodor-ext-authz about every request. The demonstration fills in the
+# tenant's issuer, which changes with each run, and its key set, inline: Envoy Gateway fetches a key set only
+# over HTTPS, and the demonstration's Hodor answers in plain HTTP inside the cluster.
+#
+#   python3 deploy/demo/service_mesh.py applies it; see docs/operations/quick-start.md.
+
+apiVersion: gateway.envoyproxy.io/v1alpha1
+kind: SecurityPolicy
+metadata:
+  name: orders
+  namespace: shop
+spec:
+  targetRefs:
+    - group: gateway.networking.k8s.io
+      kind: HTTPRoute
+      name: orders
+  jwt:
+    providers:
+      - name: hodor
+        issuer: ${issuer}
+        audiences:
+          - https://orders.example.com
+        localJWKS:
+          type: Inline
+          inline: ${key_set}
+  extAuth:
+    grpc:
+      backendRefs:
+        - name: hodor-ext-authz
+          namespace: hodor
+          port: 9191

@@ -10,6 +10,16 @@ use hodor_kernel::random::testing::FakeDigest;
 const REDIRECT: &str = "https://payroll.example.com/callback";
 const AUDIENCE: &str = "https://api.payroll.example.com";
 const MOMENT: Timestamp = Timestamp::UNIX_EPOCH;
+const ISSUER: &str = "https://hodor.example.com/t/acme";
+
+fn objects() -> RequestObjectCheck<'static> {
+    RequestObjectCheck {
+        keys: &[],
+        issuer: ISSUER,
+        now: MOMENT,
+        verifier: &crate::testing::FakeVerifier,
+    }
+}
 
 /// Different bytes on every call.
 struct Counting(std::sync::atomic::AtomicU8);
@@ -145,6 +155,8 @@ fn check(
         Some(&setting.client),
         Some(&setting.application),
         &setting.servers,
+        objects(),
+        false,
     )
 }
 
@@ -178,6 +190,44 @@ fn a_good_request_is_accepted_with_what_it_asked_for() {
 }
 
 #[test]
+fn a_client_that_must_push_its_requests_is_refused_without_one() {
+    let setting = setting();
+    let refused = |pairs: Vec<(String, String)>| {
+        check_request(
+            &AuthorizationParameters::from_pairs(pairs),
+            Some(&setting.client),
+            Some(&setting.application),
+            &setting.servers,
+            objects(),
+            true,
+        )
+    };
+    let result = refused(good(&setting.client));
+    match &result {
+        Err(AuthorizationRefusal::Redirect(error)) => {
+            assert_eq!(
+                error.description,
+                "this client must push its authorization requests"
+            );
+            assert_eq!(error.state.as_deref(), Some("xyz"));
+        }
+        other => panic!("expected an error at the redirect address, got {other:?}"),
+    }
+    assert_eq!(error_of(result), "invalid_request");
+    // Until its address is trusted, nothing is sent there.
+    assert_eq!(
+        page_of(refused(with(
+            good(&setting.client),
+            "redirect_uri",
+            Some("https://elsewhere.example.com/callback")
+        ))),
+        "oauth.authorization_redirect_uri_unregistered"
+    );
+    // The same request is accepted when nothing requires it.
+    assert!(check(&setting, good(&setting.client)).is_ok());
+}
+
+#[test]
 fn nothing_is_sent_to_an_address_that_is_not_trusted() {
     let setting = setting();
     let unknown = "oauth.authorization_client_unknown";
@@ -205,6 +255,8 @@ fn nothing_is_sent_to_an_address_that_is_not_trusted() {
             None,
             None,
             &[],
+            objects(),
+            false,
         )),
         unknown,
         "a client of another tenant is not found here"
@@ -218,6 +270,8 @@ fn nothing_is_sent_to_an_address_that_is_not_trusted() {
         Some(&disabled),
         Some(&setting.application),
         &setting.servers,
+        objects(),
+        false,
     );
     assert_eq!(page_of(result), unknown);
     let mut application = setting.application.clone();
@@ -227,6 +281,8 @@ fn nothing_is_sent_to_an_address_that_is_not_trusted() {
         Some(&setting.client),
         Some(&application),
         &setting.servers,
+        objects(),
+        false,
     );
     assert_eq!(page_of(result), unknown);
 
@@ -289,14 +345,14 @@ fn every_malformed_request_is_refused_for_its_own_reason() {
             "invalid_request",
         ),
         (
-            "a request object",
+            "a request object that is not one",
             with(base.clone(), "request", Some("eyJ")),
-            "request_not_supported",
+            "invalid_request_object",
         ),
         (
-            "a request object by reference",
+            "a reference beside the request it would name",
             with(base.clone(), "request_uri", Some("urn:x")),
-            "request_uri_not_supported",
+            "invalid_request",
         ),
         (
             "no challenge from a public client",
@@ -444,6 +500,127 @@ fn the_state_goes_back_with_an_error_when_it_can_be_read() {
         Err(AuthorizationRefusal::Redirect(error)) => assert_eq!(error.state, None),
         other => panic!("{other:?}"),
     }
+}
+
+#[test]
+fn a_request_is_answered_in_the_mode_it_names_or_in_the_query() {
+    let setting = setting();
+    let base = good(&setting.client);
+    let named = |mode: Option<&str>| {
+        check(&setting, with(base.clone(), "response_mode", mode))
+            .expect("accepted")
+            .response_mode
+    };
+    assert_eq!(named(None), ResponseMode::Query);
+    assert_eq!(named(Some("query")), ResponseMode::Query);
+    assert_eq!(named(Some("form_post")), ResponseMode::FormPost);
+}
+
+#[test]
+fn a_mode_hodor_does_not_offer_is_refused_in_the_mode_of_the_type() {
+    let setting = setting();
+    let base = good(&setting.client);
+    for mode in [
+        "fragment",
+        "jwt",
+        "query.jwt",
+        "form_post.jwt",
+        "FORM_POST",
+        "anything",
+    ] {
+        match check(&setting, with(base.clone(), "response_mode", Some(mode))) {
+            Err(AuthorizationRefusal::Redirect(error)) => {
+                assert_eq!(error.error, "invalid_request", "{mode}");
+                assert_eq!(
+                    error.description, "the response modes are query and form_post",
+                    "{mode}"
+                );
+                assert_eq!(error.mode, ResponseMode::Query, "{mode}");
+                assert_eq!(error.state.as_deref(), Some("xyz"));
+            }
+            other => panic!("{mode}: {other:?}"),
+        }
+    }
+    // Given twice, it is refused like any parameter given twice.
+    let mut twice = base;
+    twice.push(("response_mode".to_owned(), "form_post".to_owned()));
+    twice.push(("response_mode".to_owned(), "query".to_owned()));
+    assert_eq!(error_of(check(&setting, twice)), "invalid_request");
+}
+
+#[test]
+fn every_error_after_the_address_is_trusted_comes_in_the_mode_asked_for() {
+    let setting = setting();
+    let form_post = with(good(&setting.client), "response_mode", Some("form_post"));
+    let cases: Vec<(&str, Pairs, &str)> = vec![
+        (
+            "a type Hodor does not answer",
+            with(form_post.clone(), "response_type", Some("token")),
+            "unsupported_response_type",
+        ),
+        (
+            "no type",
+            with(form_post.clone(), "response_type", None),
+            "invalid_request",
+        ),
+        (
+            "a scope the client may not ask for",
+            with(form_post.clone(), "scope", Some("openid admin")),
+            "invalid_scope",
+        ),
+        (
+            "a plain challenge",
+            with(form_post.clone(), "code_challenge_method", Some("plain")),
+            "invalid_request",
+        ),
+        (
+            "an unknown prompt",
+            with(form_post, "prompt", Some("always")),
+            "invalid_request",
+        ),
+    ];
+    for (case, pairs, expected) in cases {
+        match check(&setting, pairs) {
+            Err(AuthorizationRefusal::Redirect(error)) => {
+                assert_eq!(error.error, expected, "{case}");
+                assert_eq!(error.mode, ResponseMode::FormPost, "{case}");
+                assert_eq!(error.state.as_deref(), Some("xyz"), "{case}");
+            }
+            other => panic!("{case}: {other:?}"),
+        }
+    }
+    // Before the address is trusted, nothing goes to it in any mode.
+    assert_eq!(
+        page_of(check(
+            &setting,
+            with(
+                with(good(&setting.client), "response_mode", Some("form_post")),
+                "redirect_uri",
+                Some("https://attacker.example/callback"),
+            ),
+        )),
+        "oauth.authorization_redirect_uri_unregistered"
+    );
+}
+
+#[test]
+fn a_request_kept_before_response_modes_existed_reads_as_the_query() {
+    let setting = setting();
+    let request = check(
+        &setting,
+        with(good(&setting.client), "response_mode", Some("form_post")),
+    )
+    .expect("accepted");
+    let mut written = serde_json::to_value(&request).expect("written");
+    assert_eq!(written["response_mode"], "form_post");
+    let read: AuthorizationRequest = serde_json::from_value(written.clone()).expect("read");
+    assert_eq!(read.response_mode, ResponseMode::FormPost);
+    written
+        .as_object_mut()
+        .expect("an object")
+        .remove("response_mode");
+    let read: AuthorizationRequest = serde_json::from_value(written).expect("read");
+    assert_eq!(read.response_mode, ResponseMode::Query);
 }
 
 #[test]
@@ -867,9 +1044,139 @@ fn the_s256_challenge_is_that_of_rfc_7636() {
                 0xcb, 0x70, 0xf9, 0xc3,
             ]
         }
+        fn sha512(&self, _data: &[u8]) -> [u8; 64] {
+            unreachable!("a challenge is SHA-256")
+        }
     }
     assert_eq!(
         s256_challenge("dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk", &Sha256),
         CHALLENGE
     );
+}
+
+#[test]
+fn the_claims_parameter_is_kept_with_the_request_and_its_essential_acr_becomes_acr_values() {
+    let setting = setting();
+    let claims = r#"{"id_token":{"email":null,"acr":{"essential":true,"values":["urn:hodor:acr:mfa"]}},"userinfo":{"name":{"essential":true},"sub":{"value":"someone"}}}"#;
+    let pairs = with(good(&setting.client), "claims", Some(claims));
+    let pairs = with(pairs, "claims_locales", Some("fr-CA en"));
+    let request = check(&setting, pairs).expect("accepted");
+    assert_eq!(request.claims.id_token, ["email"]);
+    assert_eq!(request.claims.userinfo, ["name"]);
+    assert_eq!(request.claims.subject.as_deref(), Some("someone"));
+    assert_eq!(request.acr_values.as_deref(), Some("urn:hodor:acr:mfa"));
+    assert_eq!(request.claims_locales.as_deref(), Some("fr-CA en"));
+    // Kept as it is while the person signs in.
+    let written = serde_json::to_value(&request).expect("written");
+    let read: AuthorizationRequest = serde_json::from_value(written).expect("read");
+    assert_eq!(read, request);
+}
+
+#[test]
+fn an_acr_asked_without_essential_is_a_preference_and_asks_for_no_level() {
+    let setting = setting();
+    let claims = r#"{"id_token":{"acr":{"values":["urn:hodor:acr:mfa"]}}}"#;
+    let request = check(
+        &setting,
+        with(good(&setting.client), "claims", Some(claims)),
+    )
+    .expect("accepted");
+    assert_eq!(request.acr_values, None);
+}
+
+#[test]
+fn a_malformed_or_conflicting_claims_parameter_is_an_invalid_request() {
+    let setting = setting();
+    let too_many: String = format!(
+        "{{\"userinfo\":{{{}}}}}",
+        (0..65)
+            .map(|index| format!("\"claim_{index}\":null"))
+            .collect::<Vec<_>>()
+            .join(",")
+    );
+    let too_large = format!(
+        "{{\"userinfo\":{{\"name\":{{\"value\":\"{}\"}}}}}}",
+        "a".repeat(4096)
+    );
+    for claims in [
+        "not json",
+        "[]",
+        r#"{"id_token":[]}"#,
+        r#"{"userinfo":{"name":true}}"#,
+        r#"{"userinfo":{"name":{"essential":"yes"}}}"#,
+        r#"{"userinfo":{"name":{"values":"one"}}}"#,
+        r#"{"id_token":{"acr":{"essential":true,"values":[1]}}}"#,
+        r#"{"id_token":{"sub":{"value":1}}}"#,
+        r#"{"id_token":{"sub":{"value":"a"}},"userinfo":{"sub":{"value":"b"}}}"#,
+        too_many.as_str(),
+        too_large.as_str(),
+    ] {
+        let pairs = with(good(&setting.client), "claims", Some(claims));
+        assert_eq!(
+            error_of(check(&setting, pairs)),
+            "invalid_request",
+            "{claims}"
+        );
+    }
+    let both = with(
+        with(
+            good(&setting.client),
+            "claims",
+            Some(r#"{"id_token":{"acr":{"essential":true,"value":"urn:hodor:acr:mfa"}}}"#),
+        ),
+        "acr_values",
+        Some("urn:hodor:acr:mfa"),
+    );
+    assert_eq!(error_of(check(&setting, both)), "invalid_request");
+    // An `acr` without a value asks for nothing more beside `acr_values`.
+    let named = with(
+        with(
+            good(&setting.client),
+            "claims",
+            Some(r#"{"id_token":{"acr":null}}"#),
+        ),
+        "acr_values",
+        Some("urn:hodor:acr:mfa"),
+    );
+    assert!(check(&setting, named).is_ok());
+    let locales = with(
+        good(&setting.client),
+        "claims_locales",
+        Some(&"a".repeat(256)),
+    );
+    assert_eq!(error_of(check(&setting, locales)), "invalid_request");
+}
+
+#[test]
+fn a_request_names_another_person_only_when_it_asked_for_a_sub_with_a_value() {
+    let setting = setting();
+    let plain = check(&setting, good(&setting.client)).expect("accepted");
+    assert!(!plain.names_another("anyone"));
+    let asked = check(
+        &setting,
+        with(
+            good(&setting.client),
+            "claims",
+            Some(r#"{"id_token":{"sub":{"value":"ana"}}}"#),
+        ),
+    )
+    .expect("accepted");
+    assert!(!asked.names_another("ana"));
+    assert!(asked.names_another("bruno"));
+}
+
+#[test]
+fn a_grant_is_made_giving_no_claim() {
+    let setting = setting();
+    let request = check(
+        &setting,
+        with(
+            good(&setting.client),
+            "claims",
+            Some(r#"{"id_token":{"email":null}}"#),
+        ),
+    )
+    .expect("accepted");
+    let grant = Grant::make(&request, &person(MOMENT), MOMENT);
+    assert_eq!(grant.claims, GrantClaims::default());
 }

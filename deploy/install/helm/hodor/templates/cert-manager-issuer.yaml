@@ -1,0 +1,200 @@
+{{- if .Values.certManagerIssuer.enabled }}
+{{- $name := printf "%s-cert-manager-issuer" (include "hodor.fullname" .) }}
+{{- $config := include "hodor.certManagerIssuerConfig" . }}
+{{- $values := .Values.certManagerIssuer }}
+# hodor-cert-manager-issuer: cert-manager's outside issuer, which signs the approved requests for an authority of
+# its HodorIssuer and HodorClusterIssuer through the tenant's certificate authority.
+# docs/operations/hodor-cert-manager-issuer.md.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "hodor.labels" . | nindent 4 }}
+    app.kubernetes.io/component: cert-manager-issuer
+data:
+  config.json: |
+    {{- $config | nindent 4 }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "hodor.labels" . | nindent 4 }}
+    app.kubernetes.io/component: cert-manager-issuer
+spec:
+  # One replica, replaced rather than rolled, so that no request is sent twice by two at once.
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      {{- include "hodor.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: cert-manager-issuer
+  template:
+    metadata:
+      labels:
+        {{- include "hodor.labels" . | nindent 8 }}
+        app.kubernetes.io/component: cert-manager-issuer
+        {{- with include "hodor.meshLabels" (list . true) }}
+        {{- . | nindent 8 }}
+        {{- end }}
+      # The configuration is read once at start: a change of it restarts the pod. With mesh.provider, the pod
+      # joins the mesh, where it proves who it is to Hodor with its mesh identity.
+      {{- with include "hodor.podAnnotations" (list . true (merge (dict "checksum/config" ($config | sha256sum)) ($values.podAnnotations | default dict))) }}
+      {{- . | trim | nindent 6 }}
+      {{- end }}
+    spec:
+      serviceAccountName: {{ include "hodor.certManagerIssuerServiceAccountName" . }}
+      # It watches the Kubernetes interface with its service account's token.
+      automountServiceAccountToken: true
+      {{- with .Values.image.pullSecrets }}
+      imagePullSecrets:
+        {{- range . }}
+        - name: {{ . }}
+        {{- end }}
+      {{- end }}
+      securityContext:
+        {{- include "hodor.podSecurityContext" . | nindent 8 }}
+      containers:
+        - name: cert-manager-issuer
+          image: {{ printf "%s:%s" $values.image.repository ($values.image.tag | default .Chart.AppVersion) }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          securityContext:
+            {{- include "hodor.containerSecurityContext" . | nindent 12 }}
+          ports:
+            - name: operations
+              containerPort: 9090
+          env:
+            - name: HODOR_CERT_MANAGER_ISSUER_CONFIG
+              value: /etc/hodor-cert-manager-issuer/config.json
+            {{- include "hodor.sharedEnvironment" . | nindent 12 }}
+            {{- with $values.extraEnvironment }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          volumeMounts:
+            - name: config
+              mountPath: /etc/hodor-cert-manager-issuer
+              readOnly: true
+            {{- if eq $values.authentication.method "private_key_jwt" }}
+            - name: key
+              mountPath: /etc/hodor-cert-manager-issuer/key
+              readOnly: true
+            {{- end }}
+          {{- include "hodor.probes" . | nindent 10 }}
+          resources:
+            {{- toYaml $values.resources | nindent 12 }}
+      volumes:
+        - name: config
+          configMap:
+            name: {{ $name }}
+        {{- if eq $values.authentication.method "private_key_jwt" }}
+        - name: key
+          secret:
+            secretName: {{ $values.authentication.privateKeyJwt.secretName | quote }}
+            items:
+              - key: {{ $values.authentication.privateKeyJwt.key }}
+                path: key.pem
+        {{- end }}
+      {{- with $values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with $values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with $values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+{{- if $values.serviceAccount.create }}
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ include "hodor.certManagerIssuerServiceAccountName" . }}
+  labels:
+    {{- include "hodor.labels" . | nindent 4 }}
+    app.kubernetes.io/component: cert-manager-issuer
+  {{- with $values.serviceAccount.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+{{- end }}
+---
+# What the issuer may do in the cluster, and nothing more: read the requests and its two kinds, and write their
+# status. docs/operations/hodor-cert-manager-issuer.md, "What it may do in the cluster".
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "hodor.labels" . | nindent 4 }}
+    app.kubernetes.io/component: cert-manager-issuer
+rules:
+  - apiGroups: [cert-manager.io]
+    resources: [certificaterequests]
+    verbs: [get, list, watch]
+  - apiGroups: [cert-manager.io]
+    resources: [certificaterequests/status]
+    verbs: [patch]
+  - apiGroups: [hodor.ortisun.github.io]
+    resources: [hodorissuers, hodorclusterissuers]
+    verbs: [get, list, watch]
+  - apiGroups: [hodor.ortisun.github.io]
+    resources: [hodorissuers/status, hodorclusterissuers/status]
+    verbs: [patch]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "hodor.labels" . | nindent 4 }}
+    app.kubernetes.io/component: cert-manager-issuer
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: {{ $name }}
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "hodor.certManagerIssuerServiceAccountName" . }}
+    namespace: {{ .Release.Namespace }}
+{{- if $values.approveWithCertManager.enabled }}
+---
+# Lets cert-manager's own approver approve every request of Hodor's two kinds, so that whoever can create a
+# CertificateRequest naming one has it approved. Only with certManagerIssuer.approveWithCertManager.enabled.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ printf "%s-approver" $name }}
+  labels:
+    {{- include "hodor.labels" . | nindent 4 }}
+    app.kubernetes.io/component: cert-manager-issuer
+rules:
+  - apiGroups: [cert-manager.io]
+    resources: [signers]
+    verbs: [approve]
+    resourceNames:
+      - hodorissuers.hodor.ortisun.github.io/*
+      - hodorclusterissuers.hodor.ortisun.github.io/*
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: {{ printf "%s-approver" $name }}
+  labels:
+    {{- include "hodor.labels" . | nindent 4 }}
+    app.kubernetes.io/component: cert-manager-issuer
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: {{ printf "%s-approver" $name }}
+subjects:
+  - kind: ServiceAccount
+    name: {{ $values.approveWithCertManager.serviceAccount }}
+    namespace: {{ $values.approveWithCertManager.namespace }}
+{{- end }}
+{{- end }}

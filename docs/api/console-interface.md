@@ -131,6 +131,8 @@ Every route of the [administration interface](admin-api.md#routes) exists here a
 | `PUT /scim-deprovisioning` | `users:write` |
 | `GET /email-sign-in` | `users:read` |
 | `PUT /email-sign-in` | `users:write` |
+| `GET /pushed-authorization-requests` | `applications:read` |
+| `PUT /pushed-authorization-requests` | `applications:write` |
 | `GET /webhook-event-types` | `webhooks:read` |
 | `GET /webhook-endpoints` | `webhooks:read` |
 | `POST /webhook-endpoints` | `webhooks:write` |
@@ -148,6 +150,11 @@ Every route of the [administration interface](admin-api.md#routes) exists here a
 | `POST /agents/{agent_id}/api-keys` | `workloads:write` |
 | `POST /agents/{agent_id}/api-keys/{api_key_id}:rotate` | `workloads:write` |
 | `DELETE /agents/{agent_id}/api-keys/{api_key_id}` | `workloads:write` |
+| `GET /trust-domains` | `keys:read` |
+| `POST /trust-domains` | `keys:write` |
+| `GET /trust-domains/{trust_domain_id}` | `keys:read` |
+| `PUT /trust-domains/{trust_domain_id}` | `keys:write` |
+| `DELETE /trust-domains/{trust_domain_id}` | `keys:write` |
 | `GET /assurance-levels` | `assurance-levels:read` |
 | `PUT /assurance-levels` | `assurance-levels:write` |
 

@@ -1,0 +1,89 @@
+# The workloads of the demonstration of Milestone 10.
+#
+# payroll, in the mesh: its namespace is injected with Istio's sidecar, whose certificate names it
+# spiffe://cluster.local/ns/payroll/sa/payroll. Beside the container that calls Hodor, a second one
+# reaches the SPIRE agent's socket on the node, from which it is given the JWT-SVIDs of
+# spiffe://workloads.example.org/ns/payroll/sa/payroll.
+#
+# outsider, outside the mesh: no sidecar and no SPIRE identity, only curl.
+#
+#   python3 deploy/demo/workload_identity.py applies it; see docs/operations/quick-start.md.
+
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: payroll
+  labels:
+    istio-injection: enabled
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: payroll
+  namespace: payroll
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: payroll
+  namespace: payroll
+  labels:
+    app: payroll
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: payroll
+  template:
+    metadata:
+      labels:
+        app: payroll
+    spec:
+      serviceAccountName: payroll
+      containers:
+        - name: app
+          image: curlimages/curl:8.23.0
+          command: ["sleep", "infinity"]
+        # Keeps a stream open to the SPIRE agent, and is where the demonstration asks the agent for a
+        # JWT-SVID, with `spire-agent api fetch jwt`.
+        - name: spiffe
+          image: ghcr.io/spiffe/spire-agent:1.15.5
+          command: ["/opt/spire/bin/spire-agent"]
+          args: ["api", "watch", "-socketPath", "/run/spire/sockets/agent.sock"]
+          volumeMounts:
+            - name: spire-agent-socket
+              mountPath: /run/spire/sockets
+              readOnly: true
+      volumes:
+        - name: spire-agent-socket
+          hostPath:
+            path: /run/spire/sockets
+            type: DirectoryOrCreate
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: outside
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: outsider
+  namespace: outside
+  labels:
+    app: outsider
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: outsider
+  template:
+    metadata:
+      labels:
+        app: outsider
+    spec:
+      automountServiceAccountToken: false
+      containers:
+        - name: app
+          image: curlimages/curl:8.23.0
+          command: ["sleep", "infinity"]

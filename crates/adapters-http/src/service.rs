@@ -11,7 +11,7 @@
 use crate::client::{OutboundPolicy, exchange, failure, url_invalid};
 use hodor_kernel::{DomainError, ErrorKind, HttpClient, HttpRequest, HttpResponse};
 use reqwest::redirect::Policy;
-use reqwest::{Client, Url};
+use reqwest::{Certificate, Client, Url};
 use std::net::IpAddr;
 
 /// One configured origin: a scheme, a host and a port.
@@ -88,6 +88,41 @@ impl ServiceHttpClient {
     /// Returns `http.origin_invalid` for an origin that is not one, or an
     /// error if the TLS library cannot be set up.
     pub fn new(origins: &[String], policy: OutboundPolicy) -> Result<Self, DomainError> {
+        Self::build(origins, policy, None)
+    }
+
+    /// As [`ServiceHttpClient::new`], but a certificate is trusted only if
+    /// one of the authorities in `authorities`, PEM certificates one after
+    /// the other, issued it: for a service whose certificate comes from an
+    /// authority of the operator's own, such as OpenBao's.
+    ///
+    /// # Errors
+    ///
+    /// As [`ServiceHttpClient::new`], and `http.certificate_authorities_invalid`
+    /// if `authorities` holds no certificate or one that cannot be read.
+    pub fn trusting_only(
+        origins: &[String],
+        policy: OutboundPolicy,
+        authorities: &[u8],
+    ) -> Result<Self, DomainError> {
+        let invalid = || {
+            DomainError::invalid(
+                "http.certificate_authorities_invalid",
+                "the certificate authorities of a service are not PEM certificates",
+            )
+        };
+        let certificates = Certificate::from_pem_bundle(authorities).map_err(|_| invalid())?;
+        if certificates.is_empty() {
+            return Err(invalid());
+        }
+        Self::build(origins, policy, Some(certificates))
+    }
+
+    fn build(
+        origins: &[String],
+        policy: OutboundPolicy,
+        authorities: Option<Vec<Certificate>>,
+    ) -> Result<Self, DomainError> {
         let origins = origins
             .iter()
             .map(|origin| parse_origin(origin))
@@ -102,20 +137,22 @@ impl ServiceHttpClient {
                 );
             }
         }
-        let client = Client::builder()
+        let mut builder = Client::builder()
             .redirect(Policy::none())
             .no_proxy()
             .timeout(policy.timeout)
             .connect_timeout(policy.connect_timeout)
-            .user_agent("hodor")
-            .build()
-            .map_err(|error| {
-                DomainError::internal(
-                    "http.client_unavailable",
-                    "outbound requests cannot be made",
-                )
-                .with_detail(error.to_string())
-            })?;
+            .user_agent("hodor");
+        if let Some(authorities) = authorities {
+            builder = builder.tls_certs_only(authorities);
+        }
+        let client = builder.build().map_err(|error| {
+            DomainError::internal(
+                "http.client_unavailable",
+                "outbound requests cannot be made",
+            )
+            .with_detail(error.to_string())
+        })?;
         Ok(Self {
             client,
             origins,
@@ -198,6 +235,23 @@ mod tests {
             parse_origin("http://policy.internal").ok(),
             parse_origin("https://policy.internal").ok()
         );
+    }
+
+    #[test]
+    fn authorities_are_pem_certificates() {
+        let origins = ["https://openbao.internal:8200".to_owned()];
+        for bad in [
+            &b""[..],
+            b"not a certificate",
+            b"-----BEGIN CERTIFICATE-----\nAAAA\n",
+        ] {
+            assert_eq!(
+                ServiceHttpClient::trusting_only(&origins, OutboundPolicy::default(), bad)
+                    .map(|_| ())
+                    .map_err(|e| e.code().to_owned()),
+                Err("http.certificate_authorities_invalid".to_owned()),
+            );
+        }
     }
 
     #[test]

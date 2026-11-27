@@ -91,6 +91,8 @@ struct World {
     endpoints: hodor_webhooks::testing::RecordingEndpoints,
     /// How many committed events were handed to the webhooks fan-out.
     fanned_out: AtomicUsize,
+    /// The bundle endpoints trust domains are fetched from.
+    bundle_endpoints: hodor_keys::testing::FakeBundleEndpoints,
     /// The administrator of Acme and their token.
     administrator: UserId,
     administrator_token: String,
@@ -104,8 +106,14 @@ fn applications(
     hodor_oauth::api::ApplicationService,
     hodor_oauth::api::ConsentService,
     hodor_oauth::api::ClaimMapperService,
+    hodor_oauth::api::ClientRegistrationService,
 ) {
     let stores = hodor_oauth::testing::InMemoryStores::default();
+    let client_registration = hodor_oauth::testing::client_registration_service(
+        Arc::new(units_of_work.clone()),
+        &stores,
+        clock.clone(),
+    );
     let claim_mappers =
         hodor_oauth::api::ClaimMapperService::new(hodor_oauth::api::ClaimMapperPorts {
             units_of_work: Arc::new(units_of_work.clone()),
@@ -132,7 +140,7 @@ fn applications(
         })
         .with_destinations(Arc::new(hodor_oauth::testing::FakeDestinations))
         .with_sector_documents(Arc::new(sector_documents()));
-    (applications, consents, claim_mappers)
+    (applications, consents, claim_mappers, client_registration)
 }
 
 /// The use cases of roles, bindings and policy versions on in-memory
@@ -360,6 +368,42 @@ async fn world_with_keys(with_keys: bool) -> World {
             clock.clone(),
         )
     });
+    let bundle_endpoints = hodor_keys::testing::FakeBundleEndpoints::default();
+    let trust_domain_rows = hodor_keys::testing::InMemoryTrustDomains::default();
+    // The certificate authority is on, for development, wherever the
+    // installation has keys: its key is made by the local provider.
+    let authority = with_keys.then(|| {
+        let root = hodor_adapters_crypto::SecretKeys::generate(&hodor_adapters_crypto::OsRandom);
+        let root = hodor_adapters_crypto::SecretKeys::parse(&hodor_kernel::Secret::new(format!(
+            "root:{}",
+            root.expose()
+        )))
+        .expect("root keys");
+        let provider = Arc::new(hodor_adapters_crypto::LocalKeyProvider::new(Arc::new(root)));
+        hodor_keys::api::AuthorityService::new(
+            hodor_keys::api::AuthorityPorts {
+                units_of_work: units(),
+                store: Arc::new(hodor_keys::testing::InMemoryAuthorities::default()),
+                trust_domains: Arc::new(trust_domain_rows.clone()),
+                intermediates: Arc::new(hodor_keys::testing::InMemoryIntermediates::default()),
+                maker: provider.clone(),
+                signer: provider,
+                certificates: Arc::new(hodor_adapters_crypto::X509Certificates),
+                digest: Arc::new(FakeDigest),
+                clock: clock.clone(),
+            },
+            true,
+        )
+    });
+    let trust_domains =
+        hodor_keys::api::TrustDomainService::new(hodor_keys::api::TrustDomainPorts {
+            units_of_work: units(),
+            store: Arc::new(trust_domain_rows),
+            destinations: Arc::new(bundle_endpoints.clone()),
+            http: Arc::new(bundle_endpoints.clone()),
+            digest: Arc::new(FakeDigest),
+            clock: clock.clone(),
+        });
     let state = AdminState {
         tokens: tokens.clone(),
         authorization: authorization.clone(),
@@ -369,8 +413,12 @@ async fn world_with_keys(with_keys: bool) -> World {
         federation: Some(federation),
         keys,
         key_rotation: RotationPolicy::DEFAULT,
+        trust_domains,
+        authority,
+        certificate_signing: None,
         applications: oauth.0,
         claim_mappers: oauth.2.clone(),
+        client_registration: oauth.3.clone(),
         consents: oauth.1.clone(),
         tenants: tenants.clone(),
         factors: factor_service,
@@ -436,6 +484,7 @@ async fn world_with_keys(with_keys: bool) -> World {
         webhooks: webhook_rows,
         endpoints: hodor_webhooks::testing::RecordingEndpoints::default(),
         fanned_out: AtomicUsize::new(0),
+        bundle_endpoints,
         administrator: UserId::generate(),
         administrator_token: String::new(),
     };
@@ -626,6 +675,9 @@ impl Operation {
                 .replace("{endpoint_id}", &UserId::generate().to_string())
                 .replace("{delivery_id}", &UserId::generate().to_string())
                 .replace("{entry_id}", &UserId::generate().to_string())
+                .replace("{trust_domain_id}", &UserId::generate().to_string())
+                .replace("{intermediate_id}", &UserId::generate().to_string())
+                .replace("{token_id}", &UserId::generate().to_string())
         )
     }
 }
@@ -672,7 +724,7 @@ fn the_document_and_the_routes_list_the_same_operations_and_permissions() {
         })
         .collect();
     assert_eq!(documented, served);
-    assert_eq!(served.len(), 141);
+    assert_eq!(served.len(), 163);
 
     // Every operation says how it refuses.
     let document: serde_json::Value = serde_json::from_str(ADMIN_OPENAPI).expect("valid JSON");
@@ -695,11 +747,100 @@ async fn the_document_is_served_without_a_token() {
         .send(Method::GET, "/t/acme/api/v1/admin/openapi.json", None, None)
         .await;
     assert_eq!(reply.status, StatusCode::OK);
-    assert_eq!(reply.body["openapi"], "3.1.0");
     assert_eq!(
         reply.body,
         serde_json::from_str::<serde_json::Value>(ADMIN_OPENAPI).expect("valid JSON")
     );
+}
+
+#[tokio::test]
+async fn with_the_authority_off_the_document_does_not_name_it() {
+    // Without keys there is no authority.
+    let world = world_with_keys(false).await;
+    let reply = world
+        .send(Method::GET, "/t/acme/api/v1/admin/openapi.json", None, None)
+        .await;
+    assert_eq!(reply.status, StatusCode::OK);
+    assert_eq!(reply.body["openapi"], "3.1.0");
+    // The certificate authority is off in this world: the document is the
+    // whole one without its operations and the schemas only they use.
+    let mut whole: serde_json::Value = serde_json::from_str(ADMIN_OPENAPI).expect("valid JSON");
+    let paths = whole["paths"].as_object_mut().expect("paths");
+    assert!(paths.remove("/certificate-authority").is_some());
+    assert!(paths.remove("/certificate-authority:install").is_some());
+    assert!(
+        paths
+            .remove("/certificate-authority/intermediates")
+            .is_some()
+    );
+    assert!(
+        paths
+            .remove("/certificate-authority/intermediates/{intermediate_id}")
+            .is_some()
+    );
+    assert!(
+        paths
+            .remove("/certificate-authority/intermediates/{intermediate_id}:withdraw")
+            .is_some()
+    );
+    let schemas = whole["components"]["schemas"]
+        .as_object_mut()
+        .expect("schemas");
+    for schema in [
+        "CertificateAuthority",
+        "NewCertificateAuthority",
+        "CertificateAuthorityCertificate",
+        "Intermediate",
+        "NewIntermediate",
+        "IntermediateWithdrawal",
+    ] {
+        assert!(schemas.remove(schema).is_some(), "{schema}");
+    }
+    assert_eq!(reply.body, whole);
+    assert!(
+        !reply.body["paths"]
+            .to_string()
+            .contains("certificate-authority")
+    );
+}
+
+#[tokio::test]
+async fn with_the_authority_off_its_operations_are_not_routed() {
+    let world = world_with_keys(false).await;
+    let (_, token) = world
+        .person(
+            &world.acme,
+            "root@acme.example",
+            &[Role::TenantAdministrator],
+        )
+        .await;
+    let bearer = format!("Bearer {token}");
+    for (method, path) in [
+        (Method::GET, "/certificate-authority"),
+        (Method::POST, "/certificate-authority"),
+        (Method::POST, "/certificate-authority:install"),
+        (Method::DELETE, "/certificate-authority"),
+        (Method::GET, "/certificate-authority/intermediates"),
+        (Method::POST, "/certificate-authority/intermediates"),
+        (
+            Method::GET,
+            "/certificate-authority/intermediates/0193f3b1-0000-7000-8000-000000000000",
+        ),
+        (
+            Method::POST,
+            "/certificate-authority/intermediates/0193f3b1-0000-7000-8000-000000000000:withdraw",
+        ),
+    ] {
+        let reply = world
+            .send(
+                method.clone(),
+                &format!("/t/acme/api/v1/admin{path}"),
+                Some(&bearer),
+                Some(serde_json::json!({ "kind": "root", "trust_domains": ["a.example"] })),
+            )
+            .await;
+        assert_eq!(reply.status, StatusCode::NOT_FOUND, "{method} {path}");
+    }
 }
 
 #[tokio::test]
@@ -954,6 +1095,116 @@ async fn an_administrator_creates_reads_and_suspends_a_user() {
         )
         .await;
     assert_eq!(twice.status, StatusCode::CONFLICT);
+}
+
+#[tokio::test]
+async fn an_administrator_replaces_a_persons_standard_claims() {
+    let world = world().await;
+    let created = world
+        .as_administrator(
+            Method::POST,
+            "/users",
+            Some(serde_json::json!({ "email": "ana@example.com", "username": "Ana.Silva" })),
+        )
+        .await;
+    assert_eq!(created.status, StatusCode::CREATED);
+    let kinds: Vec<&str> = created.body["identifiers"]
+        .as_array()
+        .expect("identifiers")
+        .iter()
+        .filter_map(|identifier| identifier["kind"].as_str())
+        .collect();
+    assert_eq!(kinds, ["email", "username"]);
+    assert_eq!(
+        created.body["claims"],
+        serde_json::json!({ "phone_number_verified": false }),
+        "a new person has no claims"
+    );
+    let id = created.body["id"].as_str().expect("identifier").to_owned();
+
+    let replaced = world
+        .as_administrator(
+            Method::PUT,
+            &format!("/users/{id}/claims"),
+            Some(serde_json::json!({
+                "given_name": " Ana ",
+                "family_name": "Silva",
+                "birthdate": "1960-04-12",
+                "zoneinfo": "America/Sao_Paulo",
+                "phone_number": "+55 11 91234-5678",
+                "phone_number_verified": true,
+                "address": { "locality": "São Paulo", "country": "BR", "region": "" },
+            })),
+        )
+        .await;
+    assert_eq!(replaced.status, StatusCode::OK, "{}", replaced.body);
+    assert_eq!(
+        replaced.body["claims"],
+        serde_json::json!({
+            "given_name": "Ana",
+            "family_name": "Silva",
+            "birthdate": "1960-04-12",
+            "zoneinfo": "America/Sao_Paulo",
+            "phone_number": "+5511912345678",
+            "phone_number_verified": true,
+            "address": { "locality": "São Paulo", "country": "BR" },
+        })
+    );
+    let read = world
+        .as_administrator(Method::GET, &format!("/users/{id}"), None)
+        .await;
+    assert_eq!(read.body["claims"], replaced.body["claims"]);
+
+    // What is left out is removed.
+    let fewer = world
+        .as_administrator(
+            Method::PUT,
+            &format!("/users/{id}/claims"),
+            Some(serde_json::json!({ "nickname": "Aninha" })),
+        )
+        .await;
+    assert_eq!(
+        fewer.body["claims"],
+        serde_json::json!({ "nickname": "Aninha", "phone_number_verified": false })
+    );
+
+    let broken = world
+        .as_administrator(
+            Method::PUT,
+            &format!("/users/{id}/claims"),
+            Some(serde_json::json!({ "birthdate": "31/12/1999" })),
+        )
+        .await;
+    assert_eq!(broken.status, StatusCode::UNPROCESSABLE_ENTITY);
+    assert_eq!(broken.code(), "identity.claim_invalid");
+    assert!(!broken.body.to_string().contains("1999"), "{}", broken.body);
+    let unknown = world
+        .as_administrator(
+            Method::PUT,
+            &format!("/users/{id}/claims"),
+            Some(serde_json::json!({ "shoe_size": "42" })),
+        )
+        .await;
+    assert_eq!(unknown.status, StatusCode::UNPROCESSABLE_ENTITY);
+    let missing = world
+        .as_administrator(
+            Method::PUT,
+            &format!("/users/{}/claims", UserId::generate()),
+            Some(serde_json::json!({})),
+        )
+        .await;
+    assert_eq!(missing.status, StatusCode::NOT_FOUND);
+    assert_eq!(missing.code(), "identity.user_not_found");
+
+    world.record_audit().await;
+    let records = world
+        .as_administrator(Method::GET, "/audit-records?limit=200", None)
+        .await;
+    let everything = records.body.to_string();
+    assert!(everything.contains("identity.profile_changed"));
+    for value in ["Silva", "5511912345678", "Aninha", "Sao_Paulo"] {
+        assert!(!everything.contains(value), "{value} is in the audit log");
+    }
 }
 
 #[tokio::test]
@@ -1656,6 +1907,7 @@ async fn an_administrator_adds_and_changes_a_directory() {
         serde_json::json!({
             "base": "ou=people,dc=example,dc=com", "filter": "(uid={identifier})",
             "subject_attribute": "entryUUID", "email_attribute": "mail", "name_attribute": "cn",
+            "claim_attributes": {},
         })
     );
     assert!(!created.body.to_string().contains(CLIENT_SECRET));
@@ -1681,6 +1933,28 @@ async fn an_administrator_adds_and_changes_a_directory() {
         changed.body["directory"]["base"],
         "ou=people,dc=example,dc=com"
     );
+
+    // The claim attributes are replaced whole, and a claim that is not one
+    // is refused.
+    let claims = serde_json::json!({ "given_name": "givenName", "address.locality": "l" });
+    let mapped = world
+        .as_administrator(
+            Method::PATCH,
+            &format!("/identity-providers/{id}"),
+            Some(serde_json::json!({ "directory": { "claim_attributes": claims } })),
+        )
+        .await;
+    assert_eq!(mapped.status, StatusCode::OK, "{:?}", mapped.body);
+    assert_eq!(mapped.body["directory"]["claim_attributes"], claims);
+    assert_eq!(mapped.body["directory"]["subject_attribute"], "objectGUID");
+    let unknown = world
+        .as_administrator(
+            Method::PATCH,
+            &format!("/identity-providers/{id}"),
+            Some(serde_json::json!({ "directory": { "claim_attributes": { "shoe_size": "x" } } })),
+        )
+        .await;
+    assert_eq!(unknown.code(), "federation.directory_invalid");
 
     // A filter that would match without what is typed is refused.
     let broken = world
@@ -1796,6 +2070,35 @@ async fn an_administrator_adds_and_changes_a_saml_provider() {
         .await;
     assert_eq!(secret.status, StatusCode::UNPROCESSABLE_ENTITY);
     assert_eq!(secret.code(), "federation.client_secret_invalid");
+}
+
+#[tokio::test]
+async fn an_administrator_rotates_a_signing_key_of_each_algorithm() {
+    let world = world().await;
+    for algorithm in ["ES256", "RS256", "PS256", "EdDSA"] {
+        let rotated = world
+            .as_administrator(
+                Method::POST,
+                "/keys/sig:rotate",
+                Some(serde_json::json!({ "algorithm": algorithm })),
+            )
+            .await;
+        assert_eq!(rotated.status, StatusCode::OK, "{:?}", rotated.body);
+        assert_eq!(rotated.body["algorithm"], algorithm);
+        assert_eq!(rotated.body["state"], "active");
+        assert_eq!(rotated.body["key_use"], "sig");
+    }
+    let listed = world.as_administrator(Method::GET, "/keys/sig", None).await;
+    assert_eq!(listed.body["items"].as_array().expect("items").len(), 4);
+    let refused = world
+        .as_administrator(
+            Method::POST,
+            "/keys/sig:rotate",
+            Some(serde_json::json!({ "algorithm": "Ed25519" })),
+        )
+        .await;
+    assert_eq!(refused.status, StatusCode::UNPROCESSABLE_ENTITY);
+    assert_eq!(refused.code(), "keys.algorithm_unsuitable");
 }
 
 #[tokio::test]
@@ -2481,6 +2784,124 @@ async fn keys_are_added_without_a_private_part_and_removed_by_their_kid() {
 }
 
 #[tokio::test]
+async fn a_client_publishes_its_keys_at_an_address_or_has_them_kept_never_both() {
+    let world = world().await;
+    let application = new_application(&world, "Reports", true).await;
+    let path = format!("/applications/{application}/clients");
+    let mut settings = web_client();
+    settings["authentication_method"] = "private_key_jwt".into();
+    settings["jwks_uri"] = "https://reports.example.com/jwks".into();
+    let created = world
+        .as_administrator(Method::POST, &path, Some(settings))
+        .await;
+    assert_eq!(created.status, StatusCode::CREATED, "{}", created.body);
+    assert_eq!(created.body["jwks_uri"], "https://reports.example.com/jwks");
+    assert_eq!(created.body["keys"].as_array().map(Vec::len), Some(0));
+    let client = created.body["id"].as_str().expect("client").to_owned();
+    let key = serde_json::json!({
+        "kty": "EC",
+        "crv": "P-256",
+        "kid": "2026-11",
+        "x": "f83OJ3D2xF1Bg8vub9tLe1gHMzV76e8Tus9uPHvRVEU",
+        "y": "x_FEzRu9m36HLN_tue659LNpXW6pCyStikYjKIWI5a0",
+    });
+    let refused = world
+        .as_administrator(
+            Method::POST,
+            &format!("/clients/{client}/keys"),
+            Some(serde_json::json!({ "jwk": key })),
+        )
+        .await;
+    assert_eq!(refused.status, StatusCode::UNPROCESSABLE_ENTITY);
+    assert_eq!(refused.code(), "oauth.client_keys_at_address");
+
+    for (address, code) in [
+        ("https://localhost/jwks", "oauth.client_jwks_uri_forbidden"),
+        (
+            "https://nowhere.example/jwks",
+            "oauth.client_jwks_uri_unresolvable",
+        ),
+        (
+            "http://reports.example.com/jwks",
+            "oauth.client_jwks_uri_invalid",
+        ),
+        (
+            "https://reports.example.com/jwks#now",
+            "oauth.client_jwks_uri_invalid",
+        ),
+    ] {
+        let refused = world
+            .as_administrator(
+                Method::PATCH,
+                &format!("/clients/{client}"),
+                Some(serde_json::json!({ "jwks_uri": address })),
+            )
+            .await;
+        assert_eq!(
+            refused.status,
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "{address}"
+        );
+        assert_eq!(refused.code(), code, "{address}");
+    }
+
+    // Without its address the client takes a key, and with a key no
+    // address.
+    let removed = world
+        .as_administrator(
+            Method::PATCH,
+            &format!("/clients/{client}"),
+            Some(serde_json::json!({ "jwks_uri": null })),
+        )
+        .await;
+    assert_eq!(removed.status, StatusCode::OK, "{}", removed.body);
+    assert_eq!(removed.body["jwks_uri"], serde_json::Value::Null);
+    let added = world
+        .as_administrator(
+            Method::POST,
+            &format!("/clients/{client}/keys"),
+            Some(serde_json::json!({ "jwk": key })),
+        )
+        .await;
+    assert_eq!(added.status, StatusCode::CREATED, "{}", added.body);
+    let both = world
+        .as_administrator(
+            Method::PATCH,
+            &format!("/clients/{client}"),
+            Some(serde_json::json!({ "jwks_uri": "https://reports.example.com/jwks" })),
+        )
+        .await;
+    assert_eq!(both.status, StatusCode::CONFLICT);
+    assert_eq!(both.code(), "oauth.client_jwks_uri_with_keys");
+
+    // A client of another method has no address, and loses it when it
+    // moves to one.
+    let mut secret = web_client();
+    secret["jwks_uri"] = "https://reports.example.com/jwks".into();
+    let refused = world
+        .as_administrator(Method::POST, &path, Some(secret))
+        .await;
+    assert_eq!(refused.status, StatusCode::UNPROCESSABLE_ENTITY);
+    assert_eq!(refused.code(), "oauth.client_jwks_uri_invalid");
+    let mut at_address = web_client();
+    at_address["authentication_method"] = "private_key_jwt".into();
+    at_address["jwks_uri"] = "https://reports.example.com/jwks".into();
+    let other = world
+        .as_administrator(Method::POST, &path, Some(at_address))
+        .await;
+    let other = other.body["id"].as_str().expect("client").to_owned();
+    let moved = world
+        .as_administrator(
+            Method::PATCH,
+            &format!("/clients/{other}"),
+            Some(serde_json::json!({ "authentication_method": "client_secret_basic" })),
+        )
+        .await;
+    assert_eq!(moved.status, StatusCode::OK, "{}", moved.body);
+    assert_eq!(moved.body["jwks_uri"], serde_json::Value::Null);
+}
+
+#[tokio::test]
 async fn what_breaks_a_rule_of_a_client_is_refused_with_its_code() {
     let world = world().await;
     let application = new_application(&world, "Billing", true).await;
@@ -2550,6 +2971,225 @@ async fn what_breaks_a_rule_of_a_client_is_refused_with_its_code() {
         .await;
     assert_eq!(missing.status, StatusCode::UNPROCESSABLE_ENTITY);
     assert_eq!(missing.code(), "request.body_invalid");
+}
+
+#[tokio::test]
+async fn a_client_names_how_it_signs_its_request_objects() {
+    let world = world().await;
+    let application = new_application(&world, "Billing", true).await;
+    let path = format!("/applications/{application}/clients");
+
+    // None chosen unless given.
+    let created = world
+        .as_administrator(Method::POST, &path, Some(web_client()))
+        .await;
+    assert_eq!(created.status, StatusCode::CREATED, "{}", created.body);
+    assert_eq!(
+        created.body["request_object_signing_alg"],
+        serde_json::Value::Null
+    );
+    let client = created.body["id"].as_str().expect("id").to_owned();
+    let client_path = format!("/clients/{client}");
+
+    // Given when it is made.
+    let mut body = web_client();
+    body["request_object_signing_alg"] = "PS256".into();
+    let named = world
+        .as_administrator(Method::POST, &path, Some(body))
+        .await;
+    assert_eq!(named.status, StatusCode::CREATED, "{}", named.body);
+    assert_eq!(named.body["request_object_signing_alg"], "PS256");
+
+    // Changed to `none`, kept through a change of something else, and
+    // removed with `null`.
+    let changed = world
+        .as_administrator(
+            Method::PATCH,
+            &client_path,
+            Some(serde_json::json!({ "request_object_signing_alg": "none" })),
+        )
+        .await;
+    assert_eq!(changed.status, StatusCode::OK, "{}", changed.body);
+    assert_eq!(changed.body["request_object_signing_alg"], "none");
+    let renamed = world
+        .as_administrator(
+            Method::PATCH,
+            &client_path,
+            Some(serde_json::json!({ "name": "Billing site" })),
+        )
+        .await;
+    assert_eq!(renamed.body["request_object_signing_alg"], "none");
+    let removed = world
+        .as_administrator(
+            Method::PATCH,
+            &client_path,
+            Some(serde_json::json!({ "request_object_signing_alg": null })),
+        )
+        .await;
+    assert_eq!(removed.status, StatusCode::OK, "{}", removed.body);
+    assert_eq!(
+        removed.body["request_object_signing_alg"],
+        serde_json::Value::Null
+    );
+    let read = world
+        .as_administrator(Method::GET, &client_path, None)
+        .await;
+    assert_eq!(
+        read.body["request_object_signing_alg"],
+        serde_json::Value::Null
+    );
+
+    // An algorithm Hodor does not check is refused, when it is made and
+    // when it is changed, and changes nothing.
+    for refused in ["HS256", "None", "EdDSA"] {
+        let mut body = web_client();
+        body["request_object_signing_alg"] = refused.into();
+        let reply = world
+            .as_administrator(Method::POST, &path, Some(body))
+            .await;
+        assert_eq!(reply.status, StatusCode::UNPROCESSABLE_ENTITY, "{refused}");
+        assert_eq!(
+            reply.code(),
+            "oauth.client_request_object_algorithm_invalid"
+        );
+        let reply = world
+            .as_administrator(
+                Method::PATCH,
+                &client_path,
+                Some(serde_json::json!({ "request_object_signing_alg": refused })),
+            )
+            .await;
+        assert_eq!(reply.status, StatusCode::UNPROCESSABLE_ENTITY, "{refused}");
+        assert_eq!(
+            reply.code(),
+            "oauth.client_request_object_algorithm_invalid"
+        );
+    }
+    let read = world
+        .as_administrator(Method::GET, &client_path, None)
+        .await;
+    assert_eq!(
+        read.body["request_object_signing_alg"],
+        serde_json::Value::Null
+    );
+}
+
+#[tokio::test]
+async fn a_client_names_how_its_id_tokens_and_userinfo_answers_are_signed() {
+    let world = world().await;
+    let application = new_application(&world, "Billing", true).await;
+    let path = format!("/applications/{application}/clients");
+
+    // ES256 and answers in JSON unless given.
+    let created = world
+        .as_administrator(Method::POST, &path, Some(web_client()))
+        .await;
+    assert_eq!(created.status, StatusCode::CREATED, "{}", created.body);
+    assert_eq!(created.body["id_token_signed_response_alg"], "ES256");
+    assert_eq!(
+        created.body["userinfo_signed_response_alg"],
+        serde_json::Value::Null
+    );
+    let client = created.body["id"].as_str().expect("id").to_owned();
+    let client_path = format!("/clients/{client}");
+
+    // Each of the four, when the client is made.
+    for algorithm in ["ES256", "RS256", "PS256", "EdDSA"] {
+        let mut body = web_client();
+        body["id_token_signed_response_alg"] = algorithm.into();
+        body["userinfo_signed_response_alg"] = algorithm.into();
+        let named = world
+            .as_administrator(Method::POST, &path, Some(body))
+            .await;
+        assert_eq!(named.status, StatusCode::CREATED, "{}", named.body);
+        assert_eq!(named.body["id_token_signed_response_alg"], algorithm);
+        assert_eq!(named.body["userinfo_signed_response_alg"], algorithm);
+    }
+
+    // Changed, kept through a change of something else, and removed with
+    // `null`, which leaves the ID token's as it is.
+    let changed = world
+        .as_administrator(
+            Method::PATCH,
+            &client_path,
+            Some(serde_json::json!({
+                "id_token_signed_response_alg": "EdDSA",
+                "userinfo_signed_response_alg": "PS256",
+            })),
+        )
+        .await;
+    assert_eq!(changed.status, StatusCode::OK, "{}", changed.body);
+    assert_eq!(changed.body["id_token_signed_response_alg"], "EdDSA");
+    assert_eq!(changed.body["userinfo_signed_response_alg"], "PS256");
+    let renamed = world
+        .as_administrator(
+            Method::PATCH,
+            &client_path,
+            Some(serde_json::json!({ "name": "Billing site" })),
+        )
+        .await;
+    assert_eq!(renamed.body["userinfo_signed_response_alg"], "PS256");
+    let removed = world
+        .as_administrator(
+            Method::PATCH,
+            &client_path,
+            Some(serde_json::json!({ "userinfo_signed_response_alg": null })),
+        )
+        .await;
+    assert_eq!(removed.status, StatusCode::OK, "{}", removed.body);
+    assert_eq!(
+        removed.body["userinfo_signed_response_alg"],
+        serde_json::Value::Null
+    );
+    assert_eq!(removed.body["id_token_signed_response_alg"], "EdDSA");
+
+    // An algorithm no tenant signs with is refused, when the client is made
+    // and when it is changed, and changes nothing.
+    for (field, code) in [
+        (
+            "id_token_signed_response_alg",
+            "oauth.client_id_token_algorithm_invalid",
+        ),
+        (
+            "userinfo_signed_response_alg",
+            "oauth.client_userinfo_algorithm_invalid",
+        ),
+    ] {
+        for refused in ["HS256", "none", "ES384", "Ed25519", "rs256"] {
+            let mut body = web_client();
+            body[field] = refused.into();
+            let reply = world
+                .as_administrator(Method::POST, &path, Some(body))
+                .await;
+            assert_eq!(
+                reply.status,
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "{field} {refused}"
+            );
+            assert_eq!(reply.code(), code);
+            let reply = world
+                .as_administrator(
+                    Method::PATCH,
+                    &client_path,
+                    Some(serde_json::json!({ field: refused })),
+                )
+                .await;
+            assert_eq!(
+                reply.status,
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "{field} {refused}"
+            );
+            assert_eq!(reply.code(), code);
+        }
+    }
+    let read = world
+        .as_administrator(Method::GET, &client_path, None)
+        .await;
+    assert_eq!(read.body["id_token_signed_response_alg"], "EdDSA");
+    assert_eq!(
+        read.body["userinfo_signed_response_alg"],
+        serde_json::Value::Null
+    );
 }
 
 #[tokio::test]
@@ -2663,6 +3303,101 @@ async fn a_client_gets_a_back_channel_logout_address_checked_as_a_webhook_endpoi
         refused.code(),
         "oauth.client_backchannel_logout_uri_invalid"
     );
+}
+
+#[tokio::test]
+async fn a_client_has_defaults_for_a_sign_in() {
+    let world = world().await;
+    let application = new_application(&world, "Billing", true).await;
+    let path = format!("/applications/{application}/clients");
+    let mut body = web_client();
+    body["default_max_age"] = 3600.into();
+    body["default_acr_values"] = serde_json::json!(["urn:hodor:acr:mfa", "urn:hodor:acr:mfa"]);
+    body["require_auth_time"] = true.into();
+    let created = world
+        .as_administrator(Method::POST, &path, Some(body))
+        .await;
+    assert_eq!(created.status, StatusCode::CREATED, "{}", created.body);
+    assert_eq!(created.body["default_max_age"], 3600);
+    assert_eq!(
+        created.body["default_acr_values"],
+        serde_json::json!(["urn:hodor:acr:mfa"])
+    );
+    assert_eq!(created.body["require_auth_time"], true);
+    let client = created.body["id"].as_str().expect("client").to_owned();
+
+    // Unless given, a client has none.
+    let plain = world
+        .as_administrator(Method::POST, &path, Some(web_client()))
+        .await;
+    assert_eq!(plain.body["default_max_age"], serde_json::Value::Null);
+    assert_eq!(plain.body["default_acr_values"], serde_json::json!([]));
+    assert_eq!(plain.body["require_auth_time"], false);
+
+    // Left out stays, `null` removes, a list replaces.
+    let renamed = world
+        .as_administrator(
+            Method::PATCH,
+            &format!("/clients/{client}"),
+            Some(serde_json::json!({ "name": "Billing" })),
+        )
+        .await;
+    assert_eq!(renamed.status, StatusCode::OK, "{}", renamed.body);
+    assert_eq!(renamed.body["default_max_age"], 3600);
+    let changed = world
+        .as_administrator(
+            Method::PATCH,
+            &format!("/clients/{client}"),
+            Some(serde_json::json!({
+                "default_max_age": null,
+                "default_acr_values": ["urn:example:gold"],
+                "require_auth_time": false,
+            })),
+        )
+        .await;
+    assert_eq!(changed.status, StatusCode::OK, "{}", changed.body);
+    assert_eq!(changed.body["default_max_age"], serde_json::Value::Null);
+    assert_eq!(
+        changed.body["default_acr_values"],
+        serde_json::json!(["urn:example:gold"])
+    );
+    assert_eq!(changed.body["require_auth_time"], false);
+
+    for (change, code) in [
+        (
+            serde_json::json!({ "default_max_age": 31_536_001 }),
+            "oauth.client_default_max_age_invalid",
+        ),
+        (
+            serde_json::json!({ "default_acr_values": ["two words"] }),
+            "oauth.client_default_acr_values_invalid",
+        ),
+    ] {
+        let refused = world
+            .as_administrator(Method::PATCH, &format!("/clients/{client}"), Some(change))
+            .await;
+        assert_eq!(
+            refused.status,
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "{}",
+            refused.body
+        );
+        assert_eq!(refused.code(), code);
+    }
+
+    // A client that signs nobody in has none of them.
+    let mut service = web_client();
+    service["grant_types"] = serde_json::json!(["client_credentials"]);
+    service
+        .as_object_mut()
+        .expect("object")
+        .remove("redirect_uris");
+    service["require_auth_time"] = true.into();
+    let refused = world
+        .as_administrator(Method::POST, &path, Some(service))
+        .await;
+    assert_eq!(refused.status, StatusCode::UNPROCESSABLE_ENTITY);
+    assert_eq!(refused.code(), "oauth.client_require_auth_time_invalid");
 }
 
 #[tokio::test]
@@ -3209,6 +3944,11 @@ async fn agreed(world: &World, user: UserId, client: &str) {
         acr_values: None,
         first_party: false,
         organization: None,
+        response_mode: hodor_oauth::api::ResponseMode::Query,
+        id_token_hint: None,
+        given_hint: None,
+        claims: hodor_oauth::api::ClaimsRequest::default(),
+        claims_locales: None,
     };
     let person = hodor_oauth::api::SignedInPerson {
         user_id: user,
@@ -4210,6 +4950,258 @@ async fn an_administrator_reads_and_sets_the_email_sign_in_policy() {
         read.body,
         serde_json::json!({ "code": true, "link": false })
     );
+}
+
+#[tokio::test]
+async fn an_administrator_reads_and_sets_the_pushed_request_policy() {
+    let world = world().await;
+    let read = world
+        .as_administrator(Method::GET, "/pushed-authorization-requests", None)
+        .await;
+    assert_eq!(read.status, StatusCode::OK, "{:?}", read.body);
+    assert_eq!(
+        read.body,
+        serde_json::json!({ "lifetime_seconds": 60, "required": false })
+    );
+    let set = world
+        .as_administrator(
+            Method::PUT,
+            "/pushed-authorization-requests",
+            Some(serde_json::json!({ "lifetime_seconds": 600, "required": true })),
+        )
+        .await;
+    assert_eq!(set.status, StatusCode::OK, "{:?}", set.body);
+    assert_eq!(
+        set.body,
+        serde_json::json!({ "lifetime_seconds": 600, "required": true })
+    );
+    for (refused, code) in [
+        (
+            serde_json::json!({ "lifetime_seconds": 9, "required": false }),
+            "tenant.settings_invalid",
+        ),
+        (
+            serde_json::json!({ "lifetime_seconds": 601, "required": false }),
+            "tenant.settings_invalid",
+        ),
+        (
+            serde_json::json!({ "lifetime_seconds": 60 }),
+            "request.body_invalid",
+        ),
+        (
+            serde_json::json!({ "lifetime_seconds": -1, "required": false }),
+            "request.body_invalid",
+        ),
+        (
+            serde_json::json!({ "lifetime_seconds": 60, "required": false, "per_client": 5 }),
+            "request.body_invalid",
+        ),
+    ] {
+        let answer = world
+            .as_administrator(Method::PUT, "/pushed-authorization-requests", Some(refused))
+            .await;
+        assert_eq!(answer.status, StatusCode::UNPROCESSABLE_ENTITY);
+        assert_eq!(answer.body["code"], code);
+    }
+    let read = world
+        .as_administrator(Method::GET, "/pushed-authorization-requests", None)
+        .await;
+    assert_eq!(
+        read.body,
+        serde_json::json!({ "lifetime_seconds": 600, "required": true }),
+        "a refusal changes nothing"
+    );
+}
+
+#[tokio::test]
+async fn a_client_may_be_required_to_push_its_requests() {
+    let world = world().await;
+    let application = new_application(&world, "Billing", true).await;
+    let path = format!("/applications/{application}/clients");
+    let created = world
+        .as_administrator(Method::POST, &path, Some(web_client()))
+        .await;
+    assert_eq!(created.status, StatusCode::CREATED, "{}", created.body);
+    assert_eq!(
+        created.body["require_pushed_authorization_requests"], false,
+        "not unless given"
+    );
+    let mut body = web_client();
+    body["require_pushed_authorization_requests"] = true.into();
+    let strict = world
+        .as_administrator(Method::POST, &path, Some(body))
+        .await;
+    assert_eq!(strict.status, StatusCode::CREATED, "{}", strict.body);
+    assert_eq!(strict.body["require_pushed_authorization_requests"], true);
+
+    let client_path = format!("/clients/{}", created.body["id"].as_str().expect("id"));
+    let changed = world
+        .as_administrator(
+            Method::PATCH,
+            &client_path,
+            Some(serde_json::json!({ "require_pushed_authorization_requests": true })),
+        )
+        .await;
+    assert_eq!(changed.status, StatusCode::OK, "{}", changed.body);
+    assert_eq!(changed.body["require_pushed_authorization_requests"], true);
+    let renamed = world
+        .as_administrator(
+            Method::PATCH,
+            &client_path,
+            Some(serde_json::json!({ "name": "Billing site" })),
+        )
+        .await;
+    assert_eq!(
+        renamed.body["require_pushed_authorization_requests"], true,
+        "kept through a change of something else"
+    );
+    let refused = world
+        .as_administrator(
+            Method::PATCH,
+            &client_path,
+            Some(serde_json::json!({ "require_pushed_authorization_requests": "yes" })),
+        )
+        .await;
+    assert_eq!(refused.status, StatusCode::UNPROCESSABLE_ENTITY);
+    let read = world
+        .as_administrator(Method::GET, &client_path, None)
+        .await;
+    assert_eq!(read.body["require_pushed_authorization_requests"], true);
+}
+
+#[tokio::test]
+async fn a_client_registers_request_object_addresses_checked_as_it_would_be_called() {
+    let world = world().await;
+    let application = new_application(&world, "Billing", true).await;
+    let path = format!("/applications/{application}/clients");
+    let plain = world
+        .as_administrator(Method::POST, &path, Some(web_client()))
+        .await;
+    assert_eq!(plain.status, StatusCode::CREATED, "{}", plain.body);
+    assert_eq!(
+        plain.body["request_uris"],
+        serde_json::json!([]),
+        "none unless given"
+    );
+
+    let mut body = web_client();
+    body["request_uris"] = serde_json::json!([
+        "https://billing.example.com/requests/",
+        "https://billing.example.com/object.jwt?version=2"
+    ]);
+    let created = world
+        .as_administrator(Method::POST, &path, Some(body))
+        .await;
+    assert_eq!(created.status, StatusCode::CREATED, "{}", created.body);
+    assert_eq!(
+        created.body["request_uris"],
+        serde_json::json!([
+            "https://billing.example.com/requests/",
+            "https://billing.example.com/object.jwt?version=2"
+        ])
+    );
+    let client_path = format!("/clients/{}", created.body["id"].as_str().expect("id"));
+
+    for (address, code) in [
+        (
+            "https://localhost/requests/",
+            "oauth.client_request_uri_forbidden",
+        ),
+        (
+            "https://10.0.0.7/requests/",
+            "oauth.client_request_uri_forbidden",
+        ),
+        (
+            "https://nowhere.example/requests/",
+            "oauth.client_request_uri_unresolvable",
+        ),
+        (
+            "http://billing.example.com/requests/",
+            "oauth.client_request_uri_invalid",
+        ),
+        (
+            "https://billing.example.com",
+            "oauth.client_request_uri_invalid",
+        ),
+        (
+            "https://billing.example.com/requests/#hash",
+            "oauth.client_request_uri_invalid",
+        ),
+    ] {
+        let mut body = web_client();
+        body["request_uris"] = serde_json::json!([address]);
+        let refused = world
+            .as_administrator(Method::POST, &path, Some(body))
+            .await;
+        assert_eq!(
+            refused.status,
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "{address}"
+        );
+        assert_eq!(refused.body["code"], code, "{address}");
+        let changed = world
+            .as_administrator(
+                Method::PATCH,
+                &client_path,
+                Some(serde_json::json!({ "request_uris": [address] })),
+            )
+            .await;
+        assert_eq!(
+            changed.status,
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "{address}"
+        );
+        assert_eq!(changed.body["code"], code, "{address}");
+    }
+    let eleven: Vec<String> = (0..11)
+        .map(|index| format!("https://billing.example.com/{index}/"))
+        .collect();
+    let refused = world
+        .as_administrator(
+            Method::PATCH,
+            &client_path,
+            Some(serde_json::json!({ "request_uris": eleven })),
+        )
+        .await;
+    assert_eq!(refused.body["code"], "oauth.client_request_uri_invalid");
+
+    // Kept through a change of something else; replaced as a list.
+    let renamed = world
+        .as_administrator(
+            Method::PATCH,
+            &client_path,
+            Some(serde_json::json!({ "name": "Billing site" })),
+        )
+        .await;
+    assert_eq!(renamed.status, StatusCode::OK, "{}", renamed.body);
+    assert_eq!(renamed.body["request_uris"], created.body["request_uris"]);
+    let replaced = world
+        .as_administrator(
+            Method::PATCH,
+            &client_path,
+            Some(serde_json::json!({ "request_uris": ["https://billing.example.com/next/"] })),
+        )
+        .await;
+    assert_eq!(replaced.status, StatusCode::OK, "{}", replaced.body);
+    let read = world
+        .as_administrator(Method::GET, &client_path, None)
+        .await;
+    assert_eq!(
+        read.body["request_uris"],
+        serde_json::json!(["https://billing.example.com/next/"])
+    );
+
+    // A client of client credentials alone has none.
+    let mut machine = serde_json::json!({
+        "name": "Billing job",
+        "type": "confidential",
+        "grant_types": ["client_credentials"],
+    });
+    machine["request_uris"] = serde_json::json!(["https://billing.example.com/requests/"]);
+    let refused = world
+        .as_administrator(Method::POST, &path, Some(machine))
+        .await;
+    assert_eq!(refused.body["code"], "oauth.client_request_uri_invalid");
 }
 
 #[tokio::test]
@@ -5634,4 +6626,524 @@ async fn an_administrator_manages_the_claim_mappers_of_a_client() {
     }
     let still = world.as_administrator(Method::GET, &mappers, None).await;
     assert_eq!(still.body["items"].as_array().map(Vec::len), Some(1));
+}
+
+#[tokio::test]
+async fn an_administrator_adds_reads_replaces_and_removes_trust_domains() {
+    let world = world().await;
+    let bundle = hodor_keys::testing::sample_bundle(Some(3), &["one"]);
+    let added = world
+        .as_administrator(
+            Method::POST,
+            "/trust-domains",
+            Some(serde_json::json!({
+                "name": "prod.example.com",
+                "source": "uploaded",
+                "bundle": bundle,
+            })),
+        )
+        .await;
+    assert_eq!(added.status, StatusCode::CREATED, "{}", added.body);
+    let id = added.body["id"].as_str().expect("id").to_owned();
+    assert_eq!(added.body["source"], "uploaded");
+    assert_eq!(added.body["bundle"]["spiffe_sequence"], 3);
+    assert_eq!(
+        added.body["bundle"]["keys"].as_array().map(Vec::len),
+        Some(2)
+    );
+    assert!(added.body.get("refresh").is_none());
+    assert!(added.body.get("bundle_endpoint_url").is_none());
+
+    // From a bundle endpoint: fetched once when it is saved.
+    let url = "https://spire.example.com/bundle?token=receiver";
+    world.bundle_endpoints.serve(
+        url,
+        &hodor_keys::testing::sample_bundle(Some(1), &["spire"]),
+    );
+    let fetched = world
+        .as_administrator(
+            Method::POST,
+            "/trust-domains",
+            Some(serde_json::json!({
+                "name": "spire.example",
+                "source": "bundle_endpoint",
+                "bundle_endpoint_url": url,
+            })),
+        )
+        .await;
+    assert_eq!(fetched.status, StatusCode::CREATED, "{}", fetched.body);
+    assert_eq!(fetched.body["bundle_endpoint_url"], url);
+    assert_eq!(
+        fetched.body["refresh"]["fetched_at"],
+        "1970-01-01T00:00:00Z"
+    );
+    assert_eq!(fetched.body["refresh"]["next_at"], "1970-01-01T00:05:00Z");
+    assert_eq!(
+        fetched.body["refresh"]["failing_since"],
+        serde_json::Value::Null
+    );
+    let mesh = world
+        .as_administrator(
+            Method::POST,
+            "/trust-domains",
+            Some(serde_json::json!({ "name": "cluster.local", "source": "mesh" })),
+        )
+        .await;
+    assert_eq!(mesh.status, StatusCode::CREATED);
+    assert!(mesh.body.get("bundle").is_none());
+
+    let listed = world
+        .as_administrator(Method::GET, "/trust-domains?limit=2", None)
+        .await;
+    assert_eq!(listed.status, StatusCode::OK);
+    assert_eq!(listed.body["items"].as_array().map(Vec::len), Some(2));
+    assert!(listed.body["next_cursor"].is_string());
+
+    // A replacement that does not read is refused, and the bundle stays.
+    let refused = world
+        .as_administrator(
+            Method::PUT,
+            &format!("/trust-domains/{id}"),
+            Some(serde_json::json!({
+                "source": "uploaded",
+                "bundle": { "keys": [{ "use": "jwt-svid", "kty": "EC", "crv": "P-256", "kid": "k", "x": "AA", "y": "AA" }] },
+            })),
+        )
+        .await;
+    assert_eq!(refused.status, StatusCode::UNPROCESSABLE_ENTITY);
+    assert_eq!(refused.body["code"], "keys.trust_bundle_invalid");
+    let read = world
+        .as_administrator(Method::GET, &format!("/trust-domains/{id}"), None)
+        .await;
+    assert_eq!(read.status, StatusCode::OK);
+    assert_eq!(read.body["bundle"], added.body["bundle"]);
+
+    let replaced = world
+        .as_administrator(
+            Method::PUT,
+            &format!("/trust-domains/{id}"),
+            Some(serde_json::json!({ "source": "mesh" })),
+        )
+        .await;
+    assert_eq!(replaced.status, StatusCode::OK);
+    assert_eq!(replaced.body["name"], "prod.example.com");
+    assert!(replaced.body.get("bundle").is_none());
+
+    let removed = world
+        .as_administrator(Method::DELETE, &format!("/trust-domains/{id}"), None)
+        .await;
+    assert_eq!(removed.status, StatusCode::NO_CONTENT);
+    let gone = world
+        .as_administrator(Method::GET, &format!("/trust-domains/{id}"), None)
+        .await;
+    assert_eq!(gone.status, StatusCode::NOT_FOUND);
+    assert_eq!(gone.body["code"], "keys.trust_domain_not_found");
+
+    // Every change is an event for the audit log, and none names the
+    // address.
+    let types: Vec<String> = world
+        .units_of_work
+        .committed_events()
+        .into_iter()
+        .filter(|event| event.event_type.starts_with("keys.trust"))
+        .map(|event| {
+            assert!(!event.payload.to_string().contains("spire.example.com"));
+            event.event_type
+        })
+        .collect();
+    assert_eq!(
+        types,
+        [
+            "keys.trust_domain_added",
+            "keys.trust_domain_added",
+            "keys.trust_domain_added",
+            "keys.trust_domain_replaced",
+            "keys.trust_domain_removed",
+        ]
+    );
+}
+
+#[tokio::test]
+async fn each_refusal_of_a_trust_domain_has_its_code() {
+    let world = world().await;
+    world.bundle_endpoints.forbid("https://10.0.0.1/bundle");
+    world
+        .bundle_endpoints
+        .answer("https://moved.example/bundle", 302, b"");
+    let cases = [
+        (
+            serde_json::json!({ "name": "Prod", "source": "mesh" }),
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "keys.trust_domain_name_invalid",
+        ),
+        (
+            serde_json::json!({ "name": "prod", "source": "other" }),
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "keys.trust_domain_source_invalid",
+        ),
+        (
+            serde_json::json!({ "name": "prod", "source": "uploaded" }),
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "keys.trust_domain_source_invalid",
+        ),
+        (
+            serde_json::json!({ "name": "prod", "source": "mesh", "bundle_endpoint_url": "https://e.example/b" }),
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "keys.trust_domain_source_invalid",
+        ),
+        (
+            serde_json::json!({ "name": "prod", "source": "uploaded", "bundle": [] }),
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "keys.trust_bundle_invalid",
+        ),
+        (
+            serde_json::json!({ "name": "prod", "source": "bundle_endpoint", "bundle_endpoint_url": "ftp://e.example/b" }),
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "keys.bundle_endpoint_invalid",
+        ),
+        (
+            serde_json::json!({ "name": "prod", "source": "bundle_endpoint", "bundle_endpoint_url": "https://10.0.0.1/bundle" }),
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "keys.bundle_endpoint_forbidden",
+        ),
+        (
+            serde_json::json!({ "name": "prod", "source": "bundle_endpoint", "bundle_endpoint_url": "https://moved.example/bundle" }),
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "keys.bundle_endpoint_unreachable",
+        ),
+    ];
+    for (body, status, code) in cases {
+        let reply = world
+            .as_administrator(Method::POST, "/trust-domains", Some(body.clone()))
+            .await;
+        assert_eq!(reply.status, status, "{body}");
+        assert_eq!(reply.body["code"], code, "{body}");
+    }
+    let first = world
+        .as_administrator(
+            Method::POST,
+            "/trust-domains",
+            Some(serde_json::json!({ "name": "cluster.local", "source": "mesh" })),
+        )
+        .await;
+    assert_eq!(first.status, StatusCode::CREATED);
+    let again = world
+        .as_administrator(
+            Method::POST,
+            "/trust-domains",
+            Some(serde_json::json!({ "name": "cluster.local", "source": "mesh" })),
+        )
+        .await;
+    assert_eq!(again.status, StatusCode::CONFLICT);
+    assert_eq!(again.body["code"], "keys.trust_domain_name_taken");
+    // The name cannot be changed.
+    let renamed = world
+        .as_administrator(
+            Method::PUT,
+            &format!("/trust-domains/{}", first.body["id"].as_str().expect("id")),
+            Some(serde_json::json!({ "name": "other", "source": "mesh" })),
+        )
+        .await;
+    assert_eq!(renamed.status, StatusCode::UNPROCESSABLE_ENTITY);
+    // Nothing was fetched from a forbidden address.
+    assert!(
+        !world
+            .bundle_endpoints
+            .asked()
+            .iter()
+            .any(|url| url.contains("10.0.0.1"))
+    );
+
+    // An auditor reads trust domains and changes none.
+    let acme = world.acme.clone();
+    let (_, auditor) = world
+        .person(&acme, "auditor@example.com", &[Role::TenantAuditor])
+        .await;
+    let read = world
+        .send(
+            Method::GET,
+            "/t/acme/api/v1/admin/trust-domains",
+            Some(&format!("Bearer {auditor}")),
+            None,
+        )
+        .await;
+    assert_eq!(read.status, StatusCode::OK);
+    let write = world
+        .send(
+            Method::POST,
+            "/t/acme/api/v1/admin/trust-domains",
+            Some(&format!("Bearer {auditor}")),
+            Some(serde_json::json!({ "name": "x", "source": "mesh" })),
+        )
+        .await;
+    assert_eq!(write.status, StatusCode::FORBIDDEN);
+}
+
+#[tokio::test]
+async fn an_administrator_turns_client_registration_on_and_hands_out_initial_access_tokens() {
+    let world = world().await;
+    // Off until turned on: the defaults, and no token can be made.
+    let read = world
+        .as_administrator(Method::GET, "/client-registration", None)
+        .await;
+    assert_eq!(read.status, StatusCode::OK, "{}", read.body);
+    assert_eq!(
+        read.body,
+        serde_json::json!({
+            "enabled": false,
+            "application_id": null,
+            "ways": ["initial_access_token"],
+            "max_clients": 100,
+            "policy": {
+                "grant_types": ["authorization_code"],
+                "response_types": ["code"],
+                "scopes": ["openid", "profile", "email"],
+                "token_endpoint_auth_methods": ["client_secret_basic", "private_key_jwt"],
+                "subject_types": ["public"],
+                "hosts": null,
+            },
+            "updated_at": null,
+        })
+    );
+    let tokens = "/client-registration/initial-access-tokens";
+    let refused = world
+        .as_administrator(
+            Method::POST,
+            tokens,
+            Some(serde_json::json!({ "name": "Too early" })),
+        )
+        .await;
+    assert_eq!(refused.status, StatusCode::CONFLICT, "{}", refused.body);
+    assert_eq!(refused.code(), "oauth.client_registration_off");
+
+    // A first-party application cannot hold registered clients.
+    let first_party = new_application(&world, "Console", true).await;
+    let refused = world
+        .as_administrator(
+            Method::PUT,
+            "/client-registration",
+            Some(serde_json::json!({ "enabled": true, "application_id": first_party })),
+        )
+        .await;
+    assert_eq!(refused.status, StatusCode::UNPROCESSABLE_ENTITY);
+    assert_eq!(
+        refused.code(),
+        "oauth.client_registration_application_invalid"
+    );
+    for (body, code) in [
+        (
+            serde_json::json!({ "enabled": true }),
+            "oauth.client_registration_application_invalid",
+        ),
+        (
+            serde_json::json!({ "enabled": true, "application_id": "not-an-identifier" }),
+            "oauth.client_registration_application_invalid",
+        ),
+        (
+            serde_json::json!({ "enabled": false, "ways": ["anyone"] }),
+            "oauth.client_registration_ways_invalid",
+        ),
+        (
+            serde_json::json!({ "enabled": false, "max_clients": 1001 }),
+            "oauth.client_registration_most_clients_invalid",
+        ),
+        (
+            serde_json::json!({ "enabled": false, "policy": { "grant_types": ["client_credentials"] } }),
+            "oauth.client_registration_policy_invalid",
+        ),
+        (
+            serde_json::json!({ "enabled": false, "policy": { "token_endpoint_auth_methods": ["spiffe_jwt"] } }),
+            "oauth.client_registration_policy_invalid",
+        ),
+        (
+            serde_json::json!({ "enabled": false, "policy": { "hosts": ["Example.com:443"] } }),
+            "oauth.client_registration_policy_invalid",
+        ),
+        (
+            serde_json::json!({ "enabled": false, "policy": { "colors": ["red"] } }),
+            "oauth.client_registration_policy_invalid",
+        ),
+        (serde_json::json!({ "on": true }), "request.body_invalid"),
+    ] {
+        let refused = world
+            .as_administrator(Method::PUT, "/client-registration", Some(body.clone()))
+            .await;
+        assert_eq!(refused.status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
+        assert_eq!(refused.code(), code, "{body}");
+    }
+
+    let partners = new_application(&world, "Partners", false).await;
+    let on = world
+        .as_administrator(
+            Method::PUT,
+            "/client-registration",
+            Some(serde_json::json!({
+                "enabled": true,
+                "application_id": partners,
+                "ways": ["initial_access_token", "open"],
+                "max_clients": 250,
+                "policy": {
+                    "grant_types": ["authorization_code", "refresh_token"],
+                    "scopes": ["openid", "offline_access"],
+                    "hosts": ["partner.example.com"],
+                },
+            })),
+        )
+        .await;
+    assert_eq!(on.status, StatusCode::OK, "{}", on.body);
+    assert_eq!(on.body["enabled"], true);
+    assert_eq!(on.body["application_id"], partners.as_str());
+    assert_eq!(
+        on.body["ways"],
+        serde_json::json!(["initial_access_token", "open"])
+    );
+    assert_eq!(on.body["max_clients"], 250);
+    assert_eq!(
+        on.body["policy"]["grant_types"],
+        serde_json::json!(["authorization_code", "refresh_token"])
+    );
+    assert_eq!(
+        on.body["policy"]["response_types"],
+        serde_json::json!(["code"])
+    );
+    assert_eq!(
+        on.body["policy"]["hosts"],
+        serde_json::json!(["partner.example.com"])
+    );
+    assert!(on.body["updated_at"].is_string());
+    let read = world
+        .as_administrator(Method::GET, "/client-registration", None)
+        .await;
+    assert_eq!(read.body, on.body);
+
+    // A token is shown once, with its hint, and listed without it.
+    let made = world
+        .as_administrator(
+            Method::POST,
+            tokens,
+            Some(serde_json::json!({
+                "name": "Partner portal team",
+                "lifetime_hours": 24,
+                "max_registrations": 3,
+            })),
+        )
+        .await;
+    assert_eq!(made.status, StatusCode::CREATED, "{}", made.body);
+    let value = made.body["initial_access_token"]
+        .as_str()
+        .expect("the token")
+        .to_owned();
+    assert!(
+        value.starts_with("hodor_iat_") && value.len() == 74,
+        "{value}"
+    );
+    assert_eq!(made.body["hint"], format!("…{}", &value[70..]));
+    assert_eq!(made.body["status"], "active");
+    assert_eq!(made.body["max_registrations"], 3);
+    assert_eq!(made.body["registrations"], 0);
+    assert_eq!(made.body["created_at"], "1970-01-01T00:00:00Z");
+    assert_eq!(made.body["expires_at"], "1970-01-02T00:00:00Z");
+    let id = made.body["id"].as_str().expect("id").to_owned();
+    let listed = world.as_administrator(Method::GET, tokens, None).await;
+    assert_eq!(listed.status, StatusCode::OK);
+    assert_eq!(listed.body["items"].as_array().map(Vec::len), Some(1));
+    assert!(
+        !listed.body.to_string().contains(&value),
+        "never shown again"
+    );
+    let one = world
+        .as_administrator(Method::GET, &format!("{tokens}/{id}"), None)
+        .await;
+    assert_eq!(one.status, StatusCode::OK);
+    assert_eq!(one.body, listed.body["items"][0]);
+
+    for (body, code) in [
+        (
+            serde_json::json!({ "name": "" }),
+            "oauth.initial_access_token_name_invalid",
+        ),
+        (
+            serde_json::json!({ "name": "Team", "lifetime_hours": 2161 }),
+            "oauth.initial_access_token_lifetime_invalid",
+        ),
+        (
+            serde_json::json!({ "name": "Team", "lifetime_hours": 0 }),
+            "oauth.initial_access_token_lifetime_invalid",
+        ),
+        (
+            serde_json::json!({ "name": "Team", "lifetime_hours": i64::MAX }),
+            "oauth.initial_access_token_lifetime_invalid",
+        ),
+        (
+            serde_json::json!({ "name": "Team", "max_registrations": 0 }),
+            "oauth.initial_access_token_registrations_invalid",
+        ),
+        (
+            serde_json::json!({ "name": "Team", "uses": 2 }),
+            "request.body_invalid",
+        ),
+    ] {
+        let refused = world
+            .as_administrator(Method::POST, tokens, Some(body.clone()))
+            .await;
+        assert_eq!(refused.status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
+        assert_eq!(refused.code(), code, "{body}");
+    }
+
+    // Revoked, it says so; revoking again changes nothing.
+    for _ in 0..2 {
+        let revoked = world
+            .as_administrator(Method::DELETE, &format!("{tokens}/{id}"), None)
+            .await;
+        assert_eq!(revoked.status, StatusCode::NO_CONTENT);
+    }
+    let one = world
+        .as_administrator(Method::GET, &format!("{tokens}/{id}"), None)
+        .await;
+    assert_eq!(one.body["status"], "revoked");
+    assert_eq!(one.body["revoked_at"], "1970-01-01T00:00:00Z");
+    let unknown = format!("{tokens}/{}", UserId::generate());
+    for method in [Method::GET, Method::DELETE] {
+        let missing = world.as_administrator(method.clone(), &unknown, None).await;
+        assert_eq!(missing.status, StatusCode::NOT_FOUND, "{method}");
+        assert_eq!(missing.code(), "oauth.initial_access_token_not_found");
+    }
+    let malformed = world
+        .as_administrator(Method::GET, &format!("{tokens}/not-an-identifier"), None)
+        .await;
+    assert_eq!(malformed.status, StatusCode::NOT_FOUND);
+
+    // Without the way of tokens, none is made.
+    let open_only = world
+        .as_administrator(
+            Method::PUT,
+            "/client-registration",
+            Some(serde_json::json!({
+                "enabled": true,
+                "application_id": partners,
+                "ways": ["open"],
+            })),
+        )
+        .await;
+    assert_eq!(open_only.status, StatusCode::OK);
+    let refused = world
+        .as_administrator(
+            Method::POST,
+            tokens,
+            Some(serde_json::json!({ "name": "Not now" })),
+        )
+        .await;
+    assert_eq!(refused.status, StatusCode::CONFLICT);
+    assert_eq!(refused.code(), "oauth.initial_access_tokens_not_allowed");
+
+    // Globex is as it was.
+    let globex = world
+        .send(
+            Method::GET,
+            "/t/globex/api/v1/admin/client-registration",
+            Some(&format!("Bearer {}", world.administrator_token)),
+            None,
+        )
+        .await;
+    assert_eq!(globex.status, StatusCode::UNAUTHORIZED);
 }

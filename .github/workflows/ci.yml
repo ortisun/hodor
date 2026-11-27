@@ -192,21 +192,173 @@ jobs:
       - name: Run the demonstration of Milestone 9
         working-directory: .
         run: python3 deploy/demo/what_was_left_out.py
+      - name: Run the demonstration of Milestone 13
+        working-directory: .
+        run: python3 deploy/demo/requests_and_claims.py
       # Last: its second worker removes the ended sessions and delivered
       # messages of every tenant of the stack.
       - name: Run the demonstration of Milestone 6
         working-directory: .
         run: python3 deploy/demo/operations.py
+      # The tenants' signing keys in OpenBao: the server and the worker start
+      # again making them there, and the demonstration of Milestone 3 signs
+      # every token, rotates a key and checks every signature with keys only
+      # OpenBao holds. Then the keys are looked for in OpenBao itself.
+      - name: Run the demonstration of Milestone 3 with the signing keys in OpenBao
+        working-directory: .
+        env:
+          HODOR_KEY_PROVIDER: openbao
+        run: |
+          docker compose -f deploy/docker/compose.yaml up --wait --no-build server worker
+          python3 deploy/demo/applications.py
+          docker compose -f deploy/docker/compose.yaml exec -T -e BAO_TOKEN=development-root-token openbao \
+            bao list -address=http://127.0.0.1:8200 hodor-transit/keys | grep -q '^tenant-'
       - name: Show what the stack logged
         if: failure()
         working-directory: .
-        run: docker compose -f deploy/docker/compose.yaml logs --no-color --tail 200 server worker system-tenant provider directory saml-provider edge webhook-receiver
+        run: docker compose -f deploy/docker/compose.yaml logs --no-color --tail 200 server worker system-tenant provider directory saml-provider edge webhook-receiver openbao openbao-setup
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         if: failure()
         with:
           name: browser-tests-report
           path: frontend/auth-ui/playwright-report
           retention-days: 7
+
+  # The demonstration of Milestone 10, as the quick-start tells an operator to
+  # run it: a kind cluster with Istio and SPIRE, and Hodor installed in the
+  # mesh with its chart, from the image built here. The script makes the
+  # cluster; kind, kubectl and Helm are installed at the versions named.
+  workload-identity:
+    name: Workloads in a mesh
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: helm/kind-action@1544676c07bb3570fcb70166beaa07c4528fd4aa # v1.15.1
+        with:
+          version: v0.33.0
+          kubectl_version: v1.37.1
+          install_only: true
+      - uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
+        with:
+          version: v4.3.1
+      - name: Build the image
+        run: docker build --file deploy/docker/Dockerfile --tag hodor:milestone-10 .
+      - name: Run the demonstration of Milestone 10
+        run: python3 deploy/demo/workload_identity.py
+      - name: Show what the cluster logged
+        if: failure()
+        run: |
+          kind get kubeconfig --name hodor-milestone-10 > "$RUNNER_TEMP/kubeconfig"
+          export KUBECONFIG="$RUNNER_TEMP/kubeconfig"
+          kubectl get pods --all-namespaces
+          kubectl logs --namespace hodor deployment/hodor-server --all-containers --tail 200
+          kubectl logs --namespace hodor deployment/hodor-worker --all-containers --tail 200
+          kubectl logs --namespace spire statefulset/spire-server --tail 100
+          kubectl logs --namespace spire daemonset/spire-agent --tail 100
+
+  # The demonstration of Milestone 12, as the quick-start tells an operator to
+  # run it: a kind cluster with Istio, where Hodor runs in the mesh with its
+  # chart beside OpenBao, and one with Linkerd, cert-manager and
+  # hodor-cert-manager-issuer in both, from the images built here. The script
+  # makes the clusters; kind, kubectl and Helm are installed at the versions
+  # named.
+  certificate-authority:
+    name: Meshes under one tenant's root
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: helm/kind-action@1544676c07bb3570fcb70166beaa07c4528fd4aa # v1.15.1
+        with:
+          version: v0.33.0
+          kubectl_version: v1.37.1
+          install_only: true
+      - uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
+        with:
+          version: v4.3.1
+      - name: Build the images
+        run: |
+          docker build --file deploy/docker/Dockerfile --tag hodor:milestone-12 .
+          docker build --file deploy/docker/cert-manager-issuer.Dockerfile --tag hodor-cert-manager-issuer:milestone-12 .
+      - name: Run the demonstration of Milestone 12
+        run: python3 deploy/demo/certificate_authority.py
+      - name: Show what the clusters logged
+        if: failure()
+        run: |
+          kind get kubeconfig --name hodor-milestone-12-istio > "$RUNNER_TEMP/istio"
+          kind get kubeconfig --name hodor-milestone-12-linkerd > "$RUNNER_TEMP/linkerd"
+          for cluster in istio linkerd; do
+            echo "== $cluster"
+            kubectl --kubeconfig "$RUNNER_TEMP/$cluster" get pods --all-namespaces
+            kubectl --kubeconfig "$RUNNER_TEMP/$cluster" get certificates,certificaterequests --all-namespaces --output wide
+            kubectl --kubeconfig "$RUNNER_TEMP/$cluster" logs --namespace cert-manager deployment/hodor-issuer-cert-manager-issuer --tail 100
+          done
+          kubectl --kubeconfig "$RUNNER_TEMP/istio" logs --namespace hodor deployment/hodor-server --all-containers --tail 200
+          kubectl --kubeconfig "$RUNNER_TEMP/istio" logs --namespace istio-system deployment/istiod --tail 100
+          kubectl --kubeconfig "$RUNNER_TEMP/linkerd" logs --namespace linkerd deployment/linkerd-identity --all-containers --tail 100
+          kubectl --kubeconfig "$RUNNER_TEMP/linkerd" logs --namespace ledger deployment/ledger --all-containers --tail 100
+
+  # The demonstration of Milestone 11, as the quick-start tells an operator to
+  # run it, once for each mesh: a kind cluster with Istio and its ingress
+  # gateway, or one with Envoy Gateway in front of Linkerd, and Hodor and
+  # hodor-ext-authz installed in the mesh with the chart's mesh.provider,
+  # from the images built here. The script makes the cluster; kind, kubectl
+  # and Helm are installed at the versions named.
+  service-mesh:
+    name: Hodor in a service mesh (${{ matrix.mesh }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        mesh: [istio, linkerd]
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: helm/kind-action@1544676c07bb3570fcb70166beaa07c4528fd4aa # v1.15.1
+        with:
+          version: v0.33.0
+          kubectl_version: v1.37.1
+          install_only: true
+      - uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
+        with:
+          version: v4.3.1
+      - name: Build the images
+        run: |
+          docker build --file deploy/docker/Dockerfile --tag hodor:milestone-11 .
+          docker build --file deploy/docker/ext-authz.Dockerfile --tag hodor-ext-authz:milestone-11 .
+      - name: Run the demonstration of Milestone 11
+        run: python3 deploy/demo/service_mesh.py
+        env:
+          HODOR_MESH: ${{ matrix.mesh }}
+      - name: Show what the cluster logged
+        if: failure()
+        env:
+          MESH: ${{ matrix.mesh }}
+        run: |
+          kind get kubeconfig --name "hodor-milestone-11-$MESH" > "$RUNNER_TEMP/kubeconfig"
+          export KUBECONFIG="$RUNNER_TEMP/kubeconfig"
+          kubectl get pods --all-namespaces --output wide
+          kubectl get networkpolicies --all-namespaces
+          kubectl logs --namespace hodor deployment/hodor-server --all-containers --tail 200 || true
+          kubectl logs --namespace hodor deployment/hodor-ext-authz --all-containers --tail 200 || true
+          kubectl logs --namespace shop deployment/orders --all-containers --tail 100 || true
+          if [ "$MESH" = istio ]; then
+            kubectl logs --namespace istio-system deployment/istio-ingressgateway --tail 100
+            kubectl logs --namespace istio-system deployment/istiod --tail 100
+            kubectl get requestauthentications,authorizationpolicies --all-namespaces --output yaml
+            # The order of Orders' sidecar's filters, and what its JWT filter writes.
+            kubectl exec --namespace shop deployment/orders --container istio-proxy -- \
+              pilot-agent request GET config_dump \
+              | grep -o -e '"name": "envoy.filters.http[^"]*"' -e '"forward_payload_header": "[^"]*"' \
+                -e '"issuer": "[^"]*"' -e '"forward": [a-z]*' | head -60 || true
+          else
+            kubectl get gateways,httproutes,securitypolicies,referencegrants --all-namespaces --output yaml
+            kubectl get pods --namespace envoy-gateway-system --output yaml
+            kubectl logs --namespace linkerd deployment/linkerd-proxy-injector --all-containers --tail 100
+            kubectl logs --namespace envoy-gateway-system deployment/edge-gateway --all-containers --tail 200
+            kubectl logs --namespace envoy-gateway-system deployment/envoy-gateway --tail 100
+          fi
 
   # The Basic OpenID Provider, Config OpenID Provider and Back-Channel OpenID
   # Provider plans of the OpenID conformance suite, against the image; the
@@ -255,6 +407,64 @@ jobs:
           path: deploy/conformance/conformance-results.json
           retention-days: 14
 
+  # The image of hodor-ext-authz, built as the release builds it: it starts with a configuration that reads,
+  # answers its health checks, and stops at once on one that does not. docs/operations/hodor-ext-authz.md.
+  ext-authz-image:
+    name: Image of hodor-ext-authz
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - name: Build the image
+        run: docker build --file deploy/docker/ext-authz.Dockerfile --tag hodor-ext-authz:ci .
+      - name: It starts and answers its health checks
+        run: |
+          mkdir -p "$RUNNER_TEMP/ext-authz"
+          echo '{ "hodor": { "url": "http://hodor:8080", "tenant": "acme" } }' > "$RUNNER_TEMP/ext-authz/config.json"
+          chmod -R a+rX "$RUNNER_TEMP/ext-authz"
+          docker run --detach --name ext-authz --publish 9090:9090 \
+            --volume "$RUNNER_TEMP/ext-authz:/etc/hodor-ext-authz:ro" hodor-ext-authz:ci
+          for _ in $(seq 1 30); do
+            if curl --fail --silent http://127.0.0.1:9090/readyz; then exit 0; fi
+            sleep 1
+          done
+          docker logs ext-authz
+          exit 1
+      - name: It refuses a configuration that does not read
+        run: |
+          echo '{ "hodor": { "url": "http://hodor:8080" } }' > "$RUNNER_TEMP/ext-authz/broken.json"
+          chmod a+r "$RUNNER_TEMP/ext-authz/broken.json"
+          if docker run --rm --volume "$RUNNER_TEMP/ext-authz:/etc/hodor-ext-authz:ro" \
+            --env HODOR_EXT_AUTHZ_CONFIG=/etc/hodor-ext-authz/broken.json hodor-ext-authz:ci; then
+            echo "a configuration without a tenant was accepted"; exit 1
+          fi
+
+  # The image of hodor-cert-manager-issuer, built as the release builds it: it prints the public part of a key,
+  # and stops at once on a configuration that does not read. It needs a Kubernetes interface to run, which this
+  # job has not. docs/operations/hodor-cert-manager-issuer.md.
+  cert-manager-issuer-image:
+    name: Image of hodor-cert-manager-issuer
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - name: Build the image
+        run: docker build --file deploy/docker/cert-manager-issuer.Dockerfile --tag hodor-cert-manager-issuer:ci .
+      - name: It prints the public part of a key
+        run: |
+          mkdir -p "$RUNNER_TEMP/issuer"
+          openssl genpkey -algorithm EC -pkeyopt ec_paramgen_curve:P-256 -out "$RUNNER_TEMP/issuer/key.pem"
+          chmod -R a+rX "$RUNNER_TEMP/issuer"
+          docker run --rm --volume "$RUNNER_TEMP/issuer:/keys:ro" hodor-cert-manager-issuer:ci \
+            jwk --key /keys/key.pem --key-id ci > "$RUNNER_TEMP/jwk.json"
+          jq -e '.kty == "EC" and .crv == "P-256" and .kid == "ci" and (has("d") | not)' "$RUNNER_TEMP/jwk.json"
+      - name: It refuses a configuration that does not read
+        run: |
+          echo '{ "hodor": { "url": "http://hodor:8080" } }' > "$RUNNER_TEMP/issuer/broken.json"
+          chmod a+r "$RUNNER_TEMP/issuer/broken.json"
+          if docker run --rm --volume "$RUNNER_TEMP/issuer:/etc/hodor-cert-manager-issuer:ro" \
+            --env HODOR_CERT_MANAGER_ISSUER_CONFIG=/etc/hodor-cert-manager-issuer/broken.json hodor-cert-manager-issuer:ci; then
+            echo "a configuration without a tenant was accepted"; exit 1
+          fi
+
   # The two installation packages in deploy/install: the Helm chart renders and the Compose file is valid.
   # Neither is installed here; docs/operations/install-with-docker.md and install-on-kubernetes.md say how
   # that was checked by hand.
@@ -287,13 +497,107 @@ jobs:
           --set "directoryHosts={directory.example.com:636}"
           --set telemetry.metricsEndpoint=http://collector:4318/v1/metrics
           --set telemetry.tracesEndpoint=http://collector:4318/v1/traces
+          --set keyProvider.signingKeys=openbao --set keyProvider.openbao.enabled=true
+          --set keyProvider.openbao.address=https://openbao.openbao.svc:8200
+          --set keyProvider.openbao.certificateAuthority.configMap=openbao-authority
+          --set outboundAuthorities.configMap=hodor-authorities
+          --set extAuthz.enabled=true --set extAuthz.tenant=acme
+          --set extAuthz.token.header=x-hodor-token-claims
+          --set "extAuthz.applications[0].destination=spiffe://cluster.local/ns/shop/sa/orders"
+          --set "extAuthz.applications[0].clientId=0193f1c2-6a1d-7c55-b0c8-6b1f2c9d4e01"
+          --set "extAuthz.applications[0].audience=https://orders.example.com"
+          --set "extAuthz.applications[0].routes[0].methods={GET}"
+          --set "extAuthz.applications[0].routes[0].path=/orders/{id}"
+          --set "extAuthz.applications[0].routes[0].resourceType=order"
+          --set "extAuthz.applications[0].routes[0].action=read"
+          --set certManagerIssuer.enabled=true --set certManagerIssuer.tenant=acme
+          --set certManagerIssuer.clientId=0193f3c0-2d4e-7b1a-9c55-6b1f2c9d4e01
+          --set certManagerIssuer.approveWithCertManager.enabled=true
           > /dev/null
+      - name: Render the chart with cert-manager's issuer alone, signing in with its key
+        run: >
+          helm lint "$CHART" --strict
+          --set certManagerIssuer.enabled=true --set certManagerIssuer.only=true
+          --set certManagerIssuer.tenant=acme --set certManagerIssuer.hodorUrl=https://login.example.com
+          --set certManagerIssuer.clientId=0193f3c0-2d4e-7b1a-9c55-6b1f2c9d4e01
+          --set certManagerIssuer.authentication.method=private_key_jwt
+          --set certManagerIssuer.authentication.privateKeyJwt.secretName=hodor-cert-manager-issuer-key
+          && helm template hodor-issuer "$CHART" --namespace cert-manager
+          --set certManagerIssuer.enabled=true --set certManagerIssuer.only=true
+          --set certManagerIssuer.tenant=acme --set certManagerIssuer.hodorUrl=https://login.example.com
+          --set certManagerIssuer.clientId=0193f3c0-2d4e-7b1a-9c55-6b1f2c9d4e01
+          --set certManagerIssuer.authentication.method=private_key_jwt
+          --set certManagerIssuer.authentication.privateKeyJwt.secretName=hodor-cert-manager-issuer-key
+          > rendered.yaml
+          && ! grep -q 'name: hodor-issuer-hodor-server' rendered.yaml
+          && grep -q 'kind: CustomResourceDefinition' rendered.yaml
+      - name: Render the chart with the certificate authority on, and refuse it for development alone
+        run: |
+          helm template hodor "$CHART" --namespace hodor $REQUIRED \
+            --set certificateAuthority.enabled=true --set keyProvider.openbao.enabled=true \
+            --set keyProvider.openbao.address=https://openbao.openbao.svc:8200 > rendered.yaml
+          grep -A1 'name: HODOR_CERTIFICATE_AUTHORITY' rendered.yaml | grep -q 'value: "on"'
+          helm template hodor "$CHART" --namespace hodor $REQUIRED \
+            --set certificateAuthority.enabled=true --set certificateAuthority.development=true > rendered.yaml
+          grep -A1 'name: HODOR_CERTIFICATE_AUTHORITY' rendered.yaml | grep -q 'value: "development"'
+          if helm template hodor "$CHART" --namespace hodor $REQUIRED --set certificateAuthority.development=true > /dev/null 2>&1; then
+            echo "development without enabled was rendered"; exit 1
+          fi
+      - name: Render the chart signing in to OpenBao with an AppRole
+        run: >
+          helm template hodor "$CHART" --namespace hodor $REQUIRED
+          --set keyProvider.openbao.enabled=true --set keyProvider.openbao.authMethod=approle
+          --set keyProvider.openbao.address=https://openbao.openbao.svc:8200
+          > /dev/null
+      - name: Lint and render the chart inside each service mesh
+        env:
+          ISTIO: >-
+            --set mesh.provider=istio
+            --set gatewayIdentities={spiffe://cluster.local/ns/istio-system/sa/istio-ingressgateway-service-account}
+            --set networkPolicy.enabled=true --set networkPolicy.egress.enabled=true
+          LINKERD: >-
+            --set mesh.provider=linkerd --set mesh.skipOutboundPorts={25,587} --set mesh.injectMigration=false
+            --set gatewayIdentities={gateway.edge.serviceaccount.identity.linkerd.cluster.local}
+            --set networkPolicy.enabled=true --set networkPolicy.egress.enabled=true
+        run: |
+          for mesh in "$ISTIO" "$LINKERD"; do
+            helm lint "$CHART" --strict $REQUIRED $mesh
+            helm template hodor "$CHART" --namespace hodor $REQUIRED $mesh > rendered.yaml
+            grep -q 'name: HODOR_GATEWAY_IDENTITIES' rendered.yaml
+            grep -q -e '127.0.0.6,::6' -e '$(POD_ADDRESSES)' rendered.yaml
+          done
+          # mesh.provider puts hodor-ext-authz in the mesh too, and with Linkerd opens port 4143 on it to its
+          # own callers only (Decision 0078).
+          EXT_AUTHZ="--set extAuthz.enabled=true --set extAuthz.tenant=acme --set networkPolicy.enabled=true"
+          helm template hodor "$CHART" --namespace hodor $REQUIRED $EXT_AUTHZ --set mesh.provider=istio > rendered.yaml
+          grep -B1 -A12 'app.kubernetes.io/component: ext-authz' rendered.yaml | grep -q 'sidecar.istio.io/inject: "true"'
+          helm template hodor "$CHART" --namespace hodor $REQUIRED $EXT_AUTHZ $LINKERD > rendered.yaml
+          # The server, the worker and hodor-ext-authz; the migration job is left out by mesh.injectMigration.
+          test "$(grep -c 'linkerd.io/inject: enabled' rendered.yaml)" = 3
+          grep -q 'name: hodor-server-mesh' rendered.yaml
+          grep -q 'name: hodor-ext-authz-mesh' rendered.yaml
+          # Inside a mesh with no gateway named, no forwarded address is read.
+          helm template hodor "$CHART" --namespace hodor $REQUIRED --set mesh.provider=istio > rendered.yaml
+          grep -A1 'name: HODOR_FORWARDED_HEADER' rendered.yaml | grep -q '"none"'
+          rm rendered.yaml
       - name: The chart refuses to render without its required values
         run: |
           refused() { if "$@" > /dev/null 2>&1; then echo "accepted, and should not be: $*"; return 1; fi; }
           refused helm template hodor "$CHART" --namespace hodor
           refused helm template hodor "$CHART" --namespace hodor $REQUIRED --set publicUrl=https://login.example.com/path
           refused helm template hodor "$CHART" --namespace hodor $REQUIRED --set mail.enabled=true
+          refused helm template hodor "$CHART" --namespace hodor $REQUIRED --set keyProvider.signingKeys=openbao
+          refused helm template hodor "$CHART" --namespace hodor $REQUIRED --set keyProvider.openbao.enabled=true
+          refused helm template hodor "$CHART" --namespace hodor $REQUIRED --set extAuthz.enabled=true
+          ISSUER="--set certManagerIssuer.enabled=true --set certManagerIssuer.tenant=acme --set certManagerIssuer.clientId=c"
+          refused helm template hodor "$CHART" --namespace hodor $REQUIRED --set certManagerIssuer.enabled=true
+          refused helm template hodor "$CHART" --namespace hodor $REQUIRED --set certManagerIssuer.enabled=true --set certManagerIssuer.tenant=acme
+          refused helm template hodor "$CHART" --namespace hodor $ISSUER --set certManagerIssuer.only=true
+          refused helm template hodor "$CHART" --namespace hodor $REQUIRED $ISSUER --set certManagerIssuer.authentication.method=private_key_jwt
+          refused helm template hodor "$CHART" --namespace hodor $REQUIRED $ISSUER --set certManagerIssuer.authentication.method=client_secret_basic
+          refused helm template hodor "$CHART" --namespace hodor $REQUIRED --set mesh.provider=consul
+          refused helm template hodor "$CHART" --namespace hodor $REQUIRED --set gatewayIdentities={spiffe://cluster.local/ns/edge/sa/gateway}
+          refused helm template hodor "$CHART" --namespace hodor $REQUIRED --set mesh.provider=istio --set forwardedHeader=none --set gatewayIdentities={spiffe://cluster.local/ns/edge/sa/gateway}
       - name: The Compose file is valid with every part
         env:
           HODOR_IMAGE: hodor:test

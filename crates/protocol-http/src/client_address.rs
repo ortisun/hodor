@@ -9,12 +9,20 @@
 //! - the list it holds is read from its end, nearest first, passing over
 //!   trusted proxies; the first address that is not one is the client;
 //! - anything that cannot be read falls back to the connection's address,
-//!   which a client cannot choose.
+//!   which a client cannot choose;
+//! - behind the proxy of a service mesh, when the operator names the
+//!   ingress gateways, the header is read only from a request whose caller
+//!   is one of them, under "Behind the proxy of a service mesh".
 
+use crate::forwarded_identity::{self, IdentityHeader, Read};
 use axum::http::{HeaderMap, HeaderName};
+use hodor_oauth::api::{
+    CertificateCheck, ForwardedIdentity, LinkerdIdentity, SpiffeId, WorkloadIdentity,
+};
 use std::fmt;
 use std::net::IpAddr;
 use std::str::FromStr;
+use std::sync::Arc;
 
 /// The most trusted proxies passed over in one forwarded header before
 /// the client address is given up on.
@@ -175,13 +183,17 @@ pub enum ForwardedHeader {
     /// `Forwarded` (RFC 7239): elements separated by commas, each with a
     /// `for` parameter.
     Forwarded,
+    /// None: the proxies are trusted for the caller's identity alone, and
+    /// the client address is always the connection's.
+    None,
 }
 
 impl ForwardedHeader {
-    fn name(self) -> HeaderName {
+    fn name(self) -> Option<HeaderName> {
         match self {
-            Self::XForwardedFor => HeaderName::from_static("x-forwarded-for"),
-            Self::Forwarded => HeaderName::from_static("forwarded"),
+            Self::XForwardedFor => Some(HeaderName::from_static("x-forwarded-for")),
+            Self::Forwarded => Some(HeaderName::from_static("forwarded")),
+            Self::None => None,
         }
     }
 }
@@ -193,19 +205,142 @@ impl FromStr for ForwardedHeader {
         match given.trim().to_ascii_lowercase().as_str() {
             "x-forwarded-for" => Ok(Self::XForwardedFor),
             "forwarded" => Ok(Self::Forwarded),
+            "none" => Ok(Self::None),
             _ => Err(format!(
-                "`{given}` is not a forwarded header Hodor reads: `x-forwarded-for` or `forwarded`"
+                "`{given}` is not a forwarded header Hodor reads: `x-forwarded-for`, `forwarded` \
+                 or `none`"
             )),
         }
     }
 }
 
-/// The proxies whose forwarded header is believed, and which header that
-/// is. With no range, which is the default, no header is ever read.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+/// Why an identity given as an ingress gateway was refused.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InvalidGateway {
+    /// What was given.
+    pub given: String,
+    /// Why it was refused.
+    pub reason: String,
+}
+
+impl fmt::Display for InvalidGateway {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(formatter, "`{}` {}", self.given, self.reason)
+    }
+}
+
+impl std::error::Error for InvalidGateway {}
+
+/// Reads the identities of ingress gateways separated by commas, as
+/// `HODOR_GATEWAY_IDENTITIES` holds them: a SPIFFE identifier, by the rule
+/// of a client's, or a Linkerd identity. Spaces around each are ignored,
+/// and an empty list names no gateway.
+///
+/// # Errors
+///
+/// The first identity that cannot be read.
+pub fn parse_gateways(list: &str) -> Result<Vec<WorkloadIdentity>, InvalidGateway> {
+    list.split(',')
+        .map(str::trim)
+        .filter(|identity| !identity.is_empty())
+        .map(|given| {
+            let read = if given.starts_with("spiffe://") {
+                SpiffeId::parse(given).map(WorkloadIdentity::Spiffe)
+            } else {
+                LinkerdIdentity::parse(given).map(WorkloadIdentity::Linkerd)
+            };
+            read.map_err(|error| InvalidGateway {
+                given: given.to_owned(),
+                reason: format!(
+                    "is neither a SPIFFE identifier nor a Linkerd identity: {}",
+                    error.detail().unwrap_or_else(|| error.message())
+                ),
+            })
+        })
+        .collect()
+}
+
+/// The ingress gateways whose forwarded header is read, and what reads the
+/// names of a forwarded certificate.
+#[derive(Clone)]
+struct Gateways {
+    identities: Vec<WorkloadIdentity>,
+    certificates: Arc<dyn CertificateCheck>,
+}
+
+impl Gateways {
+    /// Whether the caller a trusted proxy forwarded is one of the gateways.
+    fn holds(&self, caller: &ForwardedIdentity) -> bool {
+        match caller {
+            ForwardedIdentity::Linkerd(asserted) => self.identities.iter().any(|gateway| {
+                matches!(gateway, WorkloadIdentity::Linkerd(id) if id.as_str() == asserted)
+            }),
+            ForwardedIdentity::Names {
+                uris, dns_names, ..
+            } => self.named(uris, dns_names),
+            ForwardedIdentity::Certificate { certificate, .. } => self
+                .certificates
+                .names(certificate)
+                .is_some_and(|names| self.named(&names.uris, &names.dns_names)),
+        }
+    }
+
+    /// Whether a SPIFFE identifier of a gateway is among `uris`, or a Linkerd
+    /// identity of one among `dns_names`.
+    fn named(&self, uris: &[String], dns_names: &[String]) -> bool {
+        self.identities.iter().any(|gateway| match gateway {
+            WorkloadIdentity::Spiffe(id) => uris.iter().any(|uri| uri == id.as_str()),
+            WorkloadIdentity::Linkerd(id) => dns_names.iter().any(|name| name == id.as_str()),
+        })
+    }
+}
+
+/// The proxies whose forwarded header is believed, which header that is,
+/// which header of the caller's identity they write, if any, and the
+/// ingress gateways the forwarded header is read from, if named. With no
+/// range, which is the default, no header is ever read.
+#[derive(Clone, Default)]
 pub struct TrustedProxies {
     ranges: Vec<AddressRange>,
     header: ForwardedHeader,
+    identity: Option<IdentityHeader>,
+    gateways: Option<Gateways>,
+}
+
+impl fmt::Debug for TrustedProxies {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("TrustedProxies")
+            .field("ranges", &self.ranges)
+            .field("header", &self.header)
+            .field("identity", &self.identity)
+            .field(
+                "gateways",
+                &self.gateways.as_ref().map(|gateways| &gateways.identities),
+            )
+            .finish()
+    }
+}
+
+/// Why the forwarded header of a trusted proxy was not read although it was
+/// there: the caller is not one of the ingress gateways.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Ignored {
+    /// No identity was forwarded, or it could not be read.
+    NoIdentity,
+    /// The identity forwarded is not one of the gateways.
+    NotAGateway,
+}
+
+impl Ignored {
+    /// The value of the `reason` label of the counter.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::NoIdentity => "no_identity",
+            Self::NotAGateway => "not_a_gateway",
+        }
+    }
 }
 
 /// Why a forwarded header was given up on, and the connection's address
@@ -237,13 +372,72 @@ pub struct Resolved {
     pub address: Option<IpAddr>,
     /// Set when the header of a trusted proxy could not be read.
     pub unreadable: Option<Unreadable>,
+    /// Set when the header of a trusted proxy was there and not read,
+    /// because the caller is not one of the ingress gateways.
+    pub ignored: Option<Ignored>,
 }
 
 impl TrustedProxies {
     /// Trusts the proxies in `ranges`, whose header is `header`.
     #[must_use]
     pub const fn new(ranges: Vec<AddressRange>, header: ForwardedHeader) -> Self {
-        Self { ranges, header }
+        Self {
+            ranges,
+            header,
+            identity: None,
+            gateways: None,
+        }
+    }
+
+    /// The same proxies, whose forwarded header is read only from a request
+    /// whose caller is one of `identities`, the ingress gateways; the names
+    /// of a forwarded certificate are read by `certificates`. With no
+    /// identity, the header is read from every caller, the default.
+    #[must_use]
+    pub fn with_gateways(
+        mut self,
+        identities: Vec<WorkloadIdentity>,
+        certificates: Arc<dyn CertificateCheck>,
+    ) -> Self {
+        self.gateways = (!identities.is_empty()).then_some(Gateways {
+            identities,
+            certificates,
+        });
+        self
+    }
+
+    /// The ingress gateways the forwarded header is read from, if named.
+    #[must_use]
+    pub fn gateways(&self) -> &[WorkloadIdentity] {
+        self.gateways
+            .as_ref()
+            .map_or(&[], |gateways| gateways.identities.as_slice())
+    }
+
+    /// The same proxies, whose header of the caller's identity is
+    /// `identity`; none is read when it is `None`, the default.
+    #[must_use]
+    pub const fn with_identity_header(mut self, identity: Option<IdentityHeader>) -> Self {
+        self.identity = identity;
+        self
+    }
+
+    /// The header of the caller's identity that is read, if any.
+    #[must_use]
+    pub const fn identity_header(&self) -> Option<IdentityHeader> {
+        self.identity
+    }
+
+    /// What the header of the caller's identity says, for a request whose
+    /// connection came from `peer`: nothing unless a header is named and
+    /// `peer` is a trusted proxy.
+    pub(crate) fn forwarded_identity(&self, peer: Option<IpAddr>, headers: &HeaderMap) -> Read {
+        match (self.identity, peer) {
+            (Some(header), Some(peer)) if self.trusts(peer.to_canonical()) => {
+                forwarded_identity::read(header, headers)
+            }
+            _ => Read::Absent,
+        }
     }
 
     /// Trusts no proxy: the client address is always the connection's.
@@ -259,24 +453,59 @@ impl TrustedProxies {
     /// The client address of a request whose connection came from `peer`.
     #[must_use]
     pub fn resolve(&self, peer: Option<IpAddr>, headers: &HeaderMap) -> Resolved {
+        let caller = if self.gateways.is_some() {
+            self.forwarded_identity(peer, headers)
+        } else {
+            Read::Absent
+        };
+        self.resolve_with(peer, headers, &caller)
+    }
+
+    /// The client address of a request whose connection came from `peer`,
+    /// whose caller's identity was already read as `caller`.
+    pub(crate) fn resolve_with(
+        &self,
+        peer: Option<IpAddr>,
+        headers: &HeaderMap,
+        caller: &Read,
+    ) -> Resolved {
         let Some(peer) = peer.map(|peer| peer.to_canonical()) else {
             return Resolved {
                 address: None,
                 unreadable: None,
+                ignored: None,
             };
         };
         let direct = |unreadable| Resolved {
             address: Some(peer),
             unreadable,
+            ignored: None,
         };
         if !self.trusts(peer) {
             return direct(None);
+        }
+        let Some(name) = self.header.name() else {
+            return direct(None);
+        };
+        if let Some(gateways) = &self.gateways {
+            let ignored = match caller {
+                Read::Identity(identity) if gateways.holds(identity) => None,
+                Read::Identity(_) => Some(Ignored::NotAGateway),
+                Read::Absent | Read::Unreadable => Some(Ignored::NoIdentity),
+            };
+            if let Some(ignored) = ignored {
+                return Resolved {
+                    address: Some(peer),
+                    unreadable: None,
+                    ignored: headers.contains_key(&name).then_some(ignored),
+                };
+            }
         }
 
         // Every line of the header, read as one list in the order the
         // lines arrived. A line that is not text cannot be read.
         let mut lines = Vec::new();
-        for value in headers.get_all(self.header.name()) {
+        for value in headers.get_all(name) {
             match value.to_str() {
                 Ok(line) => lines.push(line),
                 Err(_) => return direct(Some(Unreadable::Unreadable)),
@@ -287,7 +516,7 @@ impl TrustedProxies {
         }
         let mut entries = Vec::new();
         for line in &lines {
-            entries.extend(split_outside_quotes(line));
+            entries.extend(split_outside(line, ','));
         }
 
         let mut farthest = peer;
@@ -298,6 +527,7 @@ impl TrustedProxies {
             let address = match self.header {
                 ForwardedHeader::XForwardedFor => parse_node(entry.trim()),
                 ForwardedHeader::Forwarded => forwarded_for(entry),
+                ForwardedHeader::None => None,
             };
             let Some(address) = address.map(|address| address.to_canonical()) else {
                 return direct(Some(Unreadable::Unreadable));
@@ -306,6 +536,7 @@ impl TrustedProxies {
                 return Resolved {
                     address: Some(address),
                     unreadable: None,
+                    ignored: None,
                 };
             }
             farthest = address;
@@ -314,12 +545,14 @@ impl TrustedProxies {
         Resolved {
             address: Some(farthest),
             unreadable: None,
+            ignored: None,
         }
     }
 }
 
-/// Splits a header line on commas that are not inside a quoted string.
-fn split_outside_quotes(line: &str) -> Vec<&str> {
+/// Splits a header line on `separator` where it is not inside a quoted
+/// string.
+pub(crate) fn split_outside(line: &str, separator: char) -> Vec<&str> {
     let mut parts = Vec::new();
     let mut start = 0;
     let mut quoted = false;
@@ -332,7 +565,7 @@ fn split_outside_quotes(line: &str) -> Vec<&str> {
         match character {
             '\\' if quoted => escaped = true,
             '"' => quoted = !quoted,
-            ',' if !quoted => {
+            found if found == separator && !quoted => {
                 parts.push(&line[start..index]);
                 start = index + 1;
             }
@@ -487,7 +720,8 @@ mod tests {
             resolve(&proxies, "203.0.113.7", &forged),
             Resolved {
                 address: Some(address("203.0.113.7")),
-                unreadable: None
+                unreadable: None,
+                ignored: None
             }
         );
         let nobody = TrustedProxies::none();
@@ -516,7 +750,8 @@ mod tests {
             resolve(&proxies, "10.0.0.1", &other),
             Resolved {
                 address: Some(address("10.0.0.1")),
-                unreadable: None
+                unreadable: None,
+                ignored: None
             },
             "only the named header is read"
         );
@@ -584,7 +819,8 @@ mod tests {
                 resolve(&x_forwarded_for, "10.0.0.1", &header),
                 Resolved {
                     address: Some(address("10.0.0.1")),
-                    unreadable: Some(Unreadable::Unreadable)
+                    unreadable: Some(Unreadable::Unreadable),
+                    ignored: None
                 },
                 "{entry:?}"
             );
@@ -629,7 +865,8 @@ mod tests {
             resolve(&proxies, "10.0.0.1", &header),
             Resolved {
                 address: Some(address("203.0.113.7")),
-                unreadable: None
+                unreadable: None,
+                ignored: None
             }
         );
     }
@@ -657,7 +894,8 @@ mod tests {
             resolve(&proxies, "10.0.1.1", &header),
             Resolved {
                 address: Some(address("10.0.1.1")),
-                unreadable: Some(Unreadable::TooLong)
+                unreadable: Some(Unreadable::TooLong),
+                ignored: None
             }
         );
         let fits: Vec<String> = (0..MAX_FORWARDED_HOPS)
@@ -675,7 +913,8 @@ mod tests {
             proxies.resolve(None, &header),
             Resolved {
                 address: None,
-                unreadable: None
+                unreadable: None,
+                ignored: None
             }
         );
     }
@@ -687,6 +926,331 @@ mod tests {
             Ok(ForwardedHeader::XForwardedFor)
         );
         assert_eq!(" forwarded ".parse(), Ok(ForwardedHeader::Forwarded));
+        assert_eq!("None".parse(), Ok(ForwardedHeader::None));
         assert!("x-real-ip".parse::<ForwardedHeader>().is_err());
+    }
+
+    #[test]
+    fn with_no_forwarded_header_the_connection_is_the_client() {
+        let proxies = proxies("10.0.0.0/8", ForwardedHeader::None);
+        let sent = headers("x-forwarded-for", &["203.0.113.7"]);
+        assert_eq!(
+            resolve(&proxies, "10.0.0.1", &sent),
+            Resolved {
+                address: Some(address("10.0.0.1")),
+                unreadable: None,
+                ignored: None
+            }
+        );
+    }
+
+    #[test]
+    fn the_callers_identity_is_read_only_from_a_trusted_proxy_and_only_when_named() {
+        let identity = "web.shop.serviceaccount.identity.linkerd.td";
+        let sent = headers("l5d-client-id", &[identity]);
+        let named = proxies("10.0.0.0/8", ForwardedHeader::None)
+            .with_identity_header(Some(IdentityHeader::LinkerdClientId));
+        assert_eq!(
+            named.forwarded_identity(Some(address("10.0.0.1")), &sent),
+            Read::Identity(hodor_oauth::api::ForwardedIdentity::Linkerd(
+                identity.to_owned()
+            ))
+        );
+        assert_eq!(
+            named.forwarded_identity(Some(address("::ffff:10.0.0.1")), &sent),
+            Read::Identity(hodor_oauth::api::ForwardedIdentity::Linkerd(
+                identity.to_owned()
+            )),
+            "a proxy connecting over IPv6 with its IPv4 address is still trusted"
+        );
+        assert_eq!(
+            named.forwarded_identity(Some(address("203.0.113.7")), &sent),
+            Read::Absent,
+            "from a peer that is not a trusted proxy"
+        );
+        assert_eq!(named.forwarded_identity(None, &sent), Read::Absent);
+        let unnamed = proxies("10.0.0.0/8", ForwardedHeader::None);
+        assert_eq!(unnamed.identity_header(), None);
+        assert_eq!(
+            unnamed.forwarded_identity(Some(address("10.0.0.1")), &sent),
+            Read::Absent,
+            "no header is read when none is named"
+        );
+        let nobody =
+            TrustedProxies::none().with_identity_header(Some(IdentityHeader::LinkerdClientId));
+        assert_eq!(
+            nobody.forwarded_identity(Some(address("10.0.0.1")), &sent),
+            Read::Absent,
+            "a header named with no trusted proxy is never read"
+        );
+    }
+
+    const GATEWAY: &str =
+        "spiffe://cluster.local/ns/istio-system/sa/istio-ingressgateway-service-account";
+    const LINKERD_GATEWAY: &str = "gateway.edge.serviceaccount.identity.linkerd.cluster.local";
+    const WORKLOAD: &str = "spiffe://cluster.local/ns/shop/sa/web";
+
+    /// A sidecar at 127.0.0.6, trusted, whose identity header is `header`,
+    /// in front of the gateways `named`.
+    fn behind_sidecar(header: IdentityHeader, named: &str) -> TrustedProxies {
+        proxies("127.0.0.6", ForwardedHeader::XForwardedFor)
+            .with_identity_header(Some(header))
+            .with_gateways(
+                parse_gateways(named).expect("gateways"),
+                Arc::new(hodor_adapters_crypto::X509CertificateCheck),
+            )
+    }
+
+    fn request(pairs: &[(&str, &str)]) -> HeaderMap {
+        let mut headers = HeaderMap::new();
+        for (name, value) in pairs {
+            headers.append(
+                HeaderName::from_bytes(name.as_bytes()).expect("a name"),
+                HeaderValue::from_str(value).expect("a value"),
+            );
+        }
+        headers
+    }
+
+    /// The element Istio's sidecar adds, naming the caller by its URI.
+    fn sidecar_element(caller: &str) -> String {
+        format!("By=spiffe://cluster.local/ns/hodor/sa/hodor;Hash=00;Subject=\"\";URI={caller}")
+    }
+
+    #[test]
+    fn gateways_are_read_as_spiffe_identifiers_or_linkerd_identities() {
+        let gateways = parse_gateways(&format!(" {GATEWAY} ,, {LINKERD_GATEWAY}")).expect("read");
+        let written: Vec<&str> = gateways.iter().map(WorkloadIdentity::as_str).collect();
+        assert_eq!(written, [GATEWAY, LINKERD_GATEWAY]);
+        assert!(matches!(gateways[0], WorkloadIdentity::Spiffe(_)));
+        assert!(matches!(gateways[1], WorkloadIdentity::Linkerd(_)));
+        assert!(parse_gateways("").expect("nothing").is_empty());
+        for given in [
+            "spiffe://cluster.local/ns/istio-system/sa/*",
+            "spiffe://",
+            "https://gateway.example",
+            "gateway.edge.svc.cluster.local",
+            "Gateway.Edge.serviceaccount.identity.linkerd.cluster.local",
+        ] {
+            let refused = parse_gateways(&format!("{GATEWAY},{given}"))
+                .expect_err("an identity that does not read");
+            assert_eq!(refused.given, given);
+        }
+        let none = behind_sidecar(IdentityHeader::XForwardedClientCert, "");
+        assert!(none.gateways().is_empty(), "an empty list names no gateway");
+    }
+
+    #[test]
+    fn behind_a_gateway_the_forwarded_address_is_read() {
+        let proxies = behind_sidecar(IdentityHeader::XForwardedClientCert, GATEWAY);
+        let through_gateway = request(&[
+            ("x-forwarded-for", "198.51.100.1, 203.0.113.7"),
+            ("x-forwarded-client-cert", &sidecar_element(GATEWAY)),
+        ]);
+        assert_eq!(
+            resolve(&proxies, "127.0.0.6", &through_gateway),
+            Resolved {
+                address: Some(address("203.0.113.7")),
+                unreadable: None,
+                ignored: None
+            }
+        );
+    }
+
+    #[test]
+    fn the_forwarded_address_of_any_other_workload_is_ignored_and_counted() {
+        let proxies = behind_sidecar(IdentityHeader::XForwardedClientCert, GATEWAY);
+        let forged = request(&[
+            ("x-forwarded-for", "198.51.100.1"),
+            ("x-forwarded-client-cert", &sidecar_element(WORKLOAD)),
+        ]);
+        assert_eq!(
+            resolve(&proxies, "127.0.0.6", &forged),
+            Resolved {
+                address: Some(address("127.0.0.6")),
+                unreadable: None,
+                ignored: Some(Ignored::NotAGateway)
+            }
+        );
+        // An element naming the gateway, written by the caller before the
+        // sidecar's own, is never read.
+        let before = request(&[
+            ("x-forwarded-for", "198.51.100.1"),
+            (
+                "x-forwarded-client-cert",
+                &format!("URI={GATEWAY},{}", sidecar_element(WORKLOAD)),
+            ),
+        ]);
+        assert_eq!(
+            resolve(&proxies, "127.0.0.6", &before).ignored,
+            Some(Ignored::NotAGateway)
+        );
+        // Hodor's own identity, in By, is not the caller's.
+        let own = behind_sidecar(
+            IdentityHeader::XForwardedClientCert,
+            "spiffe://cluster.local/ns/hodor/sa/hodor",
+        );
+        assert_eq!(
+            resolve(&own, "127.0.0.6", &forged).ignored,
+            Some(Ignored::NotAGateway)
+        );
+    }
+
+    #[test]
+    fn without_an_identity_the_forwarded_address_is_ignored() {
+        let proxies = behind_sidecar(IdentityHeader::XForwardedClientCert, GATEWAY);
+        let absent = request(&[("x-forwarded-for", "198.51.100.1")]);
+        assert_eq!(
+            resolve(&proxies, "127.0.0.6", &absent),
+            Resolved {
+                address: Some(address("127.0.0.6")),
+                unreadable: None,
+                ignored: Some(Ignored::NoIdentity)
+            }
+        );
+        let unreadable = request(&[
+            ("x-forwarded-for", "198.51.100.1"),
+            ("x-forwarded-client-cert", "Cert=\"not a certificate\""),
+        ]);
+        assert_eq!(
+            resolve(&proxies, "127.0.0.6", &unreadable).ignored,
+            Some(Ignored::NoIdentity)
+        );
+        // Another header of identity than the one named is not read.
+        let other = request(&[
+            ("x-forwarded-for", "198.51.100.1"),
+            ("l5d-client-id", LINKERD_GATEWAY),
+        ]);
+        let both = behind_sidecar(
+            IdentityHeader::XForwardedClientCert,
+            &format!("{GATEWAY},{LINKERD_GATEWAY}"),
+        );
+        assert_eq!(
+            resolve(&both, "127.0.0.6", &other).ignored,
+            Some(Ignored::NoIdentity)
+        );
+        // With no forwarded header, nothing is ignored.
+        let quiet = request(&[("x-forwarded-client-cert", &sidecar_element(WORKLOAD))]);
+        assert_eq!(
+            resolve(&proxies, "127.0.0.6", &quiet),
+            Resolved {
+                address: Some(address("127.0.0.6")),
+                unreadable: None,
+                ignored: None
+            }
+        );
+    }
+
+    #[test]
+    fn a_connection_that_is_not_a_trusted_proxy_is_its_own_address_even_as_a_gateway() {
+        let proxies = behind_sidecar(IdentityHeader::XForwardedClientCert, GATEWAY);
+        let forged = request(&[
+            ("x-forwarded-for", "198.51.100.1"),
+            ("x-forwarded-client-cert", &sidecar_element(GATEWAY)),
+        ]);
+        assert_eq!(
+            resolve(&proxies, "10.0.0.9", &forged),
+            Resolved {
+                address: Some(address("10.0.0.9")),
+                unreadable: None,
+                ignored: None
+            }
+        );
+    }
+
+    #[test]
+    fn a_linkerd_gateway_is_the_identity_its_proxy_asserts() {
+        let proxies = behind_sidecar(IdentityHeader::LinkerdClientId, LINKERD_GATEWAY);
+        let gateway = request(&[
+            ("x-forwarded-for", "203.0.113.7"),
+            ("l5d-client-id", LINKERD_GATEWAY),
+        ]);
+        assert_eq!(
+            client(resolve(&proxies, "127.0.0.6", &gateway)),
+            "203.0.113.7"
+        );
+        let workload = request(&[
+            ("x-forwarded-for", "203.0.113.7"),
+            (
+                "l5d-client-id",
+                "web.shop.serviceaccount.identity.linkerd.cluster.local",
+            ),
+        ]);
+        assert_eq!(
+            resolve(&proxies, "127.0.0.6", &workload).ignored,
+            Some(Ignored::NotAGateway)
+        );
+        // A SPIFFE identifier names no Linkerd caller.
+        let spiffe = behind_sidecar(IdentityHeader::LinkerdClientId, GATEWAY);
+        assert_eq!(
+            resolve(&spiffe, "127.0.0.6", &gateway).ignored,
+            Some(Ignored::NotAGateway)
+        );
+    }
+
+    #[test]
+    fn a_forwarded_certificate_is_a_gateway_by_its_names() {
+        use base64::Engine as _;
+        use hodor_adapters_crypto::testing::certificates::{Leaf, TestAuthority};
+        let mesh = TestAuthority::root("mesh");
+        let encoded = |pem: &str| {
+            pem.bytes()
+                .map(|byte| {
+                    if byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'.' | b'_' | b'~') {
+                        char::from(byte).to_string()
+                    } else {
+                        format!("%{byte:02X}")
+                    }
+                })
+                .collect::<String>()
+        };
+        let with_cert = |leaf: &Leaf| {
+            request(&[
+                ("x-forwarded-for", "203.0.113.7"),
+                (
+                    "x-forwarded-client-cert",
+                    &format!("By=x;Cert=\"{}\"", encoded(&mesh.issue_pem(leaf))),
+                ),
+            ])
+        };
+        let proxies = behind_sidecar(
+            IdentityHeader::XForwardedClientCert,
+            &format!("{GATEWAY},{LINKERD_GATEWAY}"),
+        );
+        assert_eq!(
+            client(resolve(
+                &proxies,
+                "127.0.0.6",
+                &with_cert(&Leaf::uri(GATEWAY))
+            )),
+            "203.0.113.7"
+        );
+        assert_eq!(
+            client(resolve(
+                &proxies,
+                "127.0.0.6",
+                &with_cert(&Leaf::dns(LINKERD_GATEWAY))
+            )),
+            "203.0.113.7",
+            "a Linkerd identity among the certificate's DNS names"
+        );
+        assert_eq!(
+            resolve(&proxies, "127.0.0.6", &with_cert(&Leaf::uri(WORKLOAD))).ignored,
+            Some(Ignored::NotAGateway)
+        );
+
+        let client_cert = behind_sidecar(IdentityHeader::ClientCert, GATEWAY);
+        let sequence = format!(
+            ":{}:",
+            base64::engine::general_purpose::STANDARD.encode(mesh.issue(&Leaf::uri(GATEWAY)))
+        );
+        let rfc = request(&[
+            ("x-forwarded-for", "203.0.113.7"),
+            ("client-cert", &sequence),
+        ]);
+        assert_eq!(
+            client(resolve(&client_cert, "127.0.0.6", &rfc)),
+            "203.0.113.7"
+        );
     }
 }

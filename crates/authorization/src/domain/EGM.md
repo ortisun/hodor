@@ -50,12 +50,17 @@ reach other crates through `hodor_authorization::api`.
   | `WebhooksWrite` | `webhooks:write` |
   | `AccessEntriesRead` | `access-entries:read` |
   | `AccessEntriesWrite` | `access-entries:write` |
+  | `CertificateAuthorityRead` | `certificate-authority:read` |
+  | `CertificateAuthorityWrite` | `certificate-authority:write` |
+  | `CertificateAuthoritySign` | `certificate-authority:sign` |
 
-  `Permission::ALL` lists all thirty-three, `access-entries:read` and `access-entries:write` the last; `from_name(name) -> Option<Permission>`.
+  `Permission::ALL` lists all thirty-six, `certificate-authority:read`, `certificate-authority:write` and `certificate-authority:sign` the last; `from_name(name) -> Option<Permission>`.
   The auditor holds every permission that ends in `:read`, and nothing else.
 - `AUTHORIZATION_API_SCOPES` (`authz:evaluate`, `authz:simulate`, `authz:explain`) and `check_key_scopes(scopes, names_application)`: the rule every interface that makes an API key follows; a scope is a `Permission` name or one of those three (`authorization.scope_unknown`), and a scope of the Authorization API comes with an application, which comes with one (`authorization.scope_needs_application`, `authorization.application_without_scope`).
-- `Role` (`role.rs:Role`): `TenantAdministrator` (`tenant_administrator`) and
-  `TenantAuditor` (`tenant_auditor`); `Role::ALL`, `as_str`,
+- `Role` (`role.rs:Role`): `TenantAdministrator` (`tenant_administrator`),
+  `TenantAuditor` (`tenant_auditor`) and `CertificateSigner`
+  (`certificate_signer`, holding `certificate-authority:sign` alone);
+  `Role::ALL`, `as_str`,
   `from_name(name) -> Result<Role, DomainError>`, `permissions()`,
   `allows(permission)`.
 - `Effect` (`role.rs:Effect`): `Allow`, `Deny`, `Indeterminate`.
@@ -114,6 +119,8 @@ reach other crates through `hodor_authorization::api`.
   `authorization.condition_without_permission`. `RoleDefinition` (`new`,
   `replaced`, `restore`, `built_in(Role)`).
 - `RoleGraph`: `new`, `built_in`, `get`, `roles`, `including`,
+  `reaches(key, namespace)` (the role or one it includes, as far as
+  inclusion goes, is of `namespace`),
   `check(candidate, declared)`, `permissions_held(start)`, and
   `holdings(start)`: each `Holding { namespace, permission, condition }`,
   the condition being the one of the role that holds the permission.

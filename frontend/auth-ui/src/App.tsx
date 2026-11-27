@@ -7,6 +7,7 @@ import { ComingBackPage } from "./pages/ComingBackPage";
 import { AcceptInvitationPage } from "./pages/AcceptInvitationPage";
 import { ConsentPage } from "./pages/ConsentPage";
 import { FinishPage } from "./pages/FinishPage";
+import { ProfilePage } from "./pages/ProfilePage";
 import { SecurityPage } from "./pages/SecurityPage";
 import { SignInLinkPage } from "./pages/SignInLinkPage";
 import { SignInPage } from "./pages/SignInPage";
@@ -29,6 +30,8 @@ export interface AppProps {
   providerAnswer: ProviderAnswer;
   /** An application's request, or a change of factors, waits for a new sign-in. */
   signInAgain?: boolean;
+  /** An application's request waits for this person to register and sign in. */
+  forApplication?: boolean;
   /** The identifier an application suggested, to fill the sign-in field. */
   loginHint?: string | null;
   /** Where a completed sign-in goes when nothing else is said. */
@@ -48,6 +51,7 @@ export function App({
   leave,
   providerAnswer,
   signInAgain = false,
+  forApplication = false,
   loginHint = null,
   afterSignIn = "account",
   reauthenticate = () => undefined,
@@ -67,7 +71,7 @@ export function App({
         />
       );
     case "register":
-      return <AskPage {...page} purpose="registration" />;
+      return <AskPage {...page} purpose="registration" forApplication={forApplication} />;
     case "recover":
       return <AskPage {...page} purpose="recovery" />;
     case "complete-registration":
@@ -80,6 +84,8 @@ export function App({
       return <SignOutPage {...page} />;
     case "security":
       return <SecurityPage {...page} reauthenticate={reauthenticate} />;
+    case "profile":
+      return <ProfilePage {...page} />;
     case "consent":
       return <ConsentPage {...page} />;
     case "accept-invitation":

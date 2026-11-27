@@ -7,6 +7,8 @@ How Hodor is meant to run, and where that is heading. To install it as it is tod
 | Artifact | Contents |
 |---|---|
 | `hodor` image | One image with the three binaries: `hodor-server` (the entrypoint), `hodor-worker` and `hodor-cli`, run by overriding the command. It also holds [the hosted pages](../architecture/hosted-pages.md#how-the-pages-are-served), built into `/usr/share/hodor/auth-ui`, which `HODOR_PAGES_DIRECTORY` points at. The [admin console](../architecture/admin-console.md#how-it-is-served) is built into `/usr/share/hodor/admin-console`, which `HODOR_CONSOLE_DIRECTORY` points at. The account console is added when it exists. Distroless, non-root, `linux/amd64` and `linux/arm64` |
+| `hodor-ext-authz` image | [`hodor-ext-authz`](hodor-ext-authz.md) alone, which serves Envoy's external authorization over the Authorization API. Distroless, non-root, `linux/amd64` and `linux/arm64`; the chart installs it with `extAuthz.enabled` |
+| `hodor-cert-manager-issuer` image | [`hodor-cert-manager-issuer`](hodor-cert-manager-issuer.md) alone, cert-manager's outside issuer for the tenants' certificate authorities. Distroless, non-root, `linux/amd64` and `linux/arm64`; the chart installs it with `certManagerIssuer.enabled` |
 | `hodor-policy-tools` image | The `opa` binary for the Rego validation job (Phase 5) |
 | Helm chart | `deploy/install/helm/hodor`: Deployments, service, ingress, migration job, network policy, PodDisruptionBudgets and horizontal pod autoscaler, as [installing on Kubernetes](install-on-kubernetes.md) describes. The optional Open Policy Agent sidecar and Redis come with the phases that use them |
 | Compose installation | `deploy/install/docker`: the migrations, the server and the worker on one machine, with PostgreSQL and HTTPS as optional parts, as [installing with Docker](install-with-docker.md) describes |
@@ -62,6 +64,8 @@ flowchart TB
 | Scheduling | Topology spread across zones; PodDisruptionBudget keeps a majority |
 | Probes | `startupz` (migrations compatible, keys loaded), `readyz` (database reachable, not draining), `livez` (process responsive). Readiness does not depend on Redis, Open Policy Agent or external identity providers |
 | Client address | The ingress controller's pod range in `trustedProxies`, with the network policy on, so that limits count each client: [the address of each client](install-on-kubernetes.md#the-address-of-each-client) |
+| Service mesh | `mesh.provider`, `istio` or `linkerd`, injects the proxy, keeps the health checks on the operations port out of it, trusts the local proxy and its identity header, and reads a forwarded address only from the ingress gateways of `gatewayIdentities`: [inside a service mesh](install-on-kubernetes.md#inside-a-service-mesh). Checking tokens and asking decisions at the proxies: [the service mesh guide](service-mesh.md) |
+| Caller's identity | Off unless `clientIdentityHeader` names the header the proxy in front of Hodor writes the caller's certificate or identity into: `client-cert`, `x-forwarded-client-cert` or `l5d-client-id`. Read only from the proxies of `trustedProxies`: [the identity of a workload](install-on-kubernetes.md#the-identity-of-a-workload) |
 | Shutdown | On SIGTERM: fail readiness, wait for the load balancer, drain in-flight requests, stop; workers finish or release the current job |
 | Network policy | Ingress to `:8080` only from the gateway; `:9090` only from monitoring; Open Policy Agent reachable only on localhost; egress restricted to database, Redis, key management service, collector and an egress proxy for identity providers and webhooks |
 | Pod security | Non-root, no privilege escalation, all capabilities dropped, read-only filesystem, seccomp default |
@@ -69,7 +73,7 @@ flowchart TB
 
 ## The worker
 
-`hodor-worker` runs background work: delivering outbox events to their handlers ([Decision 0003](../decisions/0003-context-communication.md)), delivering queued messages to the mail server ([the notification context](../architecture/contexts/notification.md)), the cleanup jobs, rotating the tenants' signing keys ([the keys context](../architecture/contexts/keys.md#rotation)), sending webhooks ([the webhooks context](../architecture/contexts/webhooks.md)), sending logout tokens to the clients of a session that ended ([back-channel logout](../architecture/contexts/oauth.md#back-channel-logout)), and checking, testing and simulating policy versions for Open Policy Agent ([the policy lifecycle](../architecture/contexts/authorization.md#the-policy-lifecycle)).
+`hodor-worker` runs background work: delivering outbox events to their handlers ([Decision 0003](../decisions/0003-context-communication.md)), delivering queued messages to the mail server ([the notification context](../architecture/contexts/notification.md)), the cleanup jobs, rotating the tenants' signing keys ([the keys context](../architecture/contexts/keys.md#rotation)), sending webhooks ([the webhooks context](../architecture/contexts/webhooks.md)), sending logout tokens to the clients of a session that ended ([back-channel logout](../architecture/contexts/oauth.md#back-channel-logout)), fetching the bundles of the tenants' trust domains from their endpoints again ([trust domains](../architecture/contexts/keys.md#keeping-a-fetched-bundle-current)), and checking, testing and simulating policy versions for Open Policy Agent ([the policy lifecycle](../architecture/contexts/authorization.md#the-policy-lifecycle)).
 
 Two handlers hear every event. The [audit log](../architecture/contexts/audit.md) makes every event an audit record; the [webhooks context](../architecture/contexts/webhooks.md#how-an-event-reaches-an-endpoint) makes one delivery for each endpoint subscribed to the event's type. A third hears `session.revoked` only: the [OAuth context](../architecture/contexts/oauth.md#which-sessions-which-clients) makes one logout delivery for each client signed in to with the session. All three write in the transaction that marks the event dispatched. An installation without a running worker loses nothing, but its audit log, its webhooks and its logout tokens fall behind until a worker runs.
 
@@ -89,7 +93,7 @@ Mail delivery runs only when `HODOR_SMTP_URL` is set. Without it the worker says
 | `hodor.notification.messages` | Counter | `outcome`: `sent`, `retrying`, `failed`, `expired` |
 | `hodor.notification.passes` | Counter | `outcome`: `ok`, `error` |
 
-Key rotation runs only when `HODOR_SECRET_KEYS` is set, with the same keys as the server: the worker makes the keys, and the server signs with them. Without it the worker says so once when it starts, and no tenant gets a signing key. Unlike the other jobs, rotation needs a leader: a pass holds a PostgreSQL advisory lock, and a worker that does not get it skips the pass.
+Key rotation runs only when `HODOR_SECRET_KEYS` is set, with the same keys as the server: the worker makes the keys, and the server signs with them. Without it the worker says so once when it starts, and no tenant gets a signing key. When the signing keys are made in OpenBao, the worker needs the same [OpenBao settings](keys-in-openbao.md#settings) as the server, and a route to OpenBao. Unlike the other jobs, rotation needs a leader: a pass holds a PostgreSQL advisory lock, and a worker that does not get it skips the pass.
 
 | Metric | Kind | Labels |
 |---|---|---|
@@ -114,6 +118,13 @@ Webhooks are sent only when `HODOR_SECRET_KEYS` is set, with the same keys as th
 
 A growing count of `set_aside` means an endpoint keeps failing; the deliveries say why (`GET /webhook-deliveries?status=set_aside`).
 
+The bundles of trust domains are fetched again the same way, on leases, by a loop of their own, eight at once, whether or not `HODOR_SECRET_KEYS` is set: a bundle is public. A bundle that does not read, or an endpoint that fails, leaves the bundle in force as it is, and the trust domain says since when and why. Bundle endpoints are chosen by tenants, like webhook endpoints, and need the same route out. The rules are on the [keys context's page](../architecture/contexts/keys.md#keeping-a-fetched-bundle-current).
+
+| Metric | Kind | Attributes |
+|---|---|---|
+| `hodor.keys.trust_bundle.fetches` | Counter | `outcome`: `changed`, `unchanged`, `failed`, `skipped` |
+| `hodor.keys.trust_bundle.passes` | Counter | `outcome`: `ok`, `error` |
+
 Logout tokens are sent the same way, by a loop of their own, only when both `HODOR_SECRET_KEYS` and `HODOR_PUBLIC_URL` are set: the keys sign the token with the tenant's key, and the public address, the same as the server's, names the issuer. Without either the worker says so once, and logout deliveries wait. A worker sends up to 16 at once and a client never has more than 4 in flight. Back-channel logout addresses are on the internet, chosen by tenants, like webhook endpoints, and need the same route out. The settings and [bounds](../architecture/contexts/oauth.md#bounds) are on the OAuth context's page.
 
 | Metric | Kind | Labels |
@@ -135,7 +146,7 @@ Many rows are only useful for a while: a session that ended, a link that was use
 | `email_sign_ins` | The code or the link to sign in by email expired. A used one expires ten minutes after it was made, at the latest | 1 day | — |
 | `messages` | It was sent, failed or expired. Its contents were already erased | 30 days | — |
 | `webauthn_registrations` | A security key or passkey registration was never finished and expired | 0 | — |
-| `authorization_requests` | The request kept while the person signs in expired | 0 | — |
+| `authorization_requests` | The request kept while the person signs in expired, or a pushed request was never used within its life | 0 | — |
 | `authorization_codes` | The code expired | 1 day | — |
 | `revoked_grants` | The grant was revoked | 30 days | Its codes, refresh token families and records of access tokens |
 | `refresh_token_families` | The family expired or was revoked | 30 days | Its refresh tokens and records of access tokens |
@@ -172,7 +183,8 @@ Rows that are never removed today: the counters of failed attempts, which keep t
 |---|---|
 | Static configuration | A file plus environment overrides, validated at startup; the process refuses to start on unknown or invalid keys |
 | Bootstrap secrets | Database credentials and the root key reference, from Kubernetes secrets or an external secret store; never in the image or chart values |
-| Root key | Wraps the per-tenant data keys. Local mode: a key file mounted from a secret. Production: a key management service or Vault key |
+| Root key | Wraps the per-tenant data keys, and the signing keys the local provider makes. `HODOR_SECRET_KEYS`, from a secret |
+| Signing keys in OpenBao | Optional: the tenants' signing keys made and used in OpenBao, never exported. Its address and Hodor's sign-in: [keys in OpenBao](keys-in-openbao.md) |
 | Tenant configuration | In the database, managed through the Admin API or Terraform; not in files |
 
 Nothing tenant-specific is configured through deployment files, so adding a tenant never requires a rollout.
@@ -182,6 +194,7 @@ Nothing tenant-specific is configured through deployment files, so adding a tena
 - A managed PostgreSQL service or an operator-run cluster with synchronous standby in another zone and point-in-time recovery.
 - A connection pooler in transaction mode is supported; the adapter uses `SET LOCAL` inside transactions and no session state, which keeps it compatible.
 - Separate pools for the server, the worker and platform (cross-tenant) access, each with its own database role.
+- A pooled connection is checked when it is handed back to its pool, and checked again before it is handed out only when it has been idle for more than a second: a connection used a moment ago needs no second round trip. After a restart of the database, a request may therefore fail on a connection that was used less than a second before the restart.
 - Read replicas are optional and used only for audit search and reporting queries.
 
 ## Upgrades
@@ -202,7 +215,7 @@ The server checks the schema version at startup and refuses to run against a sch
 | Item | Approach |
 |---|---|
 | Database | Continuous write-ahead log archiving and daily base backups; restore rehearsed on a schedule (Requirement-Operations-02) |
-| Keys | Local provider: wrapped keys are in the database backup; the root key is backed up separately and offline. Key management service: the provider's own durability |
+| Keys | Local provider: wrapped keys are in the database backup; the root key is backed up separately and offline. OpenBao: the database holds only each key's name and public key; the keys are in OpenBao's own backups, and a key lost there cannot sign again |
 | Redis | Not backed up; it is rebuildable |
 | Policy bundles | Rebuildable from `policy_version`; kept in the database |
 | Regional failure | Warm standby region with a replicated database; DNS failover; the same root key reachable from both regions. Active-active across regions is out of scope for v1 |

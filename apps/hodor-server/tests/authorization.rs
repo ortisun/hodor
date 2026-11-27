@@ -218,6 +218,7 @@ fn code_service(database: &TestDatabase) -> AuthorizationCodeService {
         grants: Arc::new(PgGrantStore),
         codes: Arc::new(PgAuthorizationCodeStore),
         memberships: Arc::new(MembershipsOf::default()),
+        verifier: Arc::new(hodor_oauth::testing::FakeVerifier),
         digest: Arc::new(Sha256Digest),
         random: Arc::new(OsRandom),
         clock: Arc::new(SystemClock),
@@ -576,4 +577,364 @@ async fn a_request_for_a_new_sign_in_is_not_answered_by_the_old_session() {
         .navigate(Method::GET, "/t/acme/oauth2/authorize/resume", None)
         .await;
     assert!(sent_back(&location.expect("a redirect")).contains_key("code"));
+}
+
+/// What a browser gets from a navigation, with every header.
+struct Answer {
+    status: StatusCode,
+    headers: reqwest::header::HeaderMap,
+    body: String,
+}
+
+/// Navigates as `browser` does, keeping the answer's headers. A cookie the
+/// answer removes is removed from the browser.
+async fn fetch(
+    browser: &mut Browser,
+    server: &support::Server,
+    method: Method,
+    path: &str,
+    form: Option<&str>,
+) -> Answer {
+    let mut request = browser
+        .client
+        .request(method, format!("{}{path}", server.base));
+    let cookies: Vec<String> = browser
+        .cookies
+        .iter()
+        .map(|(name, value)| format!("{name}={value}"))
+        .collect();
+    if !cookies.is_empty() {
+        request = request.header("cookie", cookies.join("; "));
+    }
+    if let Some(form) = form {
+        request = request
+            .header("content-type", "application/x-www-form-urlencoded")
+            .body(form.to_owned());
+    }
+    let response = request.send().await.expect("response");
+    for cookie in response.headers().get_all("set-cookie") {
+        let cookie = cookie.to_str().expect("ascii");
+        let (name, value) = cookie
+            .split(';')
+            .next()
+            .and_then(|pair| pair.split_once('='))
+            .expect("name=value");
+        if cookie.contains("Max-Age=0") {
+            browser.cookies.remove(name);
+        } else {
+            browser.cookies.insert(name.to_owned(), value.to_owned());
+        }
+    }
+    Answer {
+        status: response.status(),
+        headers: response.headers().clone(),
+        body: response.text().await.expect("body"),
+    }
+}
+
+/// Reads back what HTML escaping wrote.
+fn unescaped(text: &str) -> String {
+    text.replace("&quot;", "\"")
+        .replace("&#x27;", "'")
+        .replace("&lt;", "<")
+        .replace("&gt;", ">")
+        .replace("&amp;", "&")
+}
+
+/// The form a page of `form_post` posts: where to, and every field, read
+/// as a browser would read them. Checks the page's headers and that it
+/// holds one form, one script of Hodor's and nothing that loads anything.
+fn posted(answer: &Answer) -> (String, Vec<(String, String)>) {
+    assert_eq!(answer.status, StatusCode::OK, "{}", answer.body);
+    let header = |name: &str| {
+        answer
+            .headers
+            .get(name)
+            .and_then(|value| value.to_str().ok())
+            .unwrap_or_default()
+            .to_owned()
+    };
+    assert_eq!(header("content-type"), "text/html; charset=utf-8");
+    assert_eq!(header("cache-control"), "no-store");
+    assert_eq!(header("pragma"), "no-cache");
+    assert_eq!(header("referrer-policy"), "no-referrer");
+    assert_eq!(header("x-frame-options"), "DENY");
+    assert_eq!(header("x-content-type-options"), "nosniff");
+
+    // The policy runs the page's one script by its hash, computed here
+    // with another library than the server's, and nothing else.
+    let body = &answer.body;
+    let script = body
+        .split_once("<script>")
+        .and_then(|(_, rest)| rest.split_once("</script>"))
+        .map(|(script, _)| script)
+        .expect("a script");
+    let hash = base64::Engine::encode(
+        &base64::engine::general_purpose::STANDARD,
+        aws_lc_rs::digest::digest(&aws_lc_rs::digest::SHA256, script.as_bytes()),
+    );
+    let policy = header("content-security-policy");
+    assert!(policy.starts_with("default-src 'none';"), "{policy}");
+    assert!(
+        policy.contains(&format!("script-src 'sha256-{hash}';")),
+        "{policy}"
+    );
+    assert!(policy.contains("frame-ancestors 'none'"), "{policy}");
+    for loose in ["'self'", "'unsafe-inline'", "'unsafe-eval'", "http"] {
+        assert!(!policy.contains(loose), "{policy}");
+    }
+    assert_eq!(body.matches("<script").count(), 1);
+    assert_eq!(body.matches("<form").count(), 1);
+    for loading in ["src=", "href=", "<link", "<img", "<iframe", "<style"] {
+        assert!(!body.contains(loading), "{loading}");
+    }
+    assert!(body.contains("<button type=\"submit\">Continue</button>"));
+
+    let action = body
+        .split_once("<form method=\"post\" action=\"")
+        .and_then(|(_, rest)| rest.split_once('"'))
+        .map(|(action, _)| unescaped(action))
+        .expect("a form that posts");
+    let fields = body
+        .lines()
+        .filter_map(|line| line.strip_prefix("<input type=\"hidden\" name=\""))
+        .map(|rest| {
+            let (name, rest) = rest.split_once("\" value=\"").expect("a value");
+            let value = rest.strip_suffix("\">").expect("the end of the field");
+            (unescaped(name), unescaped(value))
+        })
+        .collect();
+    assert_eq!(
+        body.matches("<input").count(),
+        body.lines()
+            .filter(|line| line.starts_with("<input type=\"hidden\""))
+            .count(),
+        "every field is a hidden one of its own line"
+    );
+    (action, fields)
+}
+
+/// A state that would end an attribute and add markup if it were not
+/// escaped.
+const AWKWARD_STATE: &str = "\"><script>alert('state')</script>&amp;";
+
+#[tokio::test]
+async fn a_code_is_posted_by_a_page_of_hodor_s_own_and_nothing_else_is() {
+    let database = TestDatabase::start().await;
+    let (tenant, client_id) = tenant_with_an_application(&database, "acme").await;
+    let server = start_server(&database).await;
+    let mut browser = Browser::not_following(&server);
+    let form_post = [("response_mode", "form_post"), ("state", AWKWARD_STATE)];
+
+    // Nobody is signed in: the request is kept, with its mode, while the
+    // person signs in.
+    let kept = fetch(
+        &mut browser,
+        &server,
+        Method::GET,
+        &format!("/t/acme/oauth2/authorize?{}", query(client_id, &form_post)),
+        None,
+    )
+    .await;
+    assert_eq!(kept.status, StatusCode::FOUND);
+    browser.sign_in("acme", "ana@example.com", PASSWORD).await;
+
+    // Coming back gives the page, which posts the code, the state and the
+    // issuer to the registered address, and nothing else.
+    let resumed = fetch(
+        &mut browser,
+        &server,
+        Method::GET,
+        "/t/acme/oauth2/authorize/resume",
+        None,
+    )
+    .await;
+    let (action, fields) = posted(&resumed);
+    assert_eq!(action, REDIRECT);
+    let names: Vec<&str> = fields.iter().map(|(name, _)| name.as_str()).collect();
+    assert_eq!(names, ["code", "state", "iss"]);
+    assert_eq!(fields[1].1, AWKWARD_STATE);
+    assert_eq!(fields[2].1, ISSUER);
+    assert!(!resumed.body.contains(AWKWARD_STATE), "escaped");
+    assert!(!browser.cookies.contains_key("__Secure-hodor_authorization"));
+    let code = fields[0].1.clone();
+
+    // A signed-in browser gets the page at once, by query or by form.
+    for (method, path, form) in [
+        (
+            Method::GET,
+            format!("/t/acme/oauth2/authorize?{}", query(client_id, &form_post)),
+            None,
+        ),
+        (
+            Method::POST,
+            "/t/acme/oauth2/authorize".to_owned(),
+            Some(query(client_id, &form_post)),
+        ),
+    ] {
+        let answer = fetch(&mut browser, &server, method, &path, form.as_deref()).await;
+        let (action, fields) = posted(&answer);
+        assert_eq!(action, REDIRECT);
+        assert_eq!(fields.len(), 3);
+        assert_eq!(fields[0].0, "code");
+    }
+
+    // The code posted redeems as any code does.
+    let redeemed = code_service(&database)
+        .redeem_code(
+            &tenant,
+            &code,
+            CodePresentation {
+                client_id,
+                redirect_uri: Some(REDIRECT),
+                verifier: Some(VERIFIER),
+            },
+            Caller::system(),
+        )
+        .await
+        .expect("redeemed");
+    assert_eq!(redeemed.code.scopes, ["openid", "payroll:read"]);
+
+    // Without a mode, or with `query`, the code goes in the query, as
+    // before.
+    for mode in ["", "query"] {
+        let answer = fetch(
+            &mut browser,
+            &server,
+            Method::GET,
+            &format!(
+                "/t/acme/oauth2/authorize?{}",
+                query(client_id, &[("response_mode", mode)])
+            ),
+            None,
+        )
+        .await;
+        assert_eq!(answer.status, StatusCode::FOUND, "{mode:?}");
+        let location = answer.headers["location"].to_str().expect("ascii");
+        assert!(sent_back(location).contains_key("code"), "{mode:?}");
+    }
+}
+
+#[tokio::test]
+async fn errors_are_posted_in_the_mode_asked_for_and_other_modes_are_refused() {
+    let database = TestDatabase::start().await;
+    let (_, client_id) = tenant_with_an_application(&database, "acme").await;
+    let server = start_server(&database).await;
+    let mut browser = Browser::not_following(&server);
+
+    // Each error after the address is trusted is posted, with the state and
+    // the issuer, and no code.
+    let cases = [
+        (
+            vec![("response_type", "token")],
+            "unsupported_response_type",
+        ),
+        (vec![("scope", "openid admin")], "invalid_scope"),
+        (vec![("code_challenge_method", "plain")], "invalid_request"),
+        (vec![("prompt", "none")], "login_required"),
+    ];
+    for (mut extra, error) in cases {
+        extra.push(("response_mode", "form_post"));
+        extra.push(("state", AWKWARD_STATE));
+        let answer = fetch(
+            &mut browser,
+            &server,
+            Method::GET,
+            &format!("/t/acme/oauth2/authorize?{}", query(client_id, &extra)),
+            None,
+        )
+        .await;
+        let (action, fields) = posted(&answer);
+        assert_eq!(action, REDIRECT, "{error}");
+        let fields: BTreeMap<String, String> = fields.into_iter().collect();
+        assert_eq!(
+            fields.keys().map(String::as_str).collect::<Vec<_>>(),
+            ["error", "error_description", "iss", "state"],
+            "{error}"
+        );
+        assert_eq!(fields["error"], error);
+        assert_eq!(fields["state"], AWKWARD_STATE);
+        assert_eq!(fields["iss"], ISSUER);
+    }
+
+    // A request that asked for a new sign-in and came back without one is
+    // refused through the page too, after it waited.
+    browser.sign_in("acme", "ana@example.com", PASSWORD).await;
+    let kept = fetch(
+        &mut browser,
+        &server,
+        Method::GET,
+        &format!(
+            "/t/acme/oauth2/authorize?{}",
+            query(
+                client_id,
+                &[("prompt", "login"), ("response_mode", "form_post")]
+            )
+        ),
+        None,
+    )
+    .await;
+    assert_eq!(kept.status, StatusCode::FOUND);
+    let resumed = fetch(
+        &mut browser,
+        &server,
+        Method::GET,
+        "/t/acme/oauth2/authorize/resume",
+        None,
+    )
+    .await;
+    let (_, fields) = posted(&resumed);
+    assert_eq!(fields[0], ("error".to_owned(), "access_denied".to_owned()));
+
+    // A mode Hodor does not offer is refused in the query, the default of
+    // the type.
+    for mode in ["fragment", "jwt", "form_post.jwt", "anything"] {
+        let answer = fetch(
+            &mut browser,
+            &server,
+            Method::GET,
+            &format!(
+                "/t/acme/oauth2/authorize?{}",
+                query(client_id, &[("response_mode", mode)])
+            ),
+            None,
+        )
+        .await;
+        assert_eq!(answer.status, StatusCode::FOUND, "{mode}");
+        let location = answer.headers["location"].to_str().expect("ascii");
+        let back = sent_back(location);
+        assert_eq!(back["error"], "invalid_request", "{mode}");
+        assert_eq!(
+            back["error_description"],
+            "the response modes are query and form_post"
+        );
+        assert!(!back.contains_key("code"));
+    }
+
+    // An address that is not trusted gets Hodor's own error page, never the
+    // form.
+    let answer = fetch(
+        &mut browser,
+        &server,
+        Method::GET,
+        &format!(
+            "/t/acme/oauth2/authorize?{}",
+            query(
+                client_id,
+                &[
+                    ("response_mode", "form_post"),
+                    ("redirect_uri", "https://attacker.example/callback"),
+                ]
+            )
+        ),
+        None,
+    )
+    .await;
+    assert_eq!(answer.status, StatusCode::BAD_REQUEST);
+    assert!(
+        answer
+            .body
+            .contains("oauth.authorization_redirect_uri_unregistered")
+    );
+    assert!(!answer.body.contains("<form"));
 }

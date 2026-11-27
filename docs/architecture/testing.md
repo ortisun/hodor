@@ -8,7 +8,7 @@
 | Property-based | Invariants over generated inputs | `proptest` | Every commit |
 | Architecture | Crate dependency rules, schema rules | Custom tests over `cargo metadata` and the Postgres catalog | Every commit |
 | Contract | Each adapter against its port's shared test suite | Generic test functions in the context crate, instantiated per adapter | Every commit |
-| Integration | Use cases against real PostgreSQL, Redis and Open Policy Agent | `testcontainers` | Every pull request |
+| Integration | Use cases against real PostgreSQL, Redis, Open Policy Agent and OpenBao | `testcontainers` | Every pull request |
 | API / end-to-end | HTTP flows against a running server | `reqwest` harness; Playwright for the user interfaces | Every pull request |
 | Protocol conformance | Standards suites | OpenID Conformance Suite, SAML test peers | Nightly and before release |
 | Interoperability | Third-party software development kits and identity providers | Containers of real clients and identity providers | Nightly |
@@ -19,6 +19,18 @@
 | Chaos | Dependency failure | Toxiproxy, pod kills in a test cluster | Before release |
 
 Fakes are preferred to mocks: each port has one in-memory implementation behind a `testing` feature of its crate, and the contract suite proves the fake and the real adapter behave the same.
+
+## Containers in tests
+
+Every test that starts a container starts it through `hodor-test-containers` (`tests/containers`): PostgreSQL, through `TestDatabase` of `hodor-adapters-postgres`; the OpenLDAP directory, through `TestDirectory` of `hodor-adapters-ldap`; the mail server, OpenBao, VictoriaMetrics and Open Policy Agent.
+
+| Rule | Why |
+|---|---|
+| Each port a test asks for is published on `127.0.0.1` alone, on a port Docker chooses, and the test reaches the container at `127.0.0.1` | Docker chooses the host port without knowing what the machine's own processes listen on. Published on every address, which is Docker's default, Docker Desktop on macOS listens on that port beside a process of the machine that already listens on `127.0.0.1` at the same port, such as a server another test started, and a connection to `127.0.0.1` reaches that process, not the container: a PostgreSQL client then reads an answer that is not PostgreSQL's, `unexpected response from SSLRequest`. Published on `127.0.0.1` alone, the port cannot be shared: the start fails, and another container is started |
+| The ports are read again until Docker gives every one, for up to thirty seconds | Docker gives no port for a container that is not running, which `testcontainers` reports as `PortNotExposed` when the port is read once, right after the start |
+| A container that stops before its ports are given is reported with its exit code and the last lines it wrote | The failure says why the container stopped, instead of naming a port |
+| A container that fails to start, stops before its ports are given, or fails the test's first check, such as the first connection to PostgreSQL, is removed and another one is started, three at most | One bad start while the machine is busy does not fail the suite |
+| Being ready is checked by the test itself: a line the image writes when it listens, where it writes one, then a request the program answers: a connection to PostgreSQL, a bind to the directory, a request to the mail server's interface, to Open Policy Agent with its token, or to VictoriaMetrics' health | Docker accepts connections on a published port before anything in the container listens |
 
 ## Contract tests for ports
 

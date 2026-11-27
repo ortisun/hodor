@@ -1,0 +1,55 @@
+# The workload of the Istio cluster: payroll, in the mesh, whose certificate names it
+# spiffe://east.acme.example/ns/payroll/sa/payroll. Its sidecar writes the certificate it holds, its key and
+# the mesh's root into a volume the container shares (OUTPUT_CERTS), as Istio's documentation does for
+# Prometheus: the container calls the Linkerd cluster with them, over mutual TLS, where no Istio sidecar is.
+#
+#   python3 deploy/demo/certificate_authority.py applies it; see docs/operations/quick-start.md.
+
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: payroll
+  labels:
+    istio-injection: enabled
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: payroll
+  namespace: payroll
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: payroll
+  namespace: payroll
+  labels:
+    app: payroll
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: payroll
+  template:
+    metadata:
+      labels:
+        app: payroll
+      annotations:
+        proxy.istio.io/config: |
+          proxyMetadata:
+            OUTPUT_CERTS: /etc/istio-output-certs
+        sidecar.istio.io/userVolumeMount: '[{"name": "istio-certs", "mountPath": "/etc/istio-output-certs"}]'
+    spec:
+      serviceAccountName: payroll
+      containers:
+        - name: app
+          image: curlimages/curl:8.23.0
+          command: ["sleep", "infinity"]
+          volumeMounts:
+            - name: istio-certs
+              mountPath: /etc/istio-output-certs
+              readOnly: true
+      volumes:
+        - name: istio-certs
+          emptyDir:
+            medium: Memory

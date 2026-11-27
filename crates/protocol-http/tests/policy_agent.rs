@@ -29,7 +29,6 @@ use serde_json::json;
 use std::sync::Arc;
 use std::time::Duration;
 use testcontainers::core::{Host, IntoContainerPort as _, WaitFor};
-use testcontainers::runners::AsyncRunner as _;
 use testcontainers::{GenericImage, ImageExt as _};
 use tower::ServiceExt as _;
 
@@ -203,25 +202,31 @@ decision_logs:
         credential = credential.expose()
     );
     let (image, tag) = IMAGE;
-    let container = GenericImage::new(image, tag)
-        .with_exposed_port(8181.tcp())
-        .with_wait_for(WaitFor::message_on_either_std("Initializing server"))
-        .with_host("host.docker.internal", Host::HostGateway)
-        .with_copy_to("/configuration.yaml", configuration.into_bytes())
-        .with_cmd([
-            "run",
-            "--server",
-            "--addr=0.0.0.0:8181",
-            "--config-file=/configuration.yaml",
-            "--log-level=debug",
-        ])
-        .start()
-        .await
-        .expect("Open Policy Agent starts; is Docker running?");
+    let started = hodor_test_containers::start(
+        "Open Policy Agent",
+        || {
+            GenericImage::new(image, tag)
+                .with_exposed_port(8181.tcp())
+                .with_wait_for(WaitFor::message_on_either_std("Initializing server"))
+                .with_host("host.docker.internal", Host::HostGateway)
+                .with_copy_to("/configuration.yaml", configuration.clone().into_bytes())
+                .with_cmd([
+                    "run",
+                    "--server",
+                    "--addr=0.0.0.0:8181",
+                    "--config-file=/configuration.yaml",
+                    "--log-level=debug",
+                ])
+        },
+        &[8181.tcp()],
+    )
+    .await;
     let origin = format!(
-        "http://127.0.0.1:{}",
-        container.get_host_port_ipv4(8181).await.expect("port")
+        "http://{}:{}",
+        hodor_test_containers::HOST,
+        started.port(8181)
     );
+    let container = started.into_container();
     let engine = OpenPolicyAgentEngine::new(
         Arc::new(
             ServiceHttpClient::new(std::slice::from_ref(&origin), OutboundPolicy::default())

@@ -125,6 +125,7 @@ fn the_id_token_says_who_signed_in_for_which_client() {
         Duration::minutes(5),
         now(),
         "the-access-token",
+        IdTokenAlgorithm::Es256,
         &FakeDigest,
     );
     assert_eq!(claims["iss"], ISSUER);
@@ -141,7 +142,7 @@ fn the_id_token_says_who_signed_in_for_which_client() {
     assert_eq!(claims["amr"], json!(["pwd", "otp", "mfa"]));
     assert_eq!(
         claims["at_hash"],
-        access_token_hash("the-access-token", &FakeDigest)
+        access_token_hash("the-access-token", IdTokenAlgorithm::Es256, &FakeDigest)
     );
     assert_eq!(
         claims["at_hash"].as_str().map(str::len),
@@ -171,6 +172,7 @@ fn an_id_token_leaves_out_what_the_sign_in_did_not_have() {
         Duration::minutes(5),
         now(),
         "token",
+        IdTokenAlgorithm::Es256,
         &FakeDigest,
     );
     assert!(claims.get("nonce").is_none());
@@ -190,10 +192,26 @@ fn at_hash_is_the_left_half_of_the_digest() {
         fn sha256(&self, _data: &[u8]) -> [u8; 32] {
             std::array::from_fn(|index| u8::try_from(index).unwrap_or(u8::MAX))
         }
+        fn sha512(&self, _data: &[u8]) -> [u8; 64] {
+            std::array::from_fn(|index| u8::try_from(100 + index).unwrap_or(u8::MAX))
+        }
     }
+    // The hash of the ID token's algorithm: SHA-256 for the three named
+    // ...256, SHA-512 for EdDSA on Ed25519, and its left half each time.
     let left: Vec<u8> = (0_u8..16).collect();
+    for algorithm in [
+        IdTokenAlgorithm::Es256,
+        IdTokenAlgorithm::Rs256,
+        IdTokenAlgorithm::Ps256,
+    ] {
+        assert_eq!(
+            access_token_hash("any token", algorithm, &Positions),
+            URL_SAFE_NO_PAD.encode(&left)
+        );
+    }
+    let left: Vec<u8> = (100_u8..132).collect();
     assert_eq!(
-        access_token_hash("any token", &Positions),
+        access_token_hash("any token", IdTokenAlgorithm::EdDsa, &Positions),
         URL_SAFE_NO_PAD.encode(left)
     );
 }
@@ -243,7 +261,50 @@ fn good_claims(user: UserId) -> Value {
 }
 
 fn check(token: &str) -> Result<CheckedAccessToken, BearerRefusal> {
-    check_access_token(token, ISSUER, &published(), now(), &FakeVerifier)
+    check_access_token(token, ISSUER, &published(), now(), &FakeVerifier, None)
+}
+
+#[test]
+fn a_bound_access_token_is_accepted_only_with_its_certificate() {
+    use crate::domain::binding::CertificateThumbprint;
+    let mine = CertificateThumbprint::from_bytes([1; 32]);
+    let other = CertificateThumbprint::from_bytes([2; 32]);
+    let mut claims = good_claims(UserId::generate());
+    claims["cnf"] = mine.confirmation();
+    let token = sign(&good_header(), &claims);
+    let with = |presented: Option<&CertificateThumbprint>| {
+        check_access_token(
+            &token,
+            ISSUER,
+            &published(),
+            now(),
+            &FakeVerifier,
+            presented,
+        )
+    };
+    with(Some(&mine)).expect("with its certificate");
+    assert!(matches!(with(None), Err(BearerRefusal::InvalidToken(_))));
+    assert!(matches!(
+        with(Some(&other)),
+        Err(BearerRefusal::InvalidToken(_))
+    ));
+    let read = read_access_token(&token, ISSUER, &published(), now(), &FakeVerifier).expect("read");
+    assert_eq!(read.confirmation, Some(mine.confirmation()));
+
+    // A `cnf` that cannot be read is never taken for no binding.
+    claims["cnf"] = json!("x5t#S256");
+    let token = sign(&good_header(), &claims);
+    assert!(matches!(
+        check_access_token(
+            &token,
+            ISSUER,
+            &published(),
+            now(),
+            &FakeVerifier,
+            Some(&mine)
+        ),
+        Err(BearerRefusal::InvalidToken(_))
+    ));
 }
 
 #[test]
@@ -345,6 +406,30 @@ fn every_bad_access_token_is_refused_for_its_own_reason() {
     );
 }
 
+/// A person with every standard claim.
+pub(crate) fn every_claim() -> StandardClaims {
+    StandardClaims {
+        given_name: Some("Ana".to_owned()),
+        family_name: Some("Lima".to_owned()),
+        middle_name: Some("Maria".to_owned()),
+        nickname: Some("Aninha".to_owned()),
+        profile: Some("https://example.com/ana".to_owned()),
+        picture: Some("https://example.com/ana.png".to_owned()),
+        website: Some("https://ana.example.org".to_owned()),
+        gender: Some("female".to_owned()),
+        birthdate: Some("1990-04-12".to_owned()),
+        zoneinfo: Some("America/Sao_Paulo".to_owned()),
+        phone_number: Some("+5511912345678".to_owned()),
+        phone_number_verified: true,
+        address: Some(PostalAddress {
+            street_address: Some("Rua Augusta, 100".to_owned()),
+            locality: Some("São Paulo".to_owned()),
+            country: Some("BR".to_owned()),
+            ..PostalAddress::default()
+        }),
+    }
+}
+
 #[test]
 fn userinfo_answers_only_the_claims_of_the_token_s_scopes() {
     let user = UserId::generate();
@@ -354,6 +439,7 @@ fn userinfo_answers_only_the_claims_of_the_token_s_scopes() {
         locale: Some("pt-BR".to_owned()),
         updated_at: Some(now()),
         email: Some(("ana@example.com".to_owned(), true)),
+        claims: every_claim(),
         groups: vec![GroupId::generate()],
     };
     let scopes =
@@ -376,14 +462,43 @@ fn userinfo_answers_only_the_claims_of_the_token_s_scopes() {
             "sub": user.to_string(),
             "name": "Ana Lima",
             "preferred_username": "ana",
+            "given_name": "Ana",
+            "family_name": "Lima",
+            "middle_name": "Maria",
+            "nickname": "Aninha",
+            "profile": "https://example.com/ana",
+            "picture": "https://example.com/ana.png",
+            "website": "https://ana.example.org",
+            "gender": "female",
+            "birthdate": "1990-04-12",
+            "zoneinfo": "America/Sao_Paulo",
             "locale": "pt-BR",
             "updated_at": now().unix_timestamp(),
         })
     );
     assert_eq!(
+        userinfo_claims(&user.to_string(), &scopes(&["openid", "address"]), &person),
+        json!({
+            "sub": user.to_string(),
+            "address": {
+                "street_address": "Rua Augusta, 100",
+                "locality": "São Paulo",
+                "country": "BR",
+            },
+        })
+    );
+    assert_eq!(
+        userinfo_claims(&user.to_string(), &scopes(&["openid", "phone"]), &person),
+        json!({
+            "sub": user.to_string(),
+            "phone_number": "+5511912345678",
+            "phone_number_verified": true,
+        })
+    );
+    assert_eq!(
         userinfo_claims(
             &user.to_string(),
-            &scopes(&["openid", "profile", "email"]),
+            &scopes(&["openid", "profile", "email", "address", "phone"]),
             &PersonClaims::default()
         ),
         json!({"sub": user.to_string()}),
@@ -392,9 +507,72 @@ fn userinfo_answers_only_the_claims_of_the_token_s_scopes() {
 }
 
 #[test]
+fn userinfo_adds_the_claims_the_grant_was_asked_for_whatever_the_scopes() {
+    let user = UserId::generate();
+    let person = PersonClaims {
+        name: Some("Ana Lima".to_owned()),
+        email: Some(("ana@example.com".to_owned(), true)),
+        claims: every_claim(),
+        ..PersonClaims::default()
+    };
+    let openid = vec!["openid".to_owned()];
+    let asked = vec!["name".to_owned(), "phone_number".to_owned()];
+    assert_eq!(
+        userinfo_claims_with(&user.to_string(), &openid, &asked, &person),
+        json!({
+            "sub": user.to_string(),
+            "name": "Ana Lima",
+            "phone_number": person.claims.phone_number,
+        }),
+        "only what was asked: no `phone_number_verified`, no `email`"
+    );
+}
+
+#[test]
+fn every_claim_of_the_person_has_its_scope_and_its_value() {
+    let person = PersonClaims {
+        name: Some("Ana Lima".to_owned()),
+        preferred_username: Some("ana".to_owned()),
+        locale: Some("pt-BR".to_owned()),
+        updated_at: Some(now()),
+        email: Some(("ana@example.com".to_owned(), false)),
+        claims: every_claim(),
+        groups: Vec::new(),
+    };
+    for (name, scope) in PERSON_CLAIMS {
+        assert_eq!(scope_of_claim(name), Some(scope));
+        assert!(person_claim(name, &person).is_some(), "{name} has a value");
+        assert!(
+            person_claim(name, &PersonClaims::default()).is_none(),
+            "{name} is left out without a value"
+        );
+    }
+    assert_eq!(scope_of_claim("groups"), None);
+    assert_eq!(scope_of_claim("sub"), None);
+    assert_eq!(person_claim("email_verified", &person), Some(json!(false)));
+    assert_eq!(
+        person_claim("updated_at", &person),
+        Some(json!(now().unix_timestamp()))
+    );
+}
+
+#[test]
 fn discovery_names_only_what_is_built() {
-    let document = discovery_document(ISSUER, &["urn:example:one", "urn:example:two"]);
+    let document = discovery_document(ISSUER, &["urn:example:one", "urn:example:two"], false);
     assert_eq!(document["issuer"], ISSUER);
+    assert_eq!(
+        document["pushed_authorization_request_endpoint"],
+        format!("{ISSUER}/oauth2/par")
+    );
+    assert_eq!(
+        document["require_pushed_authorization_requests"],
+        json!(false)
+    );
+    assert_eq!(
+        discovery_document(ISSUER, &[], true)["require_pushed_authorization_requests"],
+        json!(true),
+        "the tenant's requirement"
+    );
     assert_eq!(
         document["acr_values_supported"],
         json!(["urn:example:one", "urn:example:two"]),
@@ -425,6 +603,32 @@ fn discovery_names_only_what_is_built() {
     );
     assert_eq!(document["response_types_supported"], json!(["code"]));
     assert_eq!(
+        document["response_modes_supported"],
+        json!(["query", "form_post"])
+    );
+    assert_eq!(
+        document["scopes_supported"],
+        json!(["openid", "profile", "email", "address", "phone", "groups"])
+    );
+    let claims = document["claims_supported"].as_array().expect("a list");
+    for claim in [
+        "given_name",
+        "family_name",
+        "middle_name",
+        "nickname",
+        "profile",
+        "picture",
+        "website",
+        "gender",
+        "birthdate",
+        "zoneinfo",
+        "address",
+        "phone_number",
+        "phone_number_verified",
+    ] {
+        assert!(claims.contains(&json!(claim)), "{claim} is supported");
+    }
+    assert_eq!(
         document["subject_types_supported"],
         json!(["public", "pairwise"])
     );
@@ -440,29 +644,49 @@ fn discovery_names_only_what_is_built() {
         document["introspection_endpoint"],
         format!("{ISSUER}/oauth2/introspect")
     );
-    assert_eq!(
-        document["revocation_endpoint_auth_methods_supported"],
-        json!([
-            "client_secret_basic",
-            "client_secret_post",
-            "private_key_jwt",
-            "none"
-        ])
-    );
+    for endpoint in ["token", "revocation"] {
+        assert_eq!(
+            document[format!("{endpoint}_endpoint_auth_methods_supported")],
+            json!([
+                "client_secret_basic",
+                "client_secret_post",
+                "private_key_jwt",
+                "spiffe_jwt",
+                "none"
+            ]),
+            "{endpoint}"
+        );
+    }
     assert_eq!(
         document["introspection_endpoint_auth_methods_supported"],
         json!([
             "client_secret_basic",
             "client_secret_post",
-            "private_key_jwt"
+            "private_key_jwt",
+            "spiffe_jwt"
         ]),
         "a public client may not introspect"
     );
-    for absent in [
-        "registration_endpoint",
-        "pushed_authorization_request_endpoint",
-        "device_authorization_endpoint",
+    // Every algorithm a client may choose for what Hodor signs for it.
+    for member in [
+        "id_token_signing_alg_values_supported",
+        "userinfo_signing_alg_values_supported",
     ] {
+        assert_eq!(
+            document[member],
+            json!(["ES256", "RS256", "PS256", "EdDSA"]),
+            "{member}"
+        );
+    }
+    assert_eq!(document["request_parameter_supported"], json!(true));
+    assert_eq!(
+        document["request_object_signing_alg_values_supported"],
+        json!(["ES256", "RS256", "PS256", "none"])
+    );
+    assert_eq!(document["request_uri_parameter_supported"], json!(true));
+    assert_eq!(document["require_request_uri_registration"], json!(true));
+    assert_eq!(document["claims_parameter_supported"], json!(true));
+    for absent in ["registration_endpoint", "device_authorization_endpoint"] {
         assert!(document.get(absent).is_none(), "{absent} is not built");
     }
 }
@@ -482,6 +706,7 @@ fn the_id_token_names_the_organization_of_the_sign_in() {
         Duration::minutes(5),
         now(),
         "token",
+        IdTokenAlgorithm::Es256,
         &FakeDigest,
     );
     assert_eq!(claims["org_id"], organization.to_string());
@@ -499,6 +724,7 @@ fn userinfo_answers_every_group_however_many() {
         locale: None,
         updated_at: None,
         email: None,
+        claims: StandardClaims::default(),
         groups: (0..150).map(|_| GroupId::generate()).collect(),
     };
     let claims = userinfo_claims(
@@ -507,4 +733,59 @@ fn userinfo_answers_every_group_however_many() {
         &person,
     );
     assert_eq!(claims["groups"].as_array().map(Vec::len), Some(150));
+}
+
+/// The specification of discovery, which the documentation site publishes.
+const OAUTH_CONTEXT: &str = include_str!("../../../../../docs/architecture/contexts/oauth.md");
+
+#[test]
+fn the_metadata_page_names_the_version_of_the_spiffe_draft() {
+    use crate::domain::spiffe::SPIFFE_CLIENT_AUTHENTICATION_DRAFT;
+    let discovery = OAUTH_CONTEXT
+        .split("\n### Discovery\n")
+        .nth(1)
+        .and_then(|section| section.split("\n### ").next())
+        .expect("the discovery section");
+    assert!(
+        discovery.contains(&format!(
+            "**`spiffe_jwt` follows {SPIFFE_CLIENT_AUTHENTICATION_DRAFT}**"
+        )),
+        "the metadata page names the version of the draft Hodor follows"
+    );
+    let document = discovery_document(ISSUER, &[], false);
+    assert!(
+        document["token_endpoint_auth_methods_supported"]
+            .as_array()
+            .expect("a list")
+            .contains(&json!("spiffe_jwt"))
+    );
+}
+
+#[test]
+fn a_signed_userinfo_answer_holds_the_claims_with_iss_and_aud_and_no_expiry() {
+    let claims = json!({"sub": "248289761001", "name": "Ana Lima", "email": "ana@example.com"});
+    let signed = signed_userinfo_claims(claims, "https://hodor.example.com/t/acme", "client-1");
+    assert_eq!(
+        signed,
+        json!({
+            "sub": "248289761001",
+            "name": "Ana Lima",
+            "email": "ana@example.com",
+            "iss": "https://hodor.example.com/t/acme",
+            "aud": "client-1",
+        })
+    );
+    for absent in ["exp", "iat", "nonce", "typ"] {
+        assert!(signed.get(absent).is_none(), "{absent}");
+    }
+    // The header names the algorithm and the key, and is no ID token's.
+    let header = userinfo_header("EdDSA", "0193a0b2-0000-7000-8000-000000000001");
+    assert_eq!(
+        header,
+        json!({"alg": "EdDSA", "kid": "0193a0b2-0000-7000-8000-000000000001"})
+    );
+    assert_ne!(
+        header,
+        id_token_header("EdDSA", "0193a0b2-0000-7000-8000-000000000001")
+    );
 }

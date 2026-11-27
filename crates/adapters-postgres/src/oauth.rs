@@ -8,8 +8,9 @@ use hodor_oauth::api::{
     Application, ApplicationId, ApplicationSettings, ApplicationSnapshot, ApplicationStore,
     Audience, AuthenticationMethod, Client, ClientId, ClientKey, ClientSecret, ClientSecretHash,
     ClientSecretId, ClientSettings, ClientSnapshot, ClientStore, ClientType, ExchangeRule,
-    GrantType, IdTokenAlgorithm, ResourceServer, ResourceServerId, ResourceServerSettings,
-    ResourceServerSnapshot, ResourceServerStore, ScopeDefinition, Status, SubjectType, TokenPolicy,
+    GrantType, IdTokenAlgorithm, LinkerdIdentity, RequestObjectAlgorithm, ResourceServer,
+    ResourceServerId, ResourceServerSettings, ResourceServerSnapshot, ResourceServerStore,
+    ScopeDefinition, SpiffeId, Status, SubjectType, TokenPolicy, WorkloadIdentity,
 };
 use sqlx::PgConnection;
 use sqlx::Row as _;
@@ -21,6 +22,65 @@ const CLIENT_APPLICATION_CONSTRAINT: &str = "client_application_fk";
 const SERVER_APPLICATION_CONSTRAINT: &str = "resource_server_application_fk";
 const AUDIENCE_CONSTRAINT: &str = "resource_server_audience_unique";
 const ONE_SERVER_CONSTRAINT: &str = "resource_server_application_unique";
+fn linkerd_identity_taken() -> DomainError {
+    DomainError::conflict(
+        "oauth.client_linkerd_identity_taken",
+        "a client of the tenant acting as another principal is bound to this Linkerd identity",
+    )
+}
+
+fn spiffe_id_taken() -> DomainError {
+    DomainError::conflict(
+        "oauth.client_spiffe_id_taken",
+        "a client of the tenant acting as another principal is bound to this SPIFFE identifier",
+    )
+}
+
+/// Refuses `client` if a client of the tenant acting as another principal
+/// is bound to its identity: an identity binds the clients of one service
+/// account (Decision 0058). The transaction-scoped advisory lock on the
+/// tenant and the identity makes two writes binding it at once wait for
+/// each other, so both cannot pass the check.
+async fn check_identity(
+    connection: &mut PgConnection,
+    tenant: Uuid,
+    client: &Client,
+) -> Result<(), DomainError> {
+    let settings = &client.snapshot().settings;
+    let Some(identity) = settings.workload_identity() else {
+        return Ok(());
+    };
+    let (column, taken): (&str, fn() -> DomainError) = match identity {
+        WorkloadIdentity::Spiffe(_) => ("spiffe_id", spiffe_id_taken),
+        WorkloadIdentity::Linkerd(_) => ("linkerd_identity", linkerd_identity_taken),
+    };
+    sqlx::query(
+        "SELECT pg_advisory_xact_lock(
+             hashtextextended('oauth.client_identity:' || $1::text || ':' || $2, 0))",
+    )
+    .bind(tenant)
+    .bind(identity.as_str())
+    .execute(&mut *connection)
+    .await
+    .map_err(get)?;
+    let other: Option<(i32,)> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
+        "SELECT 1 FROM oauth.client
+         WHERE tenant_id = $1 AND {column} = $2 AND id <> $3
+           AND principal_id IS DISTINCT FROM $4
+         LIMIT 1"
+    )))
+    .bind(tenant)
+    .bind(identity.as_str())
+    .bind(client.id().as_uuid())
+    .bind(settings.principal.map(|principal| principal.as_uuid()))
+    .fetch_optional(&mut *connection)
+    .await
+    .map_err(get)?;
+    match other {
+        Some(_) => Err(taken()),
+        None => Ok(()),
+    }
+}
 
 fn corrupted(what: &str) -> DomainError {
     DomainError::internal(
@@ -219,7 +279,18 @@ const CLIENT_COLUMNS: &str = "id, application_id, name, client_type, authenticat
      id_token_algorithm, access_token_seconds, id_token_seconds, refresh_token_seconds, \
      refresh_idle_seconds, consent_seconds, status, created_at, updated_at, version, principal_id, \
      exchange_rules, backchannel_logout_uri, backchannel_logout_session_required, subject_type, \
-     sector_identifier_uri";
+     sector_identifier_uri, spiffe_id, linkerd_identity, request_object_signing_alg, \
+     certificate_bound_access_tokens, default_max_age, default_acr_values, require_auth_time, \
+     userinfo_signed_response_alg, require_pushed_authorization_requests, \
+     request_uris, jwks_uri";
+
+/// A client's default max age, as the column holds it.
+fn default_max_age_of(settings: &ClientSettings) -> Result<Option<i32>, DomainError> {
+    settings
+        .default_max_age
+        .map(|seconds| i32::try_from(seconds).map_err(|_| corrupted("default max age")))
+        .transpose()
+}
 
 async fn load_client(
     connection: &mut PgConnection,
@@ -297,6 +368,26 @@ async fn load_client(
                     .map_err(get)?,
             )
             .map_err(|_| corrupted("ID token algorithm"))?,
+            userinfo_algorithm: row
+                .try_get::<Option<String>, _>("userinfo_signed_response_alg")
+                .map_err(get)?
+                .map(|name| {
+                    IdTokenAlgorithm::parse_for_userinfo(&name)
+                        .map_err(|_| corrupted("UserInfo algorithm"))
+                })
+                .transpose()?,
+            request_object_algorithm: row
+                .try_get::<Option<String>, _>("request_object_signing_alg")
+                .map_err(get)?
+                .map(|name| {
+                    RequestObjectAlgorithm::parse(&name)
+                        .map_err(|_| corrupted("request object algorithm"))
+                })
+                .transpose()?,
+            require_pushed_requests: row
+                .try_get("require_pushed_authorization_requests")
+                .map_err(get)?,
+            request_uris: row.try_get("request_uris").map_err(get)?,
             backchannel_logout_uri: row.try_get("backchannel_logout_uri").map_err(get)?,
             backchannel_logout_session_required: row
                 .try_get("backchannel_logout_session_required")
@@ -306,6 +397,14 @@ async fn load_client(
             )
             .map_err(|_| corrupted("subject type"))?,
             sector_identifier_uri: row.try_get("sector_identifier_uri").map_err(get)?,
+            jwks_uri: row.try_get("jwks_uri").map_err(get)?,
+            default_max_age: row
+                .try_get::<Option<i32>, _>("default_max_age")
+                .map_err(get)?
+                .map(|seconds| u32::try_from(seconds).map_err(|_| corrupted("default max age")))
+                .transpose()?,
+            default_acr_values: row.try_get("default_acr_values").map_err(get)?,
+            require_auth_time: row.try_get("require_auth_time").map_err(get)?,
             token_policy: TokenPolicy {
                 access_token: duration("access_token_seconds")?,
                 id_token: duration("id_token_seconds")?,
@@ -321,6 +420,21 @@ async fn load_client(
                 &row.try_get::<serde_json::Value, _>("exchange_rules")
                     .map_err(get)?,
             )?,
+            spiffe_id: row
+                .try_get::<Option<String>, _>("spiffe_id")
+                .map_err(get)?
+                .map(|text| SpiffeId::parse(&text).map_err(|_| corrupted("SPIFFE identifier")))
+                .transpose()?,
+            linkerd_identity: row
+                .try_get::<Option<String>, _>("linkerd_identity")
+                .map_err(get)?
+                .map(|text| {
+                    LinkerdIdentity::parse(&text).map_err(|_| corrupted("Linkerd identity"))
+                })
+                .transpose()?,
+            certificate_bound_access_tokens: row
+                .try_get("certificate_bound_access_tokens")
+                .map_err(get)?,
         },
         secrets,
         keys,
@@ -391,6 +505,7 @@ impl ClientStore for PgClientStore {
         let settings = &state.settings;
         let policy = settings.token_policy;
         let connection = connection(uow)?;
+        check_identity(connection, tenant, client).await?;
         let inserted = sqlx::query(
             "INSERT INTO oauth.client
                  (tenant_id, id, application_id, name, client_type, authentication_method,
@@ -399,9 +514,13 @@ impl ClientStore for PgClientStore {
                   refresh_idle_seconds, consent_seconds, status, created_at, updated_at,
                   id_token_algorithm, principal_id, exchange_rules, backchannel_logout_uri,
                   backchannel_logout_session_required, subject_type, sector_identifier_uri,
-                  version)
+                  spiffe_id, linkerd_identity, request_object_signing_alg,
+                  certificate_bound_access_tokens, default_max_age, default_acr_values,
+                  require_auth_time, userinfo_signed_response_alg,
+                  require_pushed_authorization_requests, request_uris, jwks_uri, version)
              VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16,
-                     $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, 0)",
+                     $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28,
+                     $29, $30, $31, $32, $33, $34, $35, $36, $37, 0)",
         )
         .bind(tenant)
         .bind(state.id.as_uuid())
@@ -429,6 +548,26 @@ impl ClientStore for PgClientStore {
         .bind(settings.backchannel_logout_session_required)
         .bind(settings.subject_type.as_str())
         .bind(settings.sector_identifier_uri.as_deref())
+        .bind(settings.spiffe_id.as_ref().map(SpiffeId::as_str))
+        .bind(
+            settings
+                .linkerd_identity
+                .as_ref()
+                .map(LinkerdIdentity::as_str),
+        )
+        .bind(
+            settings
+                .request_object_algorithm
+                .map(RequestObjectAlgorithm::as_str),
+        )
+        .bind(settings.certificate_bound_access_tokens)
+        .bind(default_max_age_of(settings)?)
+        .bind(&settings.default_acr_values)
+        .bind(settings.require_auth_time)
+        .bind(settings.userinfo_algorithm.map(IdTokenAlgorithm::as_str))
+        .bind(settings.require_pushed_requests)
+        .bind(&settings.request_uris)
+        .bind(settings.jwks_uri.as_deref())
         .execute(&mut *connection)
         .await;
         match inserted {
@@ -449,6 +588,7 @@ impl ClientStore for PgClientStore {
         let settings = &state.settings;
         let policy = settings.token_policy;
         let connection = connection(uow)?;
+        check_identity(connection, tenant, client).await?;
         // The type and the application never change, so they are not
         // written.
         let updated = sqlx::query(
@@ -460,7 +600,14 @@ impl ClientStore for PgClientStore {
                  consent_seconds = $14, status = $15, updated_at = $16,
                  id_token_algorithm = $18, principal_id = $19, exchange_rules = $20,
                  backchannel_logout_uri = $21, backchannel_logout_session_required = $22,
-                 subject_type = $23, sector_identifier_uri = $24, version = version + 1
+                 subject_type = $23, sector_identifier_uri = $24, spiffe_id = $25,
+                 linkerd_identity = $26, request_object_signing_alg = $27,
+                 certificate_bound_access_tokens = $28,
+                 default_max_age = $29, default_acr_values = $30, require_auth_time = $31,
+                 userinfo_signed_response_alg = $32,
+                 require_pushed_authorization_requests = $33, request_uris = $34,
+                 jwks_uri = $35,
+                 version = version + 1
              WHERE tenant_id = $1 AND id = $2 AND version = $17",
         )
         .bind(tenant)
@@ -487,6 +634,26 @@ impl ClientStore for PgClientStore {
         .bind(settings.backchannel_logout_session_required)
         .bind(settings.subject_type.as_str())
         .bind(settings.sector_identifier_uri.as_deref())
+        .bind(settings.spiffe_id.as_ref().map(SpiffeId::as_str))
+        .bind(
+            settings
+                .linkerd_identity
+                .as_ref()
+                .map(LinkerdIdentity::as_str),
+        )
+        .bind(
+            settings
+                .request_object_algorithm
+                .map(RequestObjectAlgorithm::as_str),
+        )
+        .bind(settings.certificate_bound_access_tokens)
+        .bind(default_max_age_of(settings)?)
+        .bind(&settings.default_acr_values)
+        .bind(settings.require_auth_time)
+        .bind(settings.userinfo_algorithm.map(IdTokenAlgorithm::as_str))
+        .bind(settings.require_pushed_requests)
+        .bind(&settings.request_uris)
+        .bind(settings.jwks_uri.as_deref())
         .execute(&mut *connection)
         .await
         .map_err(get)?;
@@ -527,6 +694,33 @@ impl ClientStore for PgClientStore {
             Some(row) => Ok(Some(load_client(connection, tenant, &row).await?)),
             None => Ok(None),
         }
+    }
+
+    async fn bound_to(
+        &self,
+        uow: &mut dyn UnitOfWork,
+        identity: &WorkloadIdentity,
+    ) -> Result<Vec<Client>, DomainError> {
+        let tenant = uow.tenant().tenant_id().as_uuid();
+        let column = match identity {
+            WorkloadIdentity::Spiffe(_) => "spiffe_id",
+            WorkloadIdentity::Linkerd(_) => "linkerd_identity",
+        };
+        let connection = connection(uow)?;
+        let rows = sqlx::query(sqlx::AssertSqlSafe(format!(
+            "SELECT {CLIENT_COLUMNS} FROM oauth.client
+             WHERE tenant_id = $1 AND {column} = $2 ORDER BY created_at, id"
+        )))
+        .bind(tenant)
+        .bind(identity.as_str())
+        .fetch_all(&mut *connection)
+        .await
+        .map_err(get)?;
+        let mut clients = Vec::with_capacity(rows.len());
+        for row in &rows {
+            clients.push(load_client(connection, tenant, row).await?);
+        }
+        Ok(clients)
     }
 
     async fn list_for_application(
@@ -738,6 +932,29 @@ impl ResourceServerStore for PgResourceServerStore {
         )))
         .bind(tenant)
         .bind(audience.as_str())
+        .fetch_optional(&mut *connection)
+        .await
+        .map_err(get)?;
+        match row {
+            Some(row) => Ok(Some(load_server(connection, tenant, &row).await?)),
+            None => Ok(None),
+        }
+    }
+
+    async fn find_by_application(
+        &self,
+        uow: &mut dyn UnitOfWork,
+        application_id: ApplicationId,
+    ) -> Result<Option<ResourceServer>, DomainError> {
+        let tenant = uow.tenant().tenant_id().as_uuid();
+        let connection = connection(uow)?;
+        // On the index of `resource_server_application_unique`.
+        let row = sqlx::query(sqlx::AssertSqlSafe(format!(
+            "SELECT {SERVER_COLUMNS} FROM oauth.resource_server
+             WHERE tenant_id = $1 AND application_id = $2"
+        )))
+        .bind(tenant)
+        .bind(application_id.as_uuid())
         .fetch_optional(&mut *connection)
         .await
         .map_err(get)?;

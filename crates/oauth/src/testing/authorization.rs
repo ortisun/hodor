@@ -6,7 +6,8 @@ use crate::api::{
     Application, ApplicationSettings, ApplicationStore, AuthorizationCode, AuthorizationCodeStore,
     AuthorizationRequest, AuthorizationRequestStore, Client, ClientId, ClientSecret,
     ClientSettings, ClientStore, ClientType, CodeHash, ConsentAnswer, Grant, GrantId, GrantStatus,
-    GrantStore, GrantType, PendingAuthorization, PendingAuthorizationId, SignedInPerson,
+    GrantStore, GrantType, PendingAuthorization, PendingAuthorizationId, PushedAuthorization,
+    ReferenceHash, SignedInPerson,
 };
 use hodor_kernel::random::testing::FakeDigest;
 use hodor_kernel::{
@@ -32,6 +33,7 @@ fn grant_not_found() -> DomainError {
 pub struct InMemoryAuthorizationRequests {
     clients: InMemoryClients,
     rows: Arc<Mutex<BTreeMap<(TenantId, PendingAuthorizationId), PendingAuthorization>>>,
+    pushed: Arc<Mutex<BTreeMap<(TenantId, ReferenceHash), PushedAuthorization>>>,
 }
 
 impl InMemoryAuthorizationRequests {
@@ -41,7 +43,19 @@ impl InMemoryAuthorizationRequests {
         Self {
             clients: clients.clone(),
             rows: Arc::default(),
+            pushed: Arc::default(),
         }
+    }
+
+    /// The pushed requests of `tenant` that wait, for tests that look
+    /// behind the use cases.
+    #[must_use]
+    pub fn pushed(&self, tenant: TenantId) -> Vec<PushedAuthorization> {
+        lock(&self.pushed)
+            .iter()
+            .filter(|((owner, _), _)| *owner == tenant)
+            .map(|(_, pushed)| pushed.clone())
+            .collect()
     }
 }
 
@@ -96,6 +110,50 @@ impl AuthorizationRequestStore for InMemoryAuthorizationRequests {
                 Ok(true)
             }
             _ => Ok(false),
+        }
+    }
+
+    async fn push(
+        &self,
+        uow: &mut dyn UnitOfWork,
+        pushed: &PushedAuthorization,
+        keep: usize,
+    ) -> Result<(), DomainError> {
+        let tenant = uow.tenant().tenant_id();
+        let client = pushed.request.client_id;
+        if !self.clients.exists(tenant, client) {
+            return Err(client_not_found());
+        }
+        let mut rows = lock(&self.pushed);
+        let mut waiting: Vec<(Timestamp, ReferenceHash)> = rows
+            .iter()
+            .filter(|((owner, _), row)| *owner == tenant && row.request.client_id == client)
+            .map(|((_, hash), row)| (row.received_at, *hash))
+            .collect();
+        waiting.sort();
+        let beyond = (waiting.len() + 1).saturating_sub(keep);
+        for (_, hash) in waiting.into_iter().take(beyond) {
+            rows.remove(&(tenant, hash));
+        }
+        rows.insert((tenant, pushed.reference_hash), pushed.clone());
+        Ok(())
+    }
+
+    async fn take_pushed(
+        &self,
+        uow: &mut dyn UnitOfWork,
+        client: ClientId,
+        hash: &ReferenceHash,
+    ) -> Result<Option<PushedAuthorization>, DomainError> {
+        let key = (uow.tenant().tenant_id(), *hash);
+        let mut rows = lock(&self.pushed);
+        if rows
+            .get(&key)
+            .is_some_and(|pushed| pushed.request.client_id == client)
+        {
+            Ok(rows.remove(&key))
+        } else {
+            Ok(None)
         }
     }
 }
@@ -354,6 +412,12 @@ fn request_for(client_id: ClientId) -> AuthorizationRequest {
         acr_values: Some("urn:hodor:mfa".to_owned()),
         first_party: true,
         organization: None,
+        // Kept and read back: the mode the answer goes in.
+        response_mode: crate::domain::response::ResponseMode::FormPost,
+        id_token_hint: None,
+        given_hint: None,
+        claims: crate::api::ClaimsRequest::default(),
+        claims_locales: None,
     }
 }
 
@@ -376,6 +440,8 @@ fn person() -> SignedInPerson {
 /// Panics when an implementation breaks a rule.
 pub async fn run_authorization_contract(ports: AuthorizationStorePorts<'_>) {
     a_pending_request_is_stored_whole_and_removed_once(ports).await;
+    a_pushed_request_is_taken_once_by_its_client(ports).await;
+    a_client_keeps_only_its_newest_pushed_requests(ports).await;
     a_request_waiting_for_consent_is_answered_once(ports).await;
     a_grant_is_stored_and_its_revocation_kept(ports).await;
     the_active_grants_of_a_person_for_a_client_are_listed(ports).await;
@@ -390,12 +456,15 @@ fn tenant() -> TenantContext {
 async fn a_pending_request_is_stored_whole_and_removed_once(ports: AuthorizationStorePorts<'_>) {
     let tenant = tenant();
     let client = a_client(ports, &tenant).await;
-    let (pending, _) = PendingAuthorization::hold(
-        request_for(client.id()),
-        moment(),
-        &super::DistinctRandom,
-        &FakeDigest,
-    );
+    let mut request = request_for(client.id());
+    request.claims = crate::api::ClaimsRequest {
+        id_token: vec!["email".to_owned()],
+        userinfo: vec!["name".to_owned()],
+        subject: Some("someone".to_owned()),
+    };
+    request.claims_locales = Some("fr-CA".to_owned());
+    let (pending, _) =
+        PendingAuthorization::hold(request, moment(), &super::DistinctRandom, &FakeDigest);
     let mut uow = ports.units_of_work.begin(&tenant).await.expect("begin");
     ports
         .requests
@@ -461,6 +530,140 @@ async fn a_pending_request_is_stored_whole_and_removed_once(ports: Authorization
             .await
             .expect("get"),
         None
+    );
+}
+
+fn pushed_for(client_id: ClientId, received_at: Timestamp) -> PushedAuthorization {
+    PushedAuthorization::push(
+        request_for(client_id),
+        Duration::seconds(60),
+        received_at,
+        &super::DistinctRandom,
+        &FakeDigest,
+    )
+    .0
+}
+
+async fn take(
+    ports: AuthorizationStorePorts<'_>,
+    tenant: &TenantContext,
+    client: ClientId,
+    hash: &ReferenceHash,
+) -> Option<PushedAuthorization> {
+    let mut uow = ports.units_of_work.begin(tenant).await.expect("begin");
+    let taken = ports
+        .requests
+        .take_pushed(uow.as_mut(), client, hash)
+        .await
+        .expect("take");
+    uow.commit().await.expect("commit");
+    taken
+}
+
+async fn a_pushed_request_is_taken_once_by_its_client(ports: AuthorizationStorePorts<'_>) {
+    let tenant = tenant();
+    let client = a_client(ports, &tenant).await;
+    let other_client = a_client(ports, &tenant).await;
+    let pushed = pushed_for(client.id(), moment());
+    let mut uow = ports.units_of_work.begin(&tenant).await.expect("begin");
+    ports
+        .requests
+        .push(uow.as_mut(), &pushed, 5)
+        .await
+        .expect("push");
+    uow.commit().await.expect("commit");
+
+    // It is no browser's: it cannot be read or removed as one.
+    let mut uow = ports.units_of_work.begin(&tenant).await.expect("begin");
+    assert_eq!(
+        ports
+            .requests
+            .get(uow.as_mut(), pushed.id)
+            .await
+            .expect("get"),
+        None
+    );
+    assert!(
+        !ports
+            .requests
+            .remove(uow.as_mut(), pushed.id)
+            .await
+            .expect("remove")
+    );
+    uow.commit().await.expect("commit");
+
+    // Another client and another tenant do not find it, and leave it.
+    assert_eq!(
+        take(ports, &tenant, other_client.id(), &pushed.reference_hash).await,
+        None,
+        "another client's reference is unknown"
+    );
+    let elsewhere = self::tenant();
+    assert_eq!(
+        take(ports, &elsewhere, client.id(), &pushed.reference_hash).await,
+        None,
+        "another tenant's reference is unknown"
+    );
+
+    assert_eq!(
+        take(ports, &tenant, client.id(), &pushed.reference_hash).await,
+        Some(pushed.clone()),
+        "taken whole by its client"
+    );
+    assert_eq!(
+        take(ports, &tenant, client.id(), &pushed.reference_hash).await,
+        None,
+        "taken once"
+    );
+
+    // A pushed request of a client that does not exist is refused.
+    let mut uow = ports.units_of_work.begin(&tenant).await.expect("begin");
+    let error = ports
+        .requests
+        .push(uow.as_mut(), &pushed_for(ClientId::generate(), moment()), 5)
+        .await
+        .expect_err("no such client");
+    assert_eq!(error.code(), "oauth.client_not_found");
+}
+
+async fn a_client_keeps_only_its_newest_pushed_requests(ports: AuthorizationStorePorts<'_>) {
+    let tenant = tenant();
+    let client = a_client(ports, &tenant).await;
+    let other_client = a_client(ports, &tenant).await;
+    // The other client's waiting request is not one of this client's.
+    let others = pushed_for(other_client.id(), moment());
+    let mut uow = ports.units_of_work.begin(&tenant).await.expect("begin");
+    ports
+        .requests
+        .push(uow.as_mut(), &others, 5)
+        .await
+        .expect("push");
+    uow.commit().await.expect("commit");
+    let mut kept = Vec::new();
+    for second in 0..7 {
+        let pushed = pushed_for(client.id(), moment() + Duration::seconds(second));
+        let mut uow = ports.units_of_work.begin(&tenant).await.expect("begin");
+        ports
+            .requests
+            .push(uow.as_mut(), &pushed, 5)
+            .await
+            .expect("push");
+        uow.commit().await.expect("commit");
+        kept.push(pushed);
+    }
+    for (index, pushed) in kept.iter().enumerate() {
+        let taken = take(ports, &tenant, client.id(), &pushed.reference_hash).await;
+        assert_eq!(
+            taken.is_some(),
+            index >= 2,
+            "the two oldest went, the newest five wait: {index}"
+        );
+    }
+    assert!(
+        take(ports, &tenant, other_client.id(), &others.reference_hash)
+            .await
+            .is_some(),
+        "another client's request stays"
     );
 }
 
@@ -641,7 +844,12 @@ async fn the_active_grants_of_a_person_for_a_client_are_listed(ports: Authorizat
 async fn a_grant_is_stored_and_its_revocation_kept(ports: AuthorizationStorePorts<'_>) {
     let tenant = tenant();
     let client = a_client(ports, &tenant).await;
-    let grant = Grant::make(&request_for(client.id()), &person(), moment());
+    let mut grant = Grant::make(&request_for(client.id()), &person(), moment());
+    // What it gives through the `claims` parameter is kept, in order.
+    grant.claims = crate::api::GrantClaims {
+        id_token: vec!["name".to_owned(), "email".to_owned()],
+        userinfo: vec!["phone_number".to_owned()],
+    };
     let mut uow = ports.units_of_work.begin(&tenant).await.expect("begin");
     ports
         .grants

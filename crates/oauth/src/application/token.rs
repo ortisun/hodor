@@ -4,22 +4,31 @@
 
 use crate::application::authorization::AuthorizationCodeService;
 use crate::application::claim_mapper::{ClaimMapping, MappedToken};
+use crate::application::client_keys::{ClientKeySets, keys_of};
 use crate::application::pairwise::{PairwiseSubjects, session_for, subject_for};
 use crate::application::ports::{
-    AccessTokenRecordStore, ApplicationStore, ClientAssertionStore, ClientStore, GrantStore,
-    PersonMemberships, PersonStanding, RefreshTokenStore, ResourceServerStore,
+    AccessTokenRecordStore, ApplicationStore, CertificateCheck, ClientAssertionStore, ClientStore,
+    GrantStore, PersonMemberships, PersonStanding, RefreshTokenStore, ResourceServerStore,
 };
 use crate::domain::authorization::{CodePresentation, GrantStatus};
+use crate::domain::binding::{CONFIRMATION_CLAIM, CertificateThumbprint};
 use crate::domain::claim_mapper::{ClaimTarget, add_mapped_claims};
-use crate::domain::client::{AuthenticationMethod, Client, ClientId, GrantType, TokenPolicy};
+use crate::domain::claims_parameter::add_asked_claims;
+use crate::domain::client::{
+    AuthenticationMethod, Client, ClientId, ClientType, GrantType, TokenPolicy,
+};
 use crate::domain::event::OauthEvent;
+use crate::domain::forwarded::presented_thumbprint;
 use crate::domain::introspection::AccessTokenRecord;
-use crate::domain::openid::{IdTokenNames, asks_for_openid, id_token_claims, id_token_header};
+use crate::domain::openid::{
+    IdTokenNames, PersonClaims, asks_for_openid, id_token_claims, id_token_header,
+};
 use crate::domain::refresh::{
     DEFAULT_RETRY_WINDOW, FAMILY_SECRET_PURPOSE, FamilySecret, LONGEST_RETRY_WINDOW,
     RefreshDecision, RefreshFamily, RefreshRefusal, RefreshTokenHash,
 };
 use crate::domain::resource_server::{GROUPS_SCOPE, OPENID_SCOPES};
+use crate::domain::spiffe::{CheckedSvid, check_svid};
 use crate::domain::token::{
     AssertionAudience, GrantRequest, PresentedClient, TokenError, TokenRequest, TokenSubject,
     access_token_header, assertion_issuer, check_assertion, claims_for, compact, signing_input,
@@ -29,11 +38,43 @@ use hodor_kernel::{
     GroupId, OrganizationId, RandomSource, Secret, SecretBox, SignatureVerifier, TenantContext,
     UnitOfWork, UnitOfWorkFactory, UserId,
 };
-use hodor_keys::api::{KeyAlgorithm, KeyService, KeyVersionId, Signature};
+use hodor_keys::api::{KeyAlgorithm, KeyService, KeyVersionId, Signature, TrustDomainService};
 use serde_json::{Map, Value};
 use std::fmt;
 use std::sync::Arc;
 use time::Duration;
+
+/// Signs `message` with the tenant's active key of `algorithm`. A tenant
+/// that has none, because it was made a moment ago or has never signed
+/// with the algorithm, gets its first one at once from the keys context,
+/// as rotation would have given it. `None` only if even then there is no
+/// key to sign with.
+///
+/// # Errors
+///
+/// Returns an error if storage fails or the key provider cannot sign.
+pub(crate) async fn signed_with_active_key<F>(
+    keys: &KeyService,
+    tenant: &TenantContext,
+    algorithm: KeyAlgorithm,
+    message: F,
+) -> Result<Option<(Vec<u8>, Signature)>, DomainError>
+where
+    F: Fn(KeyVersionId) -> Vec<u8> + Send + Sync,
+{
+    match keys.sign_naming_key(tenant, algorithm, &message).await {
+        Ok(signed) => return Ok(Some(signed)),
+        Err(error) if error.code() == "keys.no_active_version" => {}
+        Err(error) => return Err(error),
+    }
+    keys.ensure_active(tenant, algorithm, Caller::system())
+        .await?;
+    match keys.sign_naming_key(tenant, algorithm, &message).await {
+        Ok(signed) => Ok(Some(signed)),
+        Err(error) if error.code() == "keys.no_active_version" => Ok(None),
+        Err(error) => Err(error),
+    }
+}
 
 /// The ports [`TokenService`] works through.
 #[derive(Clone)]
@@ -134,6 +175,9 @@ pub struct TokenService {
     pub(crate) ports: TokenPorts,
     retry_window: Duration,
     pub(crate) pairwise: Option<PairwiseSubjects>,
+    pub(crate) trust_domains: Option<TrustDomainService>,
+    pub(crate) certificates: Option<Arc<dyn CertificateCheck>>,
+    client_keys: Option<ClientKeySets>,
 }
 
 impl fmt::Debug for TokenService {
@@ -173,7 +217,40 @@ impl TokenService {
             ports,
             retry_window: DEFAULT_RETRY_WINDOW,
             pairwise: None,
+            trust_domains: None,
+            client_keys: None,
+            certificates: None,
         }
+    }
+
+    /// Checks the certificates trusted proxies forward for clients of
+    /// `tls_client_auth` and `spiffe_x509` through `certificates`, against
+    /// the bundles of the trust domains given to
+    /// [`Self::with_trust_domains`]. Without both, every client of a
+    /// forwarded identity is refused.
+    #[must_use]
+    pub fn with_certificate_check(mut self, certificates: Arc<dyn CertificateCheck>) -> Self {
+        self.certificates = Some(certificates);
+        self
+    }
+
+    /// Checks the JWT-SVIDs of clients using `spiffe_jwt`, and the
+    /// identities trusted proxies forward, against the tenants' trust
+    /// domains, found through `trust_domains`. Without it, every JWT-SVID
+    /// and every forwarded identity is refused.
+    #[must_use]
+    pub fn with_trust_domains(mut self, trust_domains: TrustDomainService) -> Self {
+        self.trust_domains = Some(trust_domains);
+        self
+    }
+
+    /// Checks the assertions of a client with a key set address against
+    /// the keys there, fetched and kept by `sets`. Without it, such a
+    /// client has no keys, and its assertions are refused.
+    #[must_use]
+    pub fn with_client_key_sets(mut self, sets: ClientKeySets) -> Self {
+        self.client_keys = Some(sets);
+        self
     }
 
     /// Names people to pairwise clients through `pairwise`. Without it, a
@@ -221,6 +298,22 @@ impl TokenService {
             Ok(client) => client,
             Err(refusal) => return Ok(Err(refusal)),
         };
+        // The certificate the request came with, and the one the client's
+        // tokens are bound to when it asks for bound tokens: then there
+        // must be one, before anything is redeemed or used.
+        let presented =
+            presented_thumbprint(request.forwarded.as_ref(), self.ports.digest.as_ref());
+        let bound = if client.snapshot().settings.certificate_bound_access_tokens {
+            let Some(presented) = presented else {
+                return Ok(Err(TokenError::invalid_request(
+                    "the client's tokens are bound to its certificate, and the request came \
+                     with none",
+                )));
+            };
+            Some(presented)
+        } else {
+            None
+        };
         match request.grant {
             GrantRequest::AuthorizationCode {
                 code,
@@ -234,6 +327,7 @@ impl TokenService {
                     &code,
                     &redirect_uri,
                     verifier.as_deref(),
+                    bound,
                     correlation_id,
                 )
                 .await
@@ -250,6 +344,8 @@ impl TokenService {
                     &refresh_token,
                     scope.as_deref(),
                     resource.as_deref(),
+                    presented,
+                    bound,
                     correlation_id,
                 )
                 .await
@@ -261,6 +357,7 @@ impl TokenService {
                     &client,
                     scope.as_deref(),
                     resource.as_deref(),
+                    bound,
                     correlation_id,
                 )
                 .await
@@ -280,6 +377,8 @@ impl TokenService {
                         actor_token: actor_token.expose(),
                         audience: &audience,
                         scope: scope.as_deref(),
+                        presented: presented.as_ref(),
+                        bound,
                     },
                     correlation_id,
                 )
@@ -298,13 +397,17 @@ impl TokenService {
         presented: &PresentedClient,
     ) -> Result<Result<Client, TokenError>, DomainError> {
         let named = match presented {
-            PresentedClient::Secret { client_id, .. } | PresentedClient::Public { client_id } => {
-                Some(client_id.clone())
-            }
+            PresentedClient::Secret { client_id, .. }
+            | PresentedClient::Public { client_id }
+            | PresentedClient::Forwarded { client_id, .. } => Some(client_id.clone()),
             PresentedClient::Assertion {
                 assertion,
                 client_id,
             } => client_id.clone().or_else(|| assertion_issuer(assertion)),
+            // Without `client_id`, the draft makes the SPIFFE identifier the
+            // client identifier, and no client of Hodor has such an
+            // identifier.
+            PresentedClient::Svid { client_id, .. } => client_id.clone(),
         };
         let Some(client_id) = named.and_then(|text| text.parse::<ClientId>().ok()) else {
             return Ok(Err(TokenError::invalid_client("the client is unknown")));
@@ -326,7 +429,7 @@ impl TokenService {
             )));
         }
         let registered = client.snapshot().settings.authentication_method;
-        if presented.method() != registered {
+        if !presented.may_be(registered) {
             return Ok(Err(TokenError::invalid_client(
                 "the client used another method than its own",
             )));
@@ -337,7 +440,19 @@ impl TokenService {
                     return Ok(Err(TokenError::invalid_client("the secret is wrong")));
                 }
             }
-            PresentedClient::Public { .. } => {
+            PresentedClient::Public { .. } | PresentedClient::Forwarded { .. }
+                if registered.uses_forwarded_identity() =>
+            {
+                // The trust domain is read in a unit of work of its own.
+                drop(uow);
+                if let Err(reason) = self
+                    .check_forwarded(tenant, &client, presented.forwarded(), now)
+                    .await?
+                {
+                    return Ok(Err(TokenError::invalid_client(reason)));
+                }
+            }
+            PresentedClient::Public { .. } | PresentedClient::Forwarded { .. } => {
                 // A public client proves nothing; PKCE holds it instead.
                 debug_assert_eq!(registered, AuthenticationMethod::None);
             }
@@ -347,15 +462,30 @@ impl TokenService {
                     token_endpoint: issuer.token_endpoint,
                     endpoint,
                 };
+                // Nothing is held in the database while a key set address
+                // is fetched.
+                let kept = if client.jwks_uri().is_some() {
+                    drop(uow);
+                    None
+                } else {
+                    Some(uow)
+                };
+                let keys =
+                    keys_of(self.client_keys.as_ref(), tenant, &client, Some(assertion)).await;
                 let checked = match check_assertion(
                     assertion,
                     &client,
+                    &keys,
                     audience,
                     now,
                     self.ports.verifier.as_ref(),
                 ) {
                     Ok(checked) => checked,
                     Err(reason) => return Ok(Err(TokenError::invalid_client(reason))),
+                };
+                let mut uow = match kept {
+                    Some(uow) => uow,
+                    None => self.ports.units_of_work.begin(tenant).await?,
                 };
                 let first = self
                     .ports
@@ -374,27 +504,91 @@ impl TokenService {
                 }
                 uow.commit().await?;
             }
+            PresentedClient::Svid { svid, .. } => {
+                // The trust domain is read in a unit of work of its own.
+                drop(uow);
+                let checked = match self.check_svid(tenant, issuer, &client, svid, now).await? {
+                    Ok(checked) => checked,
+                    Err(reason) => return Ok(Err(TokenError::invalid_client(reason))),
+                };
+                let mut uow = self.ports.units_of_work.begin(tenant).await?;
+                let first = self
+                    .ports
+                    .assertions
+                    .remember(uow.as_mut(), client.id(), &checked.mark, checked.expires_at)
+                    .await?;
+                if !first {
+                    return Ok(Err(TokenError::invalid_client(
+                        "the JWT-SVID was presented before",
+                    )));
+                }
+                uow.commit().await?;
+            }
         }
         Ok(Ok(client))
     }
 
-    /// Signs an access token about `subject` for `client`, with the claims
-    /// its mappers add.
+    /// Checks a JWT-SVID of `client` against the bundle of its SPIFFE
+    /// identifier's trust domain in the tenant.
+    async fn check_svid(
+        &self,
+        tenant: &TenantContext,
+        issuer: Issuer<'_>,
+        client: &Client,
+        svid: &str,
+        now: hodor_kernel::Timestamp,
+    ) -> Result<Result<CheckedSvid, &'static str>, DomainError> {
+        let Some(spiffe_id) = &client.snapshot().settings.spiffe_id else {
+            return Ok(Err("the client is bound to no SPIFFE identifier"));
+        };
+        let Some(trust_domains) = &self.trust_domains else {
+            return Ok(Err("this server checks no JWT-SVID"));
+        };
+        let Some(domain) = trust_domains
+            .find_by_name(tenant, spiffe_id.trust_domain())
+            .await?
+        else {
+            return Ok(Err("the tenant does not trust the client's trust domain"));
+        };
+        let Some(bundle) = domain.bundle() else {
+            return Ok(Err(
+                "the client's trust domain is checked by the mesh and has no bundle",
+            ));
+        };
+        Ok(check_svid(
+            svid,
+            spiffe_id,
+            bundle,
+            issuer.issuer,
+            now,
+            self.ports.verifier.as_ref(),
+            self.ports.digest.as_ref(),
+        ))
+    }
+
+    /// Signs an access token about `subject` for `client`, bound to the
+    /// certificate of `bound` if any, with the claims its mappers add.
     async fn sign(
         &self,
         tenant: &TenantContext,
         issuer: Issuer<'_>,
         client: &Client,
         subject: &TokenSubject,
+        bound: Option<CertificateThumbprint>,
         mapped: &Map<String, Value>,
     ) -> Result<Result<SignedAccessToken, TokenError>, DomainError> {
         let lifetime = client.snapshot().settings.token_policy.access_token;
-        self.sign_living(tenant, issuer, client, subject, lifetime, mapped)
+        self.sign_living(tenant, issuer, client, subject, lifetime, bound, mapped)
             .await
     }
 
     /// Signs an access token about `subject` for `client`, living
-    /// `lifetime`, with the claims its mappers add after Hodor's own.
+    /// `lifetime`, bound to the certificate of `bound` if any, with the
+    /// claims its mappers add after Hodor's own.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "each is one part of the token; grouping them would only rename them"
+    )]
     pub(crate) async fn sign_living(
         &self,
         tenant: &TenantContext,
@@ -402,6 +596,7 @@ impl TokenService {
         client: &Client,
         subject: &TokenSubject,
         lifetime: time::Duration,
+        bound: Option<CertificateThumbprint>,
         mapped: &Map<String, Value>,
     ) -> Result<Result<SignedAccessToken, TokenError>, DomainError> {
         if lifetime > TokenPolicy::LONGEST_SIGNED_LIFETIME {
@@ -419,6 +614,9 @@ impl TokenService {
             now,
             self.ports.random.as_ref(),
         );
+        if let (Some(bound), Some(object)) = (bound, claims.claims.as_object_mut()) {
+            object.insert(CONFIRMATION_CLAIM.to_owned(), bound.confirmation());
+        }
         add_mapped_claims(&mut claims.claims, mapped);
         let algorithm = KeyAlgorithm::DEFAULT_SIGNING;
         let Some((message, signature)) = self
@@ -441,8 +639,9 @@ impl TokenService {
     }
 
     /// Signs the ID token for a redeemed `code`, issued with
-    /// `access_token`, naming the person as `subject`, with the claims the
-    /// client's mappers add after Hodor's own.
+    /// `access_token`, naming the person as `subject`, with the person's
+    /// claims of `asked`, those the `claims` parameter asked for, and then
+    /// those the client's mappers add, after Hodor's own.
     #[allow(
         clippy::too_many_arguments,
         reason = "each is one part of the ID token; grouping them would only rename them"
@@ -456,6 +655,7 @@ impl TokenService {
         organization: Option<OrganizationId>,
         access_token: &str,
         subject: &str,
+        asked: &[String],
         mapped: &Map<String, Value>,
     ) -> Result<Result<Secret<String>, TokenError>, DomainError> {
         let lifetime = client.snapshot().settings.token_policy.id_token;
@@ -465,6 +665,7 @@ impl TokenService {
             )));
         }
         let session = session_for(self.pairwise.as_ref(), tenant, client, code.session_id).await?;
+        let id_token_algorithm = client.snapshot().settings.id_token_algorithm;
         let mut claims = id_token_claims(
             issuer.issuer,
             code,
@@ -477,14 +678,17 @@ impl TokenService {
             lifetime,
             self.ports.clock.now(),
             access_token,
+            id_token_algorithm,
             self.ports.digest.as_ref(),
         );
+        if !asked.is_empty() {
+            let person = PersonClaims::from_attributes(
+                self.ports.mapping.person(tenant, code.user_id).await?,
+            );
+            add_asked_claims(&mut claims, asked, &person, mapped);
+        }
         add_mapped_claims(&mut claims, mapped);
-        let algorithm = client
-            .snapshot()
-            .settings
-            .id_token_algorithm
-            .key_algorithm();
+        let algorithm = id_token_algorithm.key_algorithm();
         let signed = self
             .signed(tenant, algorithm, |key_id| {
                 let header = id_token_header(algorithm.as_str(), &key_id.to_string());
@@ -499,11 +703,8 @@ impl TokenService {
         })
     }
 
-    /// Signs `message` with the tenant's active key of `algorithm`. A tenant
-    /// that has none, because it was made a moment ago or has never signed
-    /// with the algorithm, gets its first one at once from the keys
-    /// context, as rotation would have given it. `None` only if even then
-    /// there is no key to sign with.
+    /// Signs `message` with the tenant's active key of `algorithm`, as
+    /// [`signed_with_active_key`] does.
     async fn signed<F>(
         &self,
         tenant: &TenantContext,
@@ -513,19 +714,7 @@ impl TokenService {
     where
         F: Fn(KeyVersionId) -> Vec<u8> + Send + Sync,
     {
-        let keys = &self.ports.keys;
-        match keys.sign_naming_key(tenant, algorithm, &message).await {
-            Ok(signed) => return Ok(Some(signed)),
-            Err(error) if error.code() == "keys.no_active_version" => {}
-            Err(error) => return Err(error),
-        }
-        keys.ensure_active(tenant, algorithm, Caller::system())
-            .await?;
-        match keys.sign_naming_key(tenant, algorithm, &message).await {
-            Ok(signed) => Ok(Some(signed)),
-            Err(error) if error.code() == "keys.no_active_version" => Ok(None),
-            Err(error) => Err(error),
-        }
+        signed_with_active_key(&self.ports.keys, tenant, algorithm, message).await
     }
 
     pub(crate) fn record(
@@ -557,6 +746,7 @@ impl TokenService {
         code: &str,
         redirect_uri: &str,
         verifier: Option<&str>,
+        bound: Option<CertificateThumbprint>,
         correlation_id: CorrelationId,
     ) -> Result<Result<IssuedTokens, TokenError>, DomainError> {
         let settings = &client.snapshot().settings;
@@ -631,6 +821,7 @@ impl TokenService {
                 issuer,
                 client,
                 &subject,
+                bound,
                 &mapped.of(ClaimTarget::AccessToken),
             )
             .await?
@@ -649,6 +840,7 @@ impl TokenService {
                     grant.organization,
                     &signed.token,
                     &known_as,
+                    &grant.claims.id_token,
                     &mapped.of(ClaimTarget::IdToken),
                 )
                 .await?
@@ -668,14 +860,23 @@ impl TokenService {
                 .secrets
                 .seal(tenant, FAMILY_SECRET_PURPOSE, secret.as_secret())
                 .await?;
-            Some(RefreshFamily::start(
+            let (family, first) = RefreshFamily::start(
                 &redeemed,
                 &settings.token_policy,
                 sealed,
                 self.ports.clock.now(),
                 self.ports.random.as_ref(),
                 self.ports.digest.as_ref(),
-            ))
+            );
+            // A public client's refresh tokens are bound to its certificate
+            // too (RFC 8705, section 4); a confidential client's are bound
+            // to its authentication already.
+            let family = if client.client_type() == ClientType::Public {
+                family.bound_to(bound)
+            } else {
+                family
+            };
+            Some((family, first))
         } else {
             None
         };
@@ -764,6 +965,7 @@ impl TokenService {
         client: ClientId,
         scope: Option<&str>,
         resource: Option<&str>,
+        presented: Option<&CertificateThumbprint>,
         caller: Caller,
     ) -> Result<Result<(RefreshFamily, RefreshDecision), TokenError>, DomainError> {
         let mut uow = self.ports.units_of_work.begin(tenant).await?;
@@ -773,6 +975,13 @@ impl TokenService {
                 "the refresh token is unknown",
             )));
         };
+        // Before anything else, so that whoever holds the token without the
+        // certificate can neither use the family nor end it.
+        if !family.accepts_certificate(presented) {
+            return Ok(Err(TokenError::invalid_grant(
+                "the refresh token is bound to a certificate the request did not come with",
+            )));
+        }
         let now = self.ports.clock.now();
         match family.decide(
             record.generation,
@@ -875,6 +1084,8 @@ impl TokenService {
         presented: &Secret<String>,
         scope: Option<&str>,
         resource: Option<&str>,
+        certificate: Option<CertificateThumbprint>,
+        bound: Option<CertificateThumbprint>,
         correlation_id: CorrelationId,
     ) -> Result<Result<IssuedTokens, TokenError>, DomainError> {
         if !client
@@ -899,7 +1110,15 @@ impl TokenService {
         };
         for _ in 0..REFRESH_ATTEMPTS {
             let (mut family, decision) = match self
-                .decide(tenant, &hash, client.id(), scope, resource, anonymous)
+                .decide(
+                    tenant,
+                    &hash,
+                    client.id(),
+                    scope,
+                    resource,
+                    certificate.as_ref(),
+                    anonymous,
+                )
                 .await?
             {
                 Ok(decided) => decided,
@@ -1008,6 +1227,7 @@ impl TokenService {
                     issuer,
                     client,
                     &subject,
+                    bound,
                     &mapped.of(ClaimTarget::AccessToken),
                 )
                 .await?
@@ -1054,6 +1274,10 @@ impl TokenService {
         )))
     }
 
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "each is one part of the request; grouping them would only rename them"
+    )]
     async fn client_credentials(
         &self,
         tenant: &TenantContext,
@@ -1061,6 +1285,7 @@ impl TokenService {
         client: &Client,
         scope: Option<&str>,
         resource: Option<&str>,
+        bound: Option<CertificateThumbprint>,
         correlation_id: CorrelationId,
     ) -> Result<Result<IssuedTokens, TokenError>, DomainError> {
         let settings = &client.snapshot().settings;
@@ -1165,7 +1390,7 @@ impl TokenService {
         };
         // Nobody signed in: no mapper applies.
         let signed = match self
-            .sign(tenant, issuer, client, &subject, &Map::new())
+            .sign(tenant, issuer, client, &subject, bound, &Map::new())
             .await?
         {
             Ok(signed) => signed,

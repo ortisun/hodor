@@ -6,6 +6,7 @@ edition.workspace = true
 rust-version.workspace = true
 publish.workspace = true
 repository.workspace = true
+license.workspace = true
 
 [dependencies]
 async-trait.workspace = true
@@ -39,6 +40,7 @@ tracing.workspace = true
 hodor-adapters-crypto = { workspace = true, features = ["testing"] }
 hodor-adapters-http.workspace = true
 hodor-authorization-opa = { workspace = true, features = ["testing"] }
+hodor-test-containers.workspace = true
 testcontainers.workspace = true
 hodor-adapters-ldap = { workspace = true, features = ["testing"] }
 hodor-federation = { workspace = true, features = ["testing"] }

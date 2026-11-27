@@ -17,8 +17,8 @@ use hodor_adapters_postgres::{
 };
 use hodor_credential::api::{CredentialService, NewPassword, PasswordRules};
 use hodor_identity::api::{
-    CreateUser, GroupMember, GroupService, IdentifierKind, IdentityService, OrganizationService,
-    Profile, UserKind,
+    ClaimField, CreateUser, GroupMember, GroupService, IdentifierKind, IdentityService,
+    OrganizationService, Profile, StandardClaims, UserKind,
 };
 use hodor_kernel::{Caller, Digest as _, Secret, SystemClock, TenantContext};
 use hodor_keys::api::{KeyAlgorithm, KeyService, RotationPolicy};
@@ -61,6 +61,18 @@ async fn tenant_signing_with(
     database: &TestDatabase,
     slug: &str,
     id_token_algorithm: IdTokenAlgorithm,
+) -> ClientId {
+    tenant_with(database, slug, |settings| {
+        settings.id_token_algorithm = id_token_algorithm;
+    })
+    .await
+}
+
+/// The tenant of [`tenant`], its client's settings changed by `configure`.
+async fn tenant_with(
+    database: &TestDatabase,
+    slug: &str,
+    configure: impl FnOnce(&mut ClientSettings),
 ) -> ClientId {
     let units = || Arc::new(database.app().clone());
     let clock = Arc::new(SystemClock);
@@ -199,10 +211,18 @@ async fn tenant_signing_with(
         vec![REDIRECT.to_owned()],
     );
     settings.authentication_method = AuthenticationMethod::None;
-    settings.id_token_algorithm = id_token_algorithm;
-    settings.allowed_scopes = ["openid", "profile", "email", "groups", "payroll:read"]
-        .map(str::to_owned)
-        .to_vec();
+    settings.allowed_scopes = [
+        "openid",
+        "profile",
+        "email",
+        "address",
+        "phone",
+        "groups",
+        "payroll:read",
+    ]
+    .map(str::to_owned)
+    .to_vec();
+    configure(&mut settings);
     let (client, _) = applications
         .create_client(
             &context,
@@ -340,12 +360,24 @@ async fn the_discovery_document_names_what_answers() {
     // Back-channel logout is offered, and every logout token carries `sid`.
     assert_eq!(document["backchannel_logout_supported"], true);
     assert_eq!(document["backchannel_logout_session_supported"], true);
-    assert!(
-        document["scopes_supported"]
-            .as_array()
-            .is_some_and(|scopes| scopes.contains(&Value::from("groups")))
+    // The `claims` parameter is read, and request objects by value.
+    assert_eq!(document["claims_parameter_supported"], true);
+    assert_eq!(document["request_parameter_supported"], true);
+    // The authorization endpoint answers in the query and with the page of
+    // `form_post`.
+    assert_eq!(
+        document["response_modes_supported"],
+        serde_json::json!(["query", "form_post"])
     );
-    for claim in ["org_id", "groups"] {
+    for scope in ["groups", "address", "phone"] {
+        assert!(
+            document["scopes_supported"]
+                .as_array()
+                .is_some_and(|scopes| scopes.contains(&Value::from(scope))),
+            "{scope}"
+        );
+    }
+    for claim in ["org_id", "groups", "address", "phone_number", "given_name"] {
         assert!(
             document["claims_supported"]
                 .as_array()
@@ -970,6 +1002,121 @@ async fn a_claim_mapper_puts_a_group_into_the_id_token_until_the_person_leaves_i
     assert_eq!(identity["teams"], serde_json::json!([]));
 }
 
+#[tokio::test]
+async fn the_address_and_phone_scopes_give_the_persons_claims_and_a_mapper_carries_them() {
+    let database = TestDatabase::start().await;
+    let client_id = tenant(&database, "acme").await;
+    let (tenant, ana) = ana_of(&database, "acme").await;
+    let units = || Arc::new(database.app().clone());
+    let clock = Arc::new(SystemClock);
+    let mut claims = StandardClaims {
+        given_name: Some("Ana".to_owned()),
+        family_name: Some("Lima".to_owned()),
+        zoneinfo: Some("America/Sao_Paulo".to_owned()),
+        phone_number: Some("+55 11 91234-5678".to_owned()),
+        phone_number_verified: true,
+        ..StandardClaims::default()
+    };
+    claims.set(ClaimField::AddressLocality, Some("São Paulo".to_owned()));
+    claims.set(ClaimField::AddressCountry, Some("BR".to_owned()));
+    IdentityService::new(units(), Arc::new(PgUserRepository), clock.clone())
+        .change_claims(&tenant, ana, claims, Caller::system())
+        .await
+        .expect("Ana's claims");
+    let mappers = ClaimMapperService::new(ClaimMapperPorts {
+        units_of_work: units(),
+        clients: Arc::new(PgClientStore),
+        mappers: Arc::new(PgClaimMapperStore),
+        clock,
+    });
+    for (claim, attribute) in [
+        ("office_phone", PersonAttribute::PhoneNumber),
+        ("office", PersonAttribute::Address),
+    ] {
+        mappers
+            .create(
+                &tenant,
+                client_id,
+                ClaimMapperSettings {
+                    claim: claim.to_owned(),
+                    targets: vec![ClaimTarget::IdToken],
+                    scope: Some("phone".to_owned()),
+                    source: ClaimSource::Attribute(attribute),
+                },
+                Caller::system(),
+            )
+            .await
+            .expect("a mapper");
+    }
+
+    let server = server(&database).await;
+    let mut browser = Browser::not_following(&server);
+    browser.sign_in("acme", "ana@example.com", PASSWORD).await;
+    let signed_in = code(
+        &mut browser,
+        "acme",
+        &authorize_query(
+            client_id,
+            "openid profile email address phone",
+            &[("nonce", NONCE)],
+        ),
+    )
+    .await;
+    let answer = redeem(&server, "acme", client_id, &signed_in).await;
+    let info = userinfo(
+        &server,
+        "acme",
+        Method::GET,
+        answer["access_token"].as_str(),
+    )
+    .await;
+    assert_eq!(info.status, StatusCode::OK);
+    assert_eq!(info.body["given_name"], "Ana");
+    assert_eq!(info.body["family_name"], "Lima");
+    assert_eq!(info.body["zoneinfo"], "America/Sao_Paulo");
+    assert_eq!(
+        info.body["address"],
+        serde_json::json!({ "locality": "São Paulo", "country": "BR" })
+    );
+    assert_eq!(info.body["phone_number"], "+5511912345678");
+    assert_eq!(info.body["phone_number_verified"], true);
+
+    // The ID token keeps the person's claims out, but what a mapper of the
+    // tenant's puts there under a name of its own.
+    let identity = claims_of(answer["id_token"].as_str().expect("an ID token"));
+    assert!(identity.get("phone_number").is_none());
+    assert!(identity.get("address").is_none());
+    assert_eq!(identity["office_phone"], "+5511912345678");
+    assert_eq!(
+        identity["office"],
+        serde_json::json!({ "locality": "São Paulo", "country": "BR" })
+    );
+
+    // Without the scopes, neither is answered.
+    let next = code(
+        &mut browser,
+        "acme",
+        &authorize_query(client_id, "openid profile", &[]),
+    )
+    .await;
+    let answer = redeem(&server, "acme", client_id, &next).await;
+    let info = userinfo(
+        &server,
+        "acme",
+        Method::GET,
+        answer["access_token"].as_str(),
+    )
+    .await;
+    assert_eq!(info.body["given_name"], "Ana");
+    assert!(info.body.get("address").is_none());
+    assert!(info.body.get("phone_number").is_none());
+    let identity = claims_of(answer["id_token"].as_str().expect("an ID token"));
+    assert!(
+        identity.get("office_phone").is_none(),
+        "the mapper's scope was not asked for"
+    );
+}
+
 /// Gives Ana an authenticator application, with the server's own way of
 /// keeping its secret, and answers the secret's bytes.
 async fn enroll_application(database: &TestDatabase, slug: &str) -> Vec<u8> {
@@ -1443,4 +1590,454 @@ async fn under_the_policy_a_person_with_no_factor_sets_up_an_application_while_s
         )
         .await;
     assert_eq!(done["status"], "completed", "{done}");
+}
+
+/// A UserInfo answer as it came: its status, type, cache header and body.
+async fn userinfo_as_sent(
+    server: &Server,
+    slug: &str,
+    token: &str,
+) -> (StatusCode, String, String, String) {
+    let response = reqwest::Client::new()
+        .get(format!("{}/t/{slug}/oauth2/userinfo", server.base))
+        .header("authorization", format!("Bearer {token}"))
+        .send()
+        .await
+        .expect("response");
+    let header = |name: &str| {
+        response
+            .headers()
+            .get(name)
+            .and_then(|value| value.to_str().ok())
+            .unwrap_or_default()
+            .to_owned()
+    };
+    let (status, kind, cache) = (
+        response.status(),
+        header("content-type"),
+        header("cache-control"),
+    );
+    (status, kind, cache, response.text().await.expect("body"))
+}
+
+#[tokio::test]
+async fn every_algorithm_signs_id_tokens_and_userinfo_answers_that_check_with_the_key_set() {
+    let database = TestDatabase::start().await;
+    let algorithms = [
+        (IdTokenAlgorithm::Es256, Algorithm::ES256, "es"),
+        (IdTokenAlgorithm::Rs256, Algorithm::RS256, "rs"),
+        (IdTokenAlgorithm::Ps256, Algorithm::PS256, "ps"),
+        (IdTokenAlgorithm::EdDsa, Algorithm::EdDSA, "ed"),
+    ];
+    let mut clients = Vec::new();
+    for (algorithm, _, slug) in algorithms {
+        clients.push(
+            tenant_with(&database, slug, |settings| {
+                settings.id_token_algorithm = algorithm;
+                settings.userinfo_algorithm = Some(algorithm);
+            })
+            .await,
+        );
+    }
+    let server = server(&database).await;
+
+    for ((algorithm, library, slug), client_id) in algorithms.into_iter().zip(clients) {
+        let name = algorithm.as_str();
+        // The key set, read before any token of the algorithm is signed,
+        // names a key of every algorithm a client may choose.
+        let before: JwkSet = reqwest::get(format!("{}/t/{slug}/oauth2/jwks", server.base))
+            .await
+            .expect("key set")
+            .json()
+            .await
+            .expect("JSON");
+        let published: BTreeSet<String> = before
+            .keys
+            .iter()
+            .filter_map(|key| key.common.key_algorithm.map(|alg| format!("{alg:?}")))
+            .collect();
+        assert_eq!(
+            published,
+            ["ES256", "EdDSA", "PS256", "RS256"]
+                .map(str::to_owned)
+                .into(),
+            "{name}"
+        );
+
+        let mut browser = Browser::not_following(&server);
+        browser.sign_in(slug, "ana@example.com", PASSWORD).await;
+        let first = code(
+            &mut browser,
+            slug,
+            &authorize_query(client_id, "openid profile email", &[("nonce", NONCE)]),
+        )
+        .await;
+        let tokens = redeem(&server, slug, client_id, &first).await;
+
+        // The ID token, checked by a library of its own against the key
+        // set read before it was signed.
+        let id_token = tokens["id_token"].as_str().expect("an ID token");
+        let header = decode_header(id_token).expect("header");
+        assert_eq!(header.alg, library, "{name}");
+        let kid = header.kid.expect("kid");
+        let jwk = before
+            .find(&kid)
+            .expect("the key that signed, named before");
+        let mut validation = Validation::new(library);
+        validation.set_audience(&[client_id.to_string()]);
+        validation.set_issuer(&[issuer(slug)]);
+        let id_claims = decode::<Value>(
+            id_token,
+            &DecodingKey::from_jwk(jwk).expect("key"),
+            &validation,
+        )
+        .unwrap_or_else(|error| panic!("{name}: the ID token checks: {error}"))
+        .claims;
+        assert_eq!(id_claims["nonce"], NONCE);
+        // `at_hash` is the left half of the hash the algorithm names:
+        // SHA-512 for EdDSA on Ed25519, SHA-256 for the others.
+        let access = tokens["access_token"].as_str().expect("access token");
+        let (hash, half) = if algorithm == IdTokenAlgorithm::EdDsa {
+            (&aws_lc_rs::digest::SHA512, 32)
+        } else {
+            (&aws_lc_rs::digest::SHA256, 16)
+        };
+        let digest = aws_lc_rs::digest::digest(hash, access.as_bytes());
+        assert_eq!(
+            id_claims["at_hash"],
+            URL_SAFE_NO_PAD.encode(&digest.as_ref()[..half]),
+            "{name}"
+        );
+
+        // UserInfo answers a JSON Web Token, signed with the same
+        // algorithm by the same key.
+        let (status, kind, cache, body) = userinfo_as_sent(&server, slug, access).await;
+        assert_eq!(status, StatusCode::OK, "{name}: {body}");
+        assert_eq!(kind, "application/jwt", "{name}");
+        assert_eq!(cache, "no-store", "{name}");
+        let answer_header = decode_header(&body).expect("a JSON Web Token");
+        assert_eq!(answer_header.alg, library, "{name}");
+        assert_eq!(answer_header.kid.as_deref(), Some(kid.as_str()), "{name}");
+        assert_eq!(answer_header.typ, None, "{name}: no typ, it is no ID token");
+        let mut answer_validation = Validation::new(library);
+        answer_validation.set_audience(&[client_id.to_string()]);
+        answer_validation.set_issuer(&[issuer(slug)]);
+        answer_validation.set_required_spec_claims(&["iss", "aud", "sub"]);
+        answer_validation.validate_exp = false;
+        let answer = decode::<Value>(
+            &body,
+            &DecodingKey::from_jwk(jwk).expect("key"),
+            &answer_validation,
+        )
+        .unwrap_or_else(|error| panic!("{name}: the answer checks: {error}"))
+        .claims;
+        assert_eq!(answer["sub"], id_claims["sub"], "{name}");
+        assert_eq!(answer["name"], "Ana Lima");
+        assert_eq!(answer["email"], "ana@example.com");
+        assert_eq!(answer["iss"], issuer(slug));
+        assert_eq!(answer["aud"], client_id.to_string());
+        for absent in ["exp", "iat", "nonce"] {
+            assert!(answer.get(absent).is_none(), "{name}: {absent}");
+        }
+        // A library checking an ID token refuses it: it has no `exp`.
+        assert!(
+            decode::<Value>(
+                &body,
+                &DecodingKey::from_jwk(jwk).expect("key"),
+                &validation
+            )
+            .is_err(),
+            "{name}: never taken for an ID token"
+        );
+
+        // The ID token is a hint logout accepts; the UserInfo answer is
+        // not.
+        let (status, location, _) = browser
+            .navigate(
+                Method::GET,
+                &format!("/t/{slug}/oauth2/logout?id_token_hint={body}"),
+                None,
+            )
+            .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{name}: {location:?}");
+        let (status, location, _) = browser
+            .navigate(
+                Method::GET,
+                &format!("/t/{slug}/oauth2/logout?id_token_hint={id_token}"),
+                None,
+            )
+            .await;
+        assert_ne!(status, StatusCode::BAD_REQUEST, "{name}: {location:?}");
+    }
+}
+
+#[tokio::test]
+async fn a_client_without_a_userinfo_algorithm_gets_json_and_its_choice_can_change() {
+    let database = TestDatabase::start().await;
+    let client_id = tenant(&database, "acme").await;
+    let server = server(&database).await;
+    let mut browser = Browser::not_following(&server);
+    browser.sign_in("acme", "ana@example.com", PASSWORD).await;
+    let first = code(
+        &mut browser,
+        "acme",
+        &authorize_query(client_id, "openid profile", &[("nonce", NONCE)]),
+    )
+    .await;
+    let tokens = redeem(&server, "acme", client_id, &first).await;
+    let access = tokens["access_token"].as_str().expect("access token");
+    let (status, kind, _, body) = userinfo_as_sent(&server, "acme", access).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(kind.starts_with("application/json"), "{kind}");
+    let claims: Value = serde_json::from_str(&body).expect("JSON");
+    assert_eq!(claims["name"], "Ana Lima");
+    assert!(claims.get("iss").is_none(), "a JSON answer has no iss");
+
+    // The administrator chooses an algorithm: the same token's next answer
+    // is signed, since the client is read at every answer.
+    let units = Arc::new(database.app().clone());
+    let (context, _) = ana_of(&database, "acme").await;
+    let applications = ApplicationService::new(ApplicationPorts {
+        units_of_work: units,
+        applications: Arc::new(PgApplicationStore),
+        clients: Arc::new(PgClientStore),
+        resource_servers: Arc::new(PgResourceServerStore),
+        digest: Arc::new(Sha256Digest),
+        random: Arc::new(OsRandom),
+        clock: Arc::new(SystemClock),
+    });
+    let mut settings = applications
+        .client(&context, client_id)
+        .await
+        .expect("client")
+        .snapshot()
+        .settings
+        .clone();
+    settings.userinfo_algorithm = Some(IdTokenAlgorithm::EdDsa);
+    applications
+        .change_client(&context, client_id, settings, Caller::system())
+        .await
+        .expect("changed");
+    let (status, kind, _, body) = userinfo_as_sent(&server, "acme", access).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(kind, "application/jwt");
+    assert_eq!(decode_header(&body).expect("header").alg, Algorithm::EdDSA);
+}
+
+/// Where a request's error or code is sent back, as parameters.
+async fn sent_back(browser: &mut Browser, slug: &str, query: &str) -> BTreeMap<String, String> {
+    let (status, location, body) = browser
+        .navigate(
+            Method::GET,
+            &format!("/t/{slug}/oauth2/authorize?{query}"),
+            None,
+        )
+        .await;
+    assert_eq!(status, StatusCode::FOUND, "{body}");
+    let location = location.expect("a redirect");
+    assert!(location.starts_with(REDIRECT), "{location}");
+    query_of(&location)
+}
+
+#[tokio::test]
+async fn the_claims_parameter_gives_consented_claims_where_asked_and_honors_a_sub() {
+    let database = TestDatabase::start().await;
+    let client_id = tenant(&database, "acme").await;
+    let (_, ana) = ana_of(&database, "acme").await;
+    let server = server(&database).await;
+    let mut browser = Browser::not_following(&server);
+    browser.sign_in("acme", "ana@example.com", PASSWORD).await;
+
+    // What the suite's `oidcc-claims-essential` asks: `name` at UserInfo,
+    // with the scope `openid` alone. The client's application is first
+    // party and may ask for `profile` and `email`: both count as consented.
+    let claims = serde_json::json!({
+        "userinfo": {"name": {"essential": true}},
+        "id_token": {"email": null, "preferred_username": {"essential": true}}
+    })
+    .to_string();
+    let signed_in = code(
+        &mut browser,
+        "acme",
+        &authorize_query(
+            client_id,
+            "openid",
+            &[("claims", claims.as_str()), ("claims_locales", "fr-CA en")],
+        ),
+    )
+    .await;
+    let tokens = redeem(&server, "acme", client_id, &signed_in).await;
+    let identity = claims_of(tokens["id_token"].as_str().expect("an ID token"));
+    assert_eq!(identity["email"], "ana@example.com", "under its own name");
+    assert_eq!(identity["preferred_username"], "ana.lima");
+    assert!(identity.get("name").is_none(), "asked for UserInfo only");
+    let info = userinfo(
+        &server,
+        "acme",
+        Method::GET,
+        tokens["access_token"].as_str(),
+    )
+    .await;
+    assert_eq!(info.status, StatusCode::OK);
+    assert_eq!(info.body["name"], "Ana Lima");
+    assert!(
+        info.body.get("email").is_none(),
+        "asked for the ID token only, and no scope of the token covers it"
+    );
+
+    // A request that names someone else is never answered with Ana's
+    // session: with prompt=none, login_required.
+    let someone_else = serde_json::json!({
+        "id_token": {"sub": {"value": hodor_kernel::UserId::generate().to_string()}}
+    })
+    .to_string();
+    let answer = sent_back(
+        &mut browser,
+        "acme",
+        &authorize_query(
+            client_id,
+            "openid",
+            &[("claims", someone_else.as_str()), ("prompt", "none")],
+        ),
+    )
+    .await;
+    assert_eq!(answer["error"], "login_required");
+    // Otherwise the person signs in again; Ana is still not the one named.
+    let (status, location, _) = browser
+        .navigate(
+            Method::GET,
+            &format!(
+                "/t/acme/oauth2/authorize?{}",
+                authorize_query(client_id, "openid", &[("claims", someone_else.as_str())])
+            ),
+            None,
+        )
+        .await;
+    assert_eq!(status, StatusCode::FOUND);
+    assert!(
+        location
+            .expect("a redirect")
+            .starts_with("/t/acme/account/sign-in?"),
+    );
+    let (_, body) = browser.sign_in("acme", "ana@example.com", PASSWORD).await;
+    assert_eq!(body["continue"], "/t/acme/oauth2/authorize/resume");
+    let (status, location, _) = browser
+        .navigate(Method::GET, "/t/acme/oauth2/authorize/resume", None)
+        .await;
+    assert_eq!(status, StatusCode::FOUND);
+    assert_eq!(
+        query_of(&location.expect("a redirect"))["error"],
+        "access_denied"
+    );
+
+    // Her own `sub`: a code at once.
+    let herself = serde_json::json!({"id_token": {"sub": {"value": ana.to_string()}}}).to_string();
+    let signed_in = code(
+        &mut browser,
+        "acme",
+        &authorize_query(client_id, "openid", &[("claims", herself.as_str())]),
+    )
+    .await;
+    let tokens = redeem(&server, "acme", client_id, &signed_in).await;
+    assert_eq!(
+        claims_of(tokens["id_token"].as_str().expect("an ID token"))["sub"],
+        ana.to_string()
+    );
+
+    // A parameter that is not what OpenID Connect says is an invalid request.
+    let answer = sent_back(
+        &mut browser,
+        "acme",
+        &authorize_query(client_id, "openid", &[("claims", "[\"name\"]")]),
+    )
+    .await;
+    assert_eq!(answer["error"], "invalid_request");
+}
+
+#[tokio::test]
+async fn an_essential_acr_asked_through_claims_steps_the_person_up() {
+    let database = TestDatabase::start().await;
+    let client_id = tenant(&database, "acme").await;
+    let server = server(&database).await;
+    let mut browser = Browser::not_following(&server);
+    let (_, signed_in) = browser.sign_in("acme", "ana@example.com", PASSWORD).await;
+    assert_eq!(signed_in["status"], "completed");
+    let secret = enroll_application(&database, "acme").await;
+
+    // Beside `acr_values`, an `acr` with values is refused.
+    let essential = serde_json::json!({
+        "id_token": {"acr": {"essential": true, "values": ["urn:hodor:acr:mfa"]}}
+    })
+    .to_string();
+    let answer = sent_back(
+        &mut browser,
+        "acme",
+        &authorize_query(
+            client_id,
+            "openid",
+            &[
+                ("claims", essential.as_str()),
+                ("acr_values", "urn:hodor:acr:mfa"),
+            ],
+        ),
+    )
+    .await;
+    assert_eq!(answer["error"], "invalid_request");
+
+    // Not essential, it is a preference: no step-up, and the ID token says
+    // what the session reached.
+    let preferred =
+        serde_json::json!({"id_token": {"acr": {"values": ["urn:hodor:acr:mfa"]}}}).to_string();
+    let at_once = code(
+        &mut browser,
+        "acme",
+        &authorize_query(client_id, "openid", &[("claims", preferred.as_str())]),
+    )
+    .await;
+    let tokens = redeem(&server, "acme", client_id, &at_once).await;
+    assert_eq!(
+        claims_of(tokens["id_token"].as_str().expect("ID token"))["acr"],
+        "urn:hodor:acr:single-factor"
+    );
+
+    // Essential, it is a level to reach: the person is asked for the code
+    // of their application.
+    let (status, location, body) = browser
+        .navigate(
+            Method::GET,
+            &format!(
+                "/t/acme/oauth2/authorize?{}",
+                authorize_query(client_id, "openid", &[("claims", essential.as_str())])
+            ),
+            None,
+        )
+        .await;
+    assert_eq!(status, StatusCode::FOUND, "{body}");
+    assert!(
+        location
+            .expect("a redirect")
+            .starts_with("/t/acme/account/sign-in?")
+    );
+    let (status, waiting) = browser
+        .send(Method::GET, "/t/acme/interaction/sign-in", None)
+        .await;
+    assert_eq!(status, StatusCode::OK, "{waiting}");
+    assert_eq!(waiting["step"], "totp", "{waiting}");
+    let (status, done) = browser
+        .send(
+            Method::POST,
+            "/t/acme/interaction/sign-in/steps/totp",
+            Some(serde_json::json!({ "code": next_code(&secret) })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{done}");
+    let resume = done["continue"].as_str().expect("continue").to_owned();
+    let (status, location, body) = browser.navigate(Method::GET, &resume, None).await;
+    assert_eq!(status, StatusCode::FOUND, "{body}");
+    let answer = query_of(&location.expect("a redirect"));
+    let tokens = redeem(&server, "acme", client_id, &answer["code"]).await;
+    assert_eq!(
+        claims_of(tokens["id_token"].as_str().expect("ID token"))["acr"],
+        "urn:hodor:acr:mfa"
+    );
 }

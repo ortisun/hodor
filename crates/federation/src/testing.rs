@@ -812,6 +812,10 @@ pub async fn run_contract(ports: Ports<'_>) {
         subject: Subject::parse("saml-subject").expect("subject"),
         email: Some("ana@example.com".to_owned()),
         name: None,
+        claims: [("given_name", "Ana"), ("address.locality", "São Paulo")]
+            .into_iter()
+            .map(|(claim, value)| (claim.to_owned(), value.to_owned()))
+            .collect(),
     };
     assert!(answer([9; 32], verified.clone()).await);
     assert!(

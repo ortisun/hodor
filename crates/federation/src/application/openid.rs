@@ -6,14 +6,15 @@
 //! before every check there has passed.
 
 use crate::domain::link::Subject;
-use crate::domain::provider::{IdentityProvider, is_development_address};
+use crate::domain::provider::{IdentityProvider, LONGEST_CLAIM_VALUE, is_development_address};
 use base64::Engine as _;
 use base64::engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD};
+use hodor_identity::api::{ClaimField, StandardClaims};
 use hodor_kernel::{
     Clock, Digest, DomainError, ErrorKind, HttpClient, HttpRequest, PublicKey, RandomSource,
     Secret, SignatureAlgorithm, SignatureVerifier,
 };
-use serde_json::Value;
+use serde_json::{Map, Value};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
@@ -97,6 +98,9 @@ pub struct VerifiedIdentity {
     pub name: Option<String>,
     /// A preferred language, if the provider gave one.
     pub locale: Option<String>,
+    /// The person's standard claims, as the provider gave them: checked,
+    /// leniently, when the person is created.
+    pub claims: StandardClaims,
 }
 
 /// Talks to OpenID Connect providers.
@@ -620,6 +624,73 @@ impl OpenIdClient {
             email_verified: claims.get("email_verified") == Some(&Value::Bool(true)),
             name: short("name", 200),
             locale: short("locale", 35),
+            claims: claims
+                .as_object()
+                .map(standard_claims_of)
+                .unwrap_or_default(),
         })
+    }
+}
+
+/// The standard claims of an ID token, by their own names, as given. A
+/// claim that is not text, or an address that is not an object of text
+/// parts, is left out; the rules of each are checked when the person is
+/// created.
+#[must_use]
+pub(crate) fn standard_claims_of(token: &Map<String, Value>) -> StandardClaims {
+    let text = |value: Option<&Value>| {
+        value
+            .and_then(Value::as_str)
+            .filter(|value| value.chars().count() <= LONGEST_CLAIM_VALUE)
+            .map(str::to_owned)
+    };
+    let mut claims = StandardClaims::default();
+    for field in ClaimField::ALL {
+        let value = match field.as_str().strip_prefix("address.") {
+            Some(part) => text(
+                token
+                    .get("address")
+                    .and_then(Value::as_object)
+                    .and_then(|address| address.get(part)),
+            ),
+            None => text(token.get(field.as_str())),
+        };
+        claims.set(field, value);
+    }
+    // Exactly the JSON value `true`, as for `email_verified`.
+    claims.phone_number_verified = token.get("phone_number_verified") == Some(&Value::Bool(true));
+    claims
+}
+
+#[cfg(test)]
+mod claims_tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn the_standard_claims_of_a_token_are_read_by_their_names_as_given() {
+        let token = json!({
+            "sub": "someone",
+            "given_name": "Bia",
+            "nickname": 42,
+            "phone_number": "+5581999999999",
+            "phone_number_verified": "true",
+            "address": { "street_address": "Rua A, 1", "country": "BR", "region": false },
+            "zoneinfo": "x".repeat(LONGEST_CLAIM_VALUE + 1),
+        });
+        let claims = standard_claims_of(token.as_object().expect("an object"));
+        assert_eq!(claims.given_name.as_deref(), Some("Bia"));
+        assert_eq!(claims.nickname, None, "not text");
+        assert_eq!(claims.phone_number.as_deref(), Some("+5581999999999"));
+        assert!(
+            !claims.phone_number_verified,
+            "only the JSON value true vouches"
+        );
+        assert_eq!(
+            claims.get(ClaimField::AddressStreetAddress),
+            Some("Rua A, 1")
+        );
+        assert_eq!(claims.get(ClaimField::AddressRegion), None);
+        assert_eq!(claims.zoneinfo, None, "longer than any claim holds");
     }
 }

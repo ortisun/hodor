@@ -2,7 +2,7 @@
 
 The `identity` context owns users: who exists inside a tenant, how they are found, and whether they may act. It does not know how a user proves who they are; that belongs to the `credential` and `authentication` contexts.
 
-This page specifies users and their login identifiers, built in Milestone 1, groups and organizations, built in Milestone 7, and service accounts and agents, built in Milestone 8 (Issue-93). Invitations and linked external identities belong to this context too and are specified here when their turn comes.
+This page specifies users and their login identifiers, built in Milestone 1, groups and organizations, built in Milestone 7, service accounts and agents, built in Milestone 8 (Issue-93), and a person's standard claims, built in Milestone 13 (Issue-123). Invitations and linked external identities belong to this context too and are specified here when their turn comes.
 
 ## What a user is
 
@@ -14,6 +14,7 @@ This page specifies users and their login identifiers, built in Milestone 1, gro
 | Display name | Optional, up to 200 characters |
 | Locale | Optional language tag such as `en` or `pt-BR`, used for messages sent to the user |
 | Login identifiers | The names the user can be found by; see [login identifiers](#login-identifiers) |
+| Standard claims | Optional names, addresses, telephone number and postal address of a person, as OpenID Connect names them; see [standard claims](#standard-claims) |
 
 A user belongs to exactly one tenant. The same person in two tenants is two users.
 
@@ -47,7 +48,7 @@ Rules:
 - Every transition not drawn above is rejected.
 - Suspending requires a reason.
 - A user is created Pending unless the creator states that the user is already confirmed, as an administrator does when creating an account by hand.
-- Marking a user Deleted removes their login identifiers and clears the display name and locale. This is the erasure step of a data subject's deletion request.
+- Marking a user Deleted removes their login identifiers and clears the display name, the locale and the standard claims. This is the erasure step of a data subject's deletion request.
 - Each successful change produces one event (see [events](#events)).
 - Marking a user Deleted also takes them out of every group.
 - **Only a person may sign in**: a user may sign in when they are of kind `human` and Active. Every part of a sign-in asks this one rule, the completion included, so a service account or an agent can never be given a session.
@@ -100,6 +101,51 @@ Normalization is idempotent: normalizing an already normalized value changes not
 ### Finding a user at sign-in
 
 What a person types in a login form is matched like this: if it contains `@` it is treated as an email address, otherwise as a username. It is normalized by the rules above and looked up within the tenant. A value that is not a well-formed identifier of its kind matches nobody; it is not an error, so that a login form cannot be used to learn the rules of valid identifiers.
+
+## Standard claims
+
+A person keeps the standard claims of [OpenID Connect Core, section 5.1](https://openid.net/specs/openid-connect-core-1_0.html#StandardClaims), beside the display name and the locale ([Decision 0047](../../decisions/0047-claims-and-the-person-s-claims.md), [Decision 0065](../../decisions/0065-where-the-standard-claims-come-from.md)). They are what UserInfo answers for the scopes `profile`, `address` and `phone` ([UserInfo](oauth.md#userinfo)). Each is optional; together they are one value, replaced as a whole.
+
+| Claim | What it is | Rule |
+|---|---|---|
+| `given_name`, `family_name`, `middle_name` | The person's names | 1 to 200 characters, without control characters |
+| `nickname` | A casual name | As the names |
+| `profile` | The address of the person's page elsewhere | An absolute `https` or `http` address with a host, at most 1024 printable ASCII characters, without spaces |
+| `picture` | The address of a picture of the person | As `profile`. Hodor never fetches it |
+| `website` | The address of the person's site or blog | As `profile` |
+| `gender` | | 1 to 50 characters, without control characters. OpenID Connect names `female` and `male`; any other value is kept as given |
+| `birthdate` | | `YYYY-MM-DD`; `0000-MM-DD` when the year is not told; or `YYYY` alone. A day that exists in the calendar, not after today |
+| `zoneinfo` | The person's time zone | A name of the time zone database, such as `Europe/Paris`: parts separated by `/`, each starting with a letter and made of letters, digits, `_`, `-` and `+`, at most 64 characters in all |
+| `phone_number` | | E.164: `+` and 4 to 15 digits, optionally followed by `;ext=` and 1 to 10 digits. Spaces, hyphens, dots and parentheses are taken out first, so `+1 (604) 555-1234` is kept as `+16045551234` |
+| `phone_number_verified` | Whether someone vouched for the number | A boolean; false when there is no number. See [who vouches](#who-vouches-for-a-telephone-number) |
+| `address` | A postal address, in parts | `formatted`, at most 300 characters, and `street_address`, at most 200, may hold line breaks; `locality`, `region` and `country` at most 100 characters each; `postal_code` at most 20. No other control character. The address is there when one of its parts is |
+
+Rules:
+
+- **Every text is trimmed**, and an empty one is no value. Removing a claim is giving it no value.
+- **A claim that breaks its rule refuses the whole change** with `identity.claim_invalid`, `422` through the interfaces. The message names the claim, such as `birthdate`, and never its value. An [identity provider](federation.md#what-hodor-takes-from-the-token) is the exception: what it gives that breaks a rule is left out, and the rest kept.
+- **A service account or an agent has none.** Giving one claims is refused with `identity.workload_claims_refused`.
+- **A change that leaves the claims as they were changes nothing** and records nothing.
+- **A telephone number is not a login identifier.** It never finds a person at a sign-in, and Hodor never sends anything to it. Telephone numbers as identifiers come with Phase 4, with their own verification.
+
+### Who sets them
+
+| Who | Through | What |
+|---|---|---|
+| The person | [The account page](../hosted-pages.md), `/account/profile`, over [`GET` and `PUT /interaction/profile`](../../api/interaction-api.md#the-persons-profile) | Their display name and every standard claim. Never `phone_number_verified` |
+| An administrator | [`PUT /users/{user_id}/claims`](../../api/admin-api.md#a-users-standard-claims) of the administration interface | Every standard claim |
+| An operator | [`hodor-cli user claims`](#command-line-tool) | Every standard claim, one at a time |
+| An identity provider | The first sign-in, which [creates the person](federation.md#who-the-person-is) | What it says of the person, through [the claims it gives](federation.md#what-hodor-takes-from-the-token) |
+| SCIM | [The attributes it maps](provisioning.md#what-each-attribute-is) | Names, nickname, profile page, time zone, the primary telephone number and the primary postal address |
+
+### Who vouches for a telephone number
+
+Hodor does not check that a number is the person's. `phone_number_verified` is what someone who can vouch for it says ([Decision 0065](../../decisions/0065-where-the-standard-claims-come-from.md#a-telephone-number-is-verified-only-on-someones-word)):
+
+- **The person** cannot: a new number they type is not verified, and the number they keep stays as it was.
+- **An administrator and an operator** say it, and it is false unless they do.
+- **SCIM** vouches for every number it sets, as it does for addresses: the tenant's system of record asserts them.
+- **An OpenID Connect provider** vouches when its token says `phone_number_verified` is exactly `true`. GitHub, SAML identity providers and directories never do.
 
 ## Groups
 
@@ -297,7 +343,7 @@ Events carry identifiers of users and of login identifiers, and the kind of a lo
 | `identity.identifier_verified` | A login identifier is verified for the first time |
 | `identity.identifier_removed` | A login identifier is removed |
 | `identity.primary_identifier_changed` | Another identifier of a kind becomes primary |
-| `identity.profile_changed` | Display name or locale changed |
+| `identity.profile_changed` | Display name, locale or standard claims changed. Carries the user's identifier, never a value |
 | `identity.group_created` | A group is created |
 | `identity.group_changed` | A group's name or description changed |
 | `identity.group_deleted` | A group is deleted; carries how many members it had |
@@ -334,6 +380,8 @@ A group's name and description are not personal data, but they can say a great d
 | Activate, suspend, reactivate, deactivate, restore, mark deleted | Apply the transition |
 | Add, verify, remove a login identifier; choose the primary | Apply the change |
 | Change profile | Replace the display name and locale |
+| Change standard claims | Replace the [standard claims](#standard-claims) of a person |
+| Create user with standard claims, in the caller's unit of work | For a context that creates a person and gives their claims at once: an identity provider at a first sign-in, SCIM |
 | Create group | Creates a group with a name and a description |
 | Get group, list groups | A group of the tenant, or a page of them in the order they were created |
 | Change group | Replaces the name and the description |
@@ -378,6 +426,7 @@ What an administrator does through [the administration interface](../../api/admi
 
 | Command | Does |
 |---|---|
+| `hodor-cli user claims --tenant <slug> --user <id or login identifier> [--given-name <text>] [--family-name <text>] [--middle-name <text>] [--nickname <text>] [--profile <address>] [--picture <address>] [--website <address>] [--gender <text>] [--birthdate <date>] [--zoneinfo <name>] [--phone-number <number>] [--phone-number-verified true\|false] [--formatted-address <text>] [--street-address <text>] [--locality <text>] [--region <text>] [--postal-code <text>] [--country <text>]` | Changes the [standard claims](#standard-claims) given, keeps the others, and prints `<claim> <value>` for every claim the person has, `address.locality` and the other parts of the address by their names. An empty value removes a claim. Without any of them, only prints. The user is named by its identifier, or by a username or email address it has |
 | `hodor-cli group create --tenant <slug> --name <name> [--description <text>]` | Creates a group, and prints `created <id> <name>` |
 | `hodor-cli group list --tenant <slug>` | Prints `<id> <name>` for every group |
 | `hodor-cli group add --tenant <slug> --group <id> (--user <id> \| --member-group <id>)` | Adds a member |
@@ -411,8 +460,15 @@ A refusal is the same as through the administration interface, with the same cod
 | `status` | `text` | `pending`, `active`, `suspended`, `deactivated`, `deleted` |
 | `status_reason` | `text` | Why the user was last suspended |
 | `display_name`, `locale` | `text` | Optional |
+| `given_name`, `family_name`, `middle_name`, `nickname`, `gender`, `zoneinfo`, `phone_number` | `text` | Optional, each with its [bound](#standard-claims) checked by the database too |
+| `profile`, `picture`, `website` | `text` | Optional; at most 1024 characters |
+| `birthdate` | `text` | Optional; `YYYY`, or `YYYY-MM-DD`, checked by the database for its shape and by the domain for its day |
+| `phone_number_verified` | `boolean` | False unless there is a number |
+| `address_formatted`, `address_street_address`, `address_locality`, `address_region`, `address_postal_code`, `address_country` | `text` | Optional, the parts of the address |
 | `created_at`, `updated_at` | `timestamptz` | |
 | `version` | `integer` | Incremented on every update; a stale update is rejected |
+
+The standard claims are added by migration 0098, which also moves the given and family names SCIM had set from `provisioning.user_attribute`, those of at most 200 characters.
 
 ### `identity.user_identifier`
 
@@ -497,7 +553,9 @@ A tenant table under row-level security. That the workload is a service account 
 
 | Item | Planned in |
 |---|---|
-| Custom attributes and the standard profile claims of OpenID Connect | Later in Phase 1 |
+| Custom attributes of a person, validated by a tenant's schema | Not scheduled |
+| Editing a person's standard claims in the admin console, which shows them | With the console's user pages |
+| A `picture` kept by Hodor, uploaded by the person | Not scheduled: a picture is an address the person gives |
 | Managing organizations through the administration interface, the command-line tool and the console | Milestone 7, Issue-88 |
 | Managing groups through the administration interface, the command-line tool and the console | Milestone 7, Issue-88 |
 | Roles given to groups, and groups in tokens | Milestone 7, Issue-89 |

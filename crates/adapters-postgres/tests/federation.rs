@@ -291,6 +291,12 @@ async fn a_directory_comes_back_with_its_own_settings() {
         "(sAMAccountName={identifier})",
     );
     settings.subject_attribute = "objectGUID".to_owned();
+    settings
+        .claim_attributes
+        .insert("given_name".to_owned(), "givenName".to_owned());
+    settings
+        .claim_attributes
+        .insert("address.locality".to_owned(), "l".to_owned());
     let created = service
         .create_provider(
             &tenant,
@@ -325,6 +331,7 @@ async fn a_directory_comes_back_with_its_own_settings() {
     for statement in [
         "UPDATE federation.identity_provider SET directory_base = NULL",
         "UPDATE federation.identity_provider SET kind = 'openid_connect'",
+        "UPDATE federation.identity_provider SET claim_attributes = '[]'",
     ] {
         assert!(
             sqlx::query(statement)
@@ -349,6 +356,10 @@ async fn a_saml_provider_comes_back_with_its_own_settings() {
     );
     saml.email_attribute =
         "http://schemas.xmlsoap.org/ws/2005/05/identity/claims/emailaddress".to_owned();
+    saml.claim_attributes.insert(
+        "given_name".to_owned(),
+        "http://schemas.xmlsoap.org/ws/2005/05/identity/claims/givenname".to_owned(),
+    );
     let created = service
         .create_provider(
             &tenant,
