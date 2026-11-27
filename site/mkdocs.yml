@@ -266,6 +266,7 @@ nav:
       - decisions/0071-signing-intermediates.md
       - decisions/0074-hodor-cert-manager-issuer.md
       - decisions/0075-the-registration-settings-of-a-tenant.md
+      - decisions/0077-ext-authz-checks-the-audience.md
   - Contributing:
       - development/conventions.md
       - development/documentation-site.md

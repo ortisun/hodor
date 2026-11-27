@@ -399,6 +399,7 @@ jobs:
           --set extAuthz.token.header=x-hodor-token-claims
           --set "extAuthz.applications[0].destination=spiffe://cluster.local/ns/shop/sa/orders"
           --set "extAuthz.applications[0].clientId=0193f1c2-6a1d-7c55-b0c8-6b1f2c9d4e01"
+          --set "extAuthz.applications[0].audience=https://orders.example.com"
           --set "extAuthz.applications[0].routes[0].methods={GET}"
           --set "extAuthz.applications[0].routes[0].path=/orders/{id}"
           --set "extAuthz.applications[0].routes[0].resourceType=order"

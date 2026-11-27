@@ -275,6 +275,7 @@ extAuthz:
   # One entry per protected application:
   #   - destination: spiffe://cluster.local/ns/shop/sa/orders
   #     clientId: <the application's client, bound to the identity of this service account>
+  #     audience: <the audience of the application's resource server, which a token's aud must hold>
   #     routes:
   #       - methods: [GET]
   #         path: /orders/{id}

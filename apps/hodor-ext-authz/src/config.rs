@@ -75,6 +75,8 @@ struct ApplicationFile {
     destination: String,
     client_id: String,
     #[serde(default)]
+    audience: Option<String>,
+    #[serde(default)]
     routes: Vec<RouteFile>,
 }
 
@@ -125,6 +127,9 @@ pub struct Application {
     pub destination: String,
     /// The application's client, bound to the adapter's identity.
     pub client_id: String,
+    /// The audience of the application's resource server, which the
+    /// checked token's `aud` must hold.
+    pub audience: String,
     /// The route rules, in order.
     pub routes: Vec<Route>,
 }
@@ -202,6 +207,14 @@ impl Settings {
                     "applications[{index}].client_id is not empty"
                 )));
             }
+            let audience = match application.audience {
+                Some(audience) if !audience.is_empty() => audience,
+                _ => {
+                    return Err(refused(format!(
+                        "applications[{index}].audience is the audience of the application's resource server, required and not empty"
+                    )));
+                }
+            };
             let routes = application
                 .routes
                 .into_iter()
@@ -217,6 +230,7 @@ impl Settings {
             applications.push(Application {
                 destination: application.destination,
                 client_id: application.client_id,
+                audience,
                 routes,
             });
         }
@@ -356,9 +370,11 @@ mod tests {
               "token": { "metadata": { "key": "hodor" } },
               "applications": [
                 { "destination": "spiffe://cluster.local/ns/shop/sa/orders", "client_id": "c1",
+                  "audience": "https://orders.example.com",
                   "routes": [ { "methods": ["GET", "HEAD"], "path": "/orders/{id}",
                                 "resource_type": "order", "action": "read" } ] },
-                { "destination": "spiffe://cluster.local/ns/shop/sa/invoices", "client_id": "c2" }
+                { "destination": "spiffe://cluster.local/ns/shop/sa/invoices", "client_id": "c2",
+                  "audience": "https://invoices.example.com" }
               ]
             }"#,
         )
@@ -374,6 +390,10 @@ mod tests {
             })
         );
         assert_eq!(settings.applications.len(), 2);
+        assert_eq!(
+            settings.applications[0].audience,
+            "https://orders.example.com"
+        );
         assert_eq!(settings.applications[0].routes[0].methods, ["GET", "HEAD"]);
         assert!(settings.applications[1].routes.is_empty());
         let header = Settings::from_json(
@@ -442,7 +462,7 @@ mod tests {
             ),
             (
                 r#"{ "hodor": { "url": "http://hodor:8080", "tenant": "acme" },
-                  "applications": [ { "destination": "d", "client_id": "c" }, { "destination": "d", "client_id": "e" } ] }"#,
+                  "applications": [ { "destination": "d", "client_id": "c", "audience": "a" }, { "destination": "d", "client_id": "e", "audience": "a" } ] }"#,
                 "named twice",
             ),
             (
@@ -452,25 +472,35 @@ mod tests {
             ),
             (
                 r#"{ "hodor": { "url": "http://hodor:8080", "tenant": "acme" },
-                  "applications": [ { "destination": "d", "client_id": "c", "routes": [
+                  "applications": [ { "destination": "d", "client_id": "c" } ] }"#,
+                "applications[0].audience",
+            ),
+            (
+                r#"{ "hodor": { "url": "http://hodor:8080", "tenant": "acme" },
+                  "applications": [ { "destination": "d", "client_id": "c", "audience": "" } ] }"#,
+                "applications[0].audience",
+            ),
+            (
+                r#"{ "hodor": { "url": "http://hodor:8080", "tenant": "acme" },
+                  "applications": [ { "destination": "d", "client_id": "c", "audience": "a", "routes": [
                     { "methods": [], "path": "/", "resource_type": "t", "action": "a" } ] } ] }"#,
                 "routes[0]: methods",
             ),
             (
                 r#"{ "hodor": { "url": "http://hodor:8080", "tenant": "acme" },
-                  "applications": [ { "destination": "d", "client_id": "c", "routes": [
+                  "applications": [ { "destination": "d", "client_id": "c", "audience": "a", "routes": [
                     { "methods": ["get"], "path": "/", "resource_type": "t", "action": "a" } ] } ] }"#,
                 "methods",
             ),
             (
                 r#"{ "hodor": { "url": "http://hodor:8080", "tenant": "acme" },
-                  "applications": [ { "destination": "d", "client_id": "c", "routes": [
+                  "applications": [ { "destination": "d", "client_id": "c", "audience": "a", "routes": [
                     { "methods": ["GET"], "path": "orders", "resource_type": "t", "action": "a" } ] } ] }"#,
                 "path",
             ),
             (
                 r#"{ "hodor": { "url": "http://hodor:8080", "tenant": "acme" },
-                  "applications": [ { "destination": "d", "client_id": "c", "routes": [
+                  "applications": [ { "destination": "d", "client_id": "c", "audience": "a", "routes": [
                     { "methods": ["GET"], "path": "/", "resource_type": "", "action": "a" } ] } ] }"#,
                 "resource_type",
             ),

@@ -5,7 +5,7 @@
 //! Specified in `docs/operations/hodor-ext-authz.md`, "What a check
 //! becomes".
 
-use crate::config::{Settings, TokenSource};
+use crate::config::{Application, Settings, TokenSource};
 use crate::pattern;
 use base64::Engine as _;
 use base64::engine::general_purpose::{URL_SAFE, URL_SAFE_NO_PAD};
@@ -113,7 +113,7 @@ pub fn question(settings: &Settings, check: &CheckRequest) -> Result<Question, D
         .map(|peer| peer.principal.as_str())
         .unwrap_or_default();
     let subject = match claims(settings, check, http)? {
-        Some(claims) => subject_of(settings, &claims)?,
+        Some(claims) => subject_of(settings, &settings.applications[application], &claims)?,
         None if !source.is_empty() => json!({ "type": "workload_identity", "id": source }),
         None => {
             return Err(Denial(
@@ -137,11 +137,21 @@ pub fn question(settings: &Settings, check: &CheckRequest) -> Result<Question, D
     })
 }
 
-/// The subject named by claims that hold: the tenant's issuer, not
-/// expired, and a `sub`.
-fn subject_of(settings: &Settings, claims: &Map<String, Value>) -> Result<Value, Denial> {
+/// The subject named by claims that hold: the tenant's issuer, the
+/// audience of the application's resource server, not expired, and a
+/// `sub`.
+fn subject_of(
+    settings: &Settings,
+    application: &Application,
+    claims: &Map<String, Value>,
+) -> Result<Value, Denial> {
     if claims.get("iss").and_then(Value::as_str) != Some(settings.issuer.as_str()) {
         return Err(Denial("the token is not of the tenant's issuer"));
+    }
+    if !holds(claims.get("aud"), &application.audience) {
+        return Err(Denial(
+            "the token is not for the audience of the application's resource server",
+        ));
     }
     match claims.get("exp") {
         None => {}
@@ -165,6 +175,16 @@ fn subject_of(settings: &Settings, claims: &Map<String, Value>) -> Result<Value,
         "user"
     };
     Ok(json!({ "type": kind, "id": subject }))
+}
+
+/// Whether `aud` names `audience`: one text equal to it, or a list with it
+/// among its values, compared byte for byte.
+fn holds(aud: Option<&Value>, audience: &str) -> bool {
+    match aud {
+        Some(Value::String(one)) => one == audience,
+        Some(Value::Array(many)) => many.iter().any(|value| value.as_str() == Some(audience)),
+        _ => false,
+    }
 }
 
 /// The claims of the token the proxy checked, from where the settings say,
@@ -274,11 +294,13 @@ mod tests {
     use envoy_types::pb::envoy::config::core::v3::Metadata;
     use envoy_types::pb::envoy::service::auth::v3::AttributeContext;
     use envoy_types::pb::envoy::service::auth::v3::attribute_context::{Peer, Request};
+    use envoy_types::pb::google::protobuf::ListValue;
     use std::collections::HashMap;
 
     const ORDERS: &str = "spiffe://cluster.local/ns/shop/sa/orders";
     const WEB: &str = "spiffe://cluster.local/ns/shop/sa/web";
     const ISSUER: &str = "https://login.example.com/t/acme";
+    const ORDERS_AUDIENCE: &str = "https://orders.example.com";
 
     fn settings(token: &str) -> Settings {
         Settings::from_json(&format!(
@@ -286,7 +308,7 @@ mod tests {
               "hodor": {{ "url": "http://hodor:8080", "tenant": "acme", "issuer": "{ISSUER}" }},
               {token}
               "applications": [
-                {{ "destination": "{ORDERS}", "client_id": "orders-client",
+                {{ "destination": "{ORDERS}", "client_id": "orders-client", "audience": "{ORDERS_AUDIENCE}",
                    "routes": [
                      {{ "methods": ["GET"], "path": "/orders", "resource_type": "order", "action": "list" }},
                      {{ "methods": ["GET"], "path": "/orders/{{id}}", "resource_type": "order", "action": "read" }},
@@ -340,7 +362,9 @@ mod tests {
             Value::Bool(flag) => Kind::BoolValue(*flag),
             Value::Number(number) => Kind::NumberValue(number.as_f64().expect("number")),
             Value::String(text) => Kind::StringValue(text.clone()),
-            Value::Array(_) => unreachable!("not used"),
+            Value::Array(values) => Kind::ListValue(ListValue {
+                values: values.iter().map(proto).collect(),
+            }),
             Value::Object(fields) => Kind::StructValue(Struct {
                 fields: fields
                     .iter()
@@ -463,7 +487,7 @@ mod tests {
         let mut person = check("GET", "/orders/1");
         in_metadata(
             &mut person,
-            &json!({ "iss": ISSUER, "sub": "user-1", "client_id": "app", "exp": later() }),
+            &json!({ "iss": ISSUER, "aud": ORDERS_AUDIENCE, "sub": "user-1", "client_id": "app", "exp": later() }),
         );
         assert_eq!(
             question(&settings, &person).expect("asked").body["subject"],
@@ -472,7 +496,7 @@ mod tests {
         let mut itself = check("GET", "/orders/1");
         in_metadata(
             &mut itself,
-            &json!({ "iss": ISSUER, "sub": "app", "client_id": "app" }),
+            &json!({ "iss": ISSUER, "aud": [ISSUER, ORDERS_AUDIENCE], "sub": "app", "client_id": "app" }),
         );
         assert_eq!(
             question(&settings, &itself).expect("asked").body["subject"],
@@ -491,12 +515,12 @@ mod tests {
     fn claims_that_fail_are_denied_and_never_replaced_by_the_identity() {
         let settings = settings(METADATA);
         for claims in [
-            json!({ "iss": "https://login.example.com/t/other", "sub": "user-1" }),
-            json!({ "sub": "user-1" }),
-            json!({ "iss": ISSUER, "sub": "user-1", "exp": 1 }),
-            json!({ "iss": ISSUER, "sub": "user-1", "exp": "later" }),
-            json!({ "iss": ISSUER }),
-            json!({ "iss": ISSUER, "sub": "" }),
+            json!({ "iss": "https://login.example.com/t/other", "aud": ORDERS_AUDIENCE, "sub": "user-1" }),
+            json!({ "aud": ORDERS_AUDIENCE, "sub": "user-1" }),
+            json!({ "iss": ISSUER, "aud": ORDERS_AUDIENCE, "sub": "user-1", "exp": 1 }),
+            json!({ "iss": ISSUER, "aud": ORDERS_AUDIENCE, "sub": "user-1", "exp": "later" }),
+            json!({ "iss": ISSUER, "aud": ORDERS_AUDIENCE }),
+            json!({ "iss": ISSUER, "aud": ORDERS_AUDIENCE, "sub": "" }),
         ] {
             let mut failing = check("GET", "/orders/1");
             in_metadata(&mut failing, &claims);
@@ -510,7 +534,8 @@ mod tests {
     #[test]
     fn the_claims_header_is_believed_only_as_the_bearer_tokens_claims() {
         let settings = settings(HEADER);
-        let claims = json!({ "iss": ISSUER, "sub": "user-1", "exp": later() });
+        let claims =
+            json!({ "iss": ISSUER, "aud": ORDERS_AUDIENCE, "sub": "user-1", "exp": later() });
         let (token, payload) = jwt(&claims);
         let mut forwarded = check("GET", "/orders/1");
         http(&mut forwarded).headers = HashMap::from([
@@ -524,7 +549,10 @@ mod tests {
 
         // Written by the caller, with no token or with another token.
         let forged = URL_SAFE_NO_PAD.encode(
-            serde_json::to_vec(&json!({ "iss": ISSUER, "sub": "administrator" })).expect("json"),
+            serde_json::to_vec(
+                &json!({ "iss": ISSUER, "aud": ORDERS_AUDIENCE, "sub": "administrator" }),
+            )
+            .expect("json"),
         );
         let mut alone = check("GET", "/orders/1");
         http(&mut alone).headers =
@@ -542,6 +570,59 @@ mod tests {
             ("authorization".to_owned(), format!("Bearer {token}")),
         ]);
         assert!(question(&settings, &garbled).is_err());
+    }
+
+    #[test]
+    fn a_token_for_another_audience_is_denied() {
+        let metadata = settings(METADATA);
+        let held =
+            |aud: Value| json!({ "iss": ISSUER, "aud": aud, "sub": "user-1", "exp": later() });
+        for (aud, allowed) in [
+            (json!(ORDERS_AUDIENCE), true),
+            (json!([ORDERS_AUDIENCE]), true),
+            (
+                json!(["https://invoices.example.com", ORDERS_AUDIENCE]),
+                true,
+            ),
+            // Another application of the same tenant.
+            (json!("https://invoices.example.com"), false),
+            (json!(["https://invoices.example.com", ISSUER]), false),
+            // The issuer alone: a token that named no resource server.
+            (json!(ISSUER), false),
+            // An ID token: its audience is a client.
+            (json!("orders-client"), false),
+            // Compared byte for byte.
+            (json!("https://orders.example.com/"), false),
+            (json!("HTTPS://ORDERS.EXAMPLE.COM"), false),
+            (json!([]), false),
+            (json!(42), false),
+            (json!({ "aud": ORDERS_AUDIENCE }), false),
+        ] {
+            let mut asked = check("GET", "/orders/1");
+            in_metadata(&mut asked, &held(aud.clone()));
+            assert_eq!(question(&metadata, &asked).is_ok(), allowed, "{aud}");
+        }
+        let mut without = check("GET", "/orders/1");
+        in_metadata(
+            &mut without,
+            &json!({ "iss": ISSUER, "sub": "user-1", "exp": later() }),
+        );
+        assert_eq!(
+            question(&metadata, &without),
+            Err(Denial(
+                "the token is not for the audience of the application's resource server"
+            ))
+        );
+
+        // Through the header too, and never replaced by the caller's identity.
+        let through_header = settings(HEADER);
+        let (token, payload) = jwt(&held(json!("https://invoices.example.com")));
+        let mut forwarded = check("GET", "/orders/1");
+        http(&mut forwarded).headers = HashMap::from([
+            ("x-hodor-token-claims".to_owned(), payload),
+            ("authorization".to_owned(), format!("Bearer {token}")),
+        ]);
+        assert!(question(&through_header, &forwarded).is_err());
     }
 
     #[test]
