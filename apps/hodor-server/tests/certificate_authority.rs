@@ -313,6 +313,7 @@ async fn an_authority_for_development_is_created_published_trusted_audited_and_r
     assert_eq!(created["kind"], "root");
     assert_eq!(created["state"], "active");
     assert_eq!(created["for_development"], true);
+    assert_eq!(created["uri_constraints"], true);
     assert_eq!(created["key"]["provider"], "local");
     assert_eq!(created["key"]["algorithm"], "ES256");
     assert_eq!(created["intermediate_lifetime_days"], 14);
@@ -485,6 +486,153 @@ async fn an_authority_for_development_is_created_published_trusted_audited_and_r
     )
     .await;
     assert_eq!(domains["items"], serde_json::json!([]));
+}
+
+#[tokio::test]
+async fn an_authority_may_leave_uris_unconstrained_and_permit_more_dns_names() {
+    use base64::Engine as _;
+    use hodor_adapters_crypto::testing::certificates::{Leaf, MeshIntermediate, MeshRequest};
+    let database = TestDatabase::start().await;
+    let (_, administrator, _) = tenant(&database, "acme").await;
+    let server = start_server_with(
+        &database,
+        &[
+            ("HODOR_SECRET_KEYS", ROOT_KEY),
+            ("HODOR_CERTIFICATE_AUTHORITY", "development"),
+        ],
+    )
+    .await;
+    let admin = |path: &str| format!("/t/acme/api/v1/admin{path}");
+    let (status, refused) = call(
+        &server,
+        Method::POST,
+        &admin("/certificate-authority"),
+        Some(&administrator),
+        Some(serde_json::json!({
+            "kind": "root", "trust_domains": ["cluster.local"], "uri_constraints": "no"
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{refused}");
+    let (status, refused) = call(
+        &server,
+        Method::POST,
+        &admin("/certificate-authority"),
+        Some(&administrator),
+        Some(serde_json::json!({
+            "kind": "root", "trust_domains": ["cluster.local"],
+            "additional_dns_names": ["Not_A.Name"]
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{refused}");
+    assert_eq!(refused["code"], "keys.authority_request_invalid");
+    assert!(
+        refused["detail"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("Not_A.Name"),
+        "{refused}"
+    );
+
+    let (status, created) = call(
+        &server,
+        Method::POST,
+        &admin("/certificate-authority"),
+        Some(&administrator),
+        Some(serde_json::json!({
+            "kind": "root",
+            "trust_domains": ["east.example", "west.example"],
+            "uri_constraints": false,
+            "additional_dns_names": ["istio-system.svc"]
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{created}");
+    assert_eq!(created["uri_constraints"], false);
+    assert_eq!(
+        created["additional_dns_names"],
+        serde_json::json!(["istio-system.svc"])
+    );
+    assert_eq!(
+        created["name_constraints"],
+        serde_json::json!({
+            "permitted_uris": [],
+            "permitted_dns_names": ["east.example", "west.example", "istio-system.svc"],
+            "excluded_ip_ranges": ["0.0.0.0/0", "::/0"],
+        })
+    );
+    let (_, read) = call(
+        &server,
+        Method::GET,
+        &admin("/certificate-authority"),
+        Some(&administrator),
+        None,
+    )
+    .await;
+    assert_eq!(read, created);
+
+    // A workload of a mesh under it is still checked by Hodor's own chain
+    // checking, within the authority's DNS and address constraints.
+    let der = |pem: &str| {
+        let body: String = pem
+            .lines()
+            .filter(|line| !line.starts_with("-----"))
+            .collect();
+        base64::engine::general_purpose::STANDARD
+            .decode(body)
+            .expect("base64")
+    };
+    let anchor = der(created["certificate"].as_str().expect("PEM"));
+    let mesh = MeshIntermediate::new(&MeshRequest::authority("istio-ca"));
+    let (status, signed) = call(
+        &server,
+        Method::POST,
+        &admin("/certificate-authority/intermediates"),
+        Some(&administrator),
+        Some(serde_json::json!({ "certificate_signing_request": mesh.request() })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{signed}");
+    assert_eq!(
+        signed["name_constraints"]["permitted_dns_names"],
+        serde_json::json!(["east.example", "west.example", "istio-system.svc"])
+    );
+    let intermediate = der(signed["certificate"].as_str().expect("PEM"));
+    let leaf = mesh.issue(&Leaf::uri("spiffe://east.example/ns/shop/sa/web"));
+    assert_eq!(
+        check_path(
+            &leaf,
+            std::slice::from_ref(&intermediate),
+            std::slice::from_ref(&anchor),
+            &[],
+            SystemClock.now(),
+        )
+        .ok(),
+        Some(0)
+    );
+
+    // Its creation says so in the audit log.
+    record_events(&database).await;
+    let (_, records) = call(
+        &server,
+        Method::GET,
+        &admin("/audit-records"),
+        Some(&administrator),
+        None,
+    )
+    .await;
+    let created_record = records["items"]
+        .as_array()
+        .expect("items")
+        .iter()
+        .find(|record| record["action"] == "keys.authority_created")
+        .expect("its creation");
+    assert_eq!(created_record["details"]["uri_constraints"], false);
+    assert_eq!(
+        created_record["details"]["additional_dns_names"],
+        serde_json::json!(["istio-system.svc"])
+    );
 }
 
 #[tokio::test]

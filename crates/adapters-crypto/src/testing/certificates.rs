@@ -59,6 +59,20 @@ impl Leaf {
     }
 }
 
+/// The public key of a certificate signing request, as `rcgen` signs a
+/// certificate for it: the point of a P-256 key.
+struct RequestedKey(Vec<u8>);
+
+impl rcgen::PublicKeyData for RequestedKey {
+    fn der_bytes(&self) -> &[u8] {
+        &self.0
+    }
+
+    fn algorithm(&self) -> &rcgen::SignatureAlgorithm {
+        &rcgen::PKCS_ECDSA_P256_SHA256
+    }
+}
+
 fn authority_parameters(name: &str) -> CertificateParams {
     let mut parameters = CertificateParams::default();
     parameters.distinguished_name.push(DnType::CommonName, name);
@@ -126,6 +140,52 @@ impl TestAuthority {
     #[must_use]
     pub fn issue_pem(&self, leaf: &Leaf) -> String {
         self.issue_certificate(leaf).pem()
+    }
+
+    /// Signs the certificate signing request of a tenant's intermediate
+    /// authority, in PEM, as the tenant's own root outside Hodor would: an
+    /// authority of path length one that signs certificates, for the key
+    /// the request holds, permitting these DNS names and no address. Its
+    /// name constraints hold no URI, which `rcgen` cannot write: an
+    /// authority that constrains URIs refuses it. In DER.
+    ///
+    /// # Panics
+    ///
+    /// If the request does not read, its key is not on P-256, or `rcgen`
+    /// cannot make the certificate.
+    #[must_use]
+    pub fn sign_authority_request(&self, request: &str, permitted_dns_names: &[&str]) -> Vec<u8> {
+        use x509_parser::prelude::{FromDer as _, X509CertificationRequest};
+        let body: String = request
+            .lines()
+            .filter(|line| !line.starts_with("-----"))
+            .collect();
+        let der = STANDARD.decode(body).expect("base64");
+        let (_, parsed) = X509CertificationRequest::from_der(&der).expect("a request");
+        let key = RequestedKey(
+            parsed
+                .certification_request_info
+                .subject_pki
+                .subject_public_key
+                .data
+                .to_vec(),
+        );
+        let mut parameters = authority_parameters("Hodor authority signed outside");
+        parameters.is_ca = IsCa::Ca(BasicConstraints::Constrained(1));
+        parameters.name_constraints = Some(rcgen::NameConstraints {
+            permitted_subtrees: permitted_dns_names
+                .iter()
+                .map(|name| rcgen::GeneralSubtree::DnsName((*name).to_owned()))
+                .collect(),
+            excluded_subtrees: vec![rcgen::GeneralSubtree::IpAddress(rcgen::CidrSubnet::V4(
+                [0; 4], [0; 4],
+            ))],
+        });
+        parameters
+            .signed_by(&key, &self.certificate, &self.key)
+            .expect("an authority")
+            .der()
+            .to_vec()
     }
 
     fn issue_certificate(&self, leaf: &Leaf) -> rcgen::Certificate {

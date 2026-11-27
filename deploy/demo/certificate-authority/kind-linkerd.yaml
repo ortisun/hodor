@@ -1,0 +1,10 @@
+# The Linkerd cluster of the demonstration of Milestone 12, where the Linkerd mesh of the trust domain
+# west.acme.example runs, and no Hodor. Its pods and services take addresses apart from the Istio cluster's.
+#
+#   python3 deploy/demo/certificate_authority.py makes it; see docs/operations/quick-start.md.
+
+kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+networking:
+  podSubnet: 10.245.0.0/16
+  serviceSubnet: 10.97.0.0/16

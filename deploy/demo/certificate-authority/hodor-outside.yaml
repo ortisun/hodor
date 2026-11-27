@@ -1,0 +1,21 @@
+# Hodor's server on a port of the Istio cluster's node, where the issuer of the Linkerd cluster reaches it
+# over the network both clusters' nodes share. Plain HTTP between the clusters of one machine, NOT FOR
+# ANYTHING REAL: a real cluster reaches Hodor at its public address, over HTTPS.
+#
+#   python3 deploy/demo/certificate_authority.py applies it; see docs/operations/quick-start.md.
+
+apiVersion: v1
+kind: Service
+metadata:
+  name: hodor-outside
+  namespace: hodor
+spec:
+  type: NodePort
+  selector:
+    app.kubernetes.io/instance: hodor
+    app.kubernetes.io/component: server
+  ports:
+    - name: http
+      port: 8080
+      targetPort: 8080
+      nodePort: 30080

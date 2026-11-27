@@ -7011,3 +7011,246 @@ async fn a_reference_pushed_at_one_tenant_is_refused_by_another_and_used_once() 
         "used twice: {location:?}"
     );
 }
+
+/// A tenant's administrator asks its authority to sign a request.
+async fn signed_by_authority(
+    world: &World,
+    tenant: &Tenant,
+    request: &str,
+) -> (StatusCode, serde_json::Value) {
+    world
+        .admin(
+            tenant,
+            &tenant.administrator_token,
+            Method::POST,
+            "/certificate-authority/intermediates",
+            Some(serde_json::json!({ "certificate_signing_request": request })),
+        )
+        .await
+}
+
+/// The identifiers of a tenant's intermediates.
+async fn intermediates_of(world: &World, tenant: &Tenant) -> Vec<String> {
+    let (_, listed) = world
+        .admin(
+            tenant,
+            &tenant.administrator_token,
+            Method::GET,
+            "/certificate-authority/intermediates",
+            None,
+        )
+        .await;
+    let mut found: Vec<String> = listed["items"]
+        .as_array()
+        .expect("items")
+        .iter()
+        .map(|item| item["id"].as_str().expect("id").to_owned())
+        .collect();
+    found.sort();
+    found
+}
+
+#[tokio::test]
+async fn a_request_for_another_tenants_trust_domain_is_never_signed_and_signatures_stay_apart() {
+    use hodor_adapters_crypto::testing::certificates::{MeshIntermediate, MeshRequest};
+    let world = world_with(&[
+        ("HODOR_SECRET_KEYS", ROOT_KEY),
+        ("HODOR_CERTIFICATE_AUTHORITY", "development"),
+    ])
+    .await;
+    let (acme, globex) = (&world.acme, &world.globex);
+    for (tenant, domain) in [(acme, "east.acme.example"), (globex, "west.globex.example")] {
+        let (status, created) = world
+            .admin(
+                tenant,
+                &tenant.administrator_token,
+                Method::POST,
+                "/certificate-authority",
+                Some(serde_json::json!({ "kind": "root", "trust_domains": [domain] })),
+            )
+            .await;
+        assert_eq!(status, StatusCode::CREATED, "{created}");
+    }
+
+    // Requests naming Globex's trust domain, by a URI, by a DNS name and
+    // by the name constraints they ask for: Acme's authority signs none,
+    // and Globex's own signs each.
+    let for_globex = [
+        (
+            MeshRequest {
+                uris: vec!["spiffe://west.globex.example/ns/shop/sa/web".to_owned()],
+                ..MeshRequest::authority("istio-ca")
+            },
+            "keys.intermediate_name_outside_trust_domains",
+        ),
+        (
+            MeshRequest {
+                dns_names: vec!["identity.linkerd.west.globex.example".to_owned()],
+                ..MeshRequest::authority("identity.linkerd.west.globex.example")
+            },
+            "keys.intermediate_name_outside_trust_domains",
+        ),
+        (
+            MeshRequest {
+                permitted_dns_names: vec!["west.globex.example".to_owned()],
+                ..MeshRequest::authority("istio-ca")
+            },
+            "keys.intermediate_constraints_widened",
+        ),
+    ];
+    for (asked, code) in &for_globex {
+        let mesh = MeshIntermediate::new(asked);
+        let (status, refused) = signed_by_authority(&world, acme, mesh.request()).await;
+        assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{refused}");
+        assert_eq!(refused["code"], *code);
+        assert!(
+            refused["detail"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("west.globex.example"),
+            "{refused}"
+        );
+        let (status, signed) = signed_by_authority(&world, globex, mesh.request()).await;
+        assert_eq!(status, StatusCode::CREATED, "{signed}");
+    }
+    let mesh = MeshIntermediate::new(&MeshRequest::authority("istio-ca"));
+    let (status, ours) = signed_by_authority(&world, acme, mesh.request()).await;
+    assert_eq!(status, StatusCode::CREATED, "{ours}");
+    let acme_intermediates = intermediates_of(&world, acme).await;
+    let globex_intermediates = intermediates_of(&world, globex).await;
+    assert_eq!(acme_intermediates, [ours["id"].as_str().expect("id")]);
+    assert_eq!(globex_intermediates.len(), for_globex.len());
+
+    // Each signature is recorded in the tenant whose authority signed it,
+    // and in no other.
+    world.record_events().await;
+    for (tenant, own) in [(acme, &acme_intermediates), (globex, &globex_intermediates)] {
+        let (_, records) = world
+            .admin(
+                tenant,
+                &tenant.administrator_token,
+                Method::GET,
+                "/audit-records?limit=200",
+                None,
+            )
+            .await;
+        let mut signed: Vec<String> = records["items"]
+            .as_array()
+            .expect("items")
+            .iter()
+            .filter(|record| record["action"] == "keys.authority_signed")
+            .filter_map(|record| record["details"]["intermediate_id"].as_str())
+            .map(ToOwned::to_owned)
+            .collect();
+        signed.sort();
+        assert_eq!(&signed, own, "{}", tenant.slug);
+    }
+}
+
+#[tokio::test]
+async fn an_intermediate_authority_of_one_tenant_takes_no_certificate_signed_for_another() {
+    use base64::Engine as _;
+    use hodor_adapters_crypto::testing::certificates::TestAuthority;
+    let world = world_with(&[
+        ("HODOR_SECRET_KEYS", ROOT_KEY),
+        ("HODOR_CERTIFICATE_AUTHORITY", "development"),
+    ])
+    .await;
+    let (acme, globex) = (&world.acme, &world.globex);
+    // Both tenants make an intermediate authority of the same trust domain,
+    // to be signed by a root outside Hodor; one root signs both requests.
+    let outside = TestAuthority::root("A root outside Hodor");
+    let mut signed = Vec::new();
+    for tenant in [acme, globex] {
+        let (status, created) = world
+            .admin(
+                tenant,
+                &tenant.administrator_token,
+                Method::POST,
+                "/certificate-authority",
+                Some(serde_json::json!({
+                    "kind": "intermediate",
+                    "trust_domains": ["cluster.local"],
+                    "uri_constraints": false
+                })),
+            )
+            .await;
+        assert_eq!(status, StatusCode::CREATED, "{created}");
+        assert_eq!(created["state"], "awaiting_certificate");
+        let request = created["certificate_signing_request"]
+            .as_str()
+            .expect("a request");
+        let der = outside.sign_authority_request(request, &["cluster.local"]);
+        signed.push(format!(
+            "-----BEGIN CERTIFICATE-----\n{}\n-----END CERTIFICATE-----\n",
+            base64::engine::general_purpose::STANDARD.encode(der)
+        ));
+    }
+    async fn install(
+        world: &World,
+        tenant: &Tenant,
+        certificate: &str,
+        above: &str,
+    ) -> (StatusCode, serde_json::Value) {
+        world
+            .admin(
+                tenant,
+                &tenant.administrator_token,
+                Method::POST,
+                "/certificate-authority:install",
+                Some(serde_json::json!({ "certificate": certificate, "chain": [above] })),
+            )
+            .await
+    }
+    async fn bundle(world: &World, tenant: &Tenant) -> StatusCode {
+        Client::new()
+            .get(format!(
+                "{}/t/{}/certificate-authority/bundle",
+                world.server.base, tenant.slug
+            ))
+            .send()
+            .await
+            .expect("response")
+            .status()
+    }
+    let above = outside.pem();
+
+    // Acme's certificate, given to Globex: refused, and Globex still waits.
+    let (status, refused) = install(&world, globex, &signed[0], &above).await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{refused}");
+    assert_eq!(refused["code"], "keys.authority_certificate_unsuitable");
+    assert_eq!(refused["detail"], "it does not hold the authority's key");
+    let (_, theirs) = world
+        .admin(
+            globex,
+            &globex.administrator_token,
+            Method::GET,
+            "/certificate-authority",
+            None,
+        )
+        .await;
+    assert_eq!(theirs["state"], "awaiting_certificate");
+    assert_eq!(bundle(&world, globex).await, StatusCode::NOT_FOUND);
+
+    // Installed where it belongs, Acme's authority is active and publishes
+    // its bundle; Globex's publishes nothing and trusts nothing until it
+    // installs its own.
+    let (status, installed) = install(&world, acme, &signed[0], &above).await;
+    assert_eq!(status, StatusCode::OK, "{installed}");
+    assert_eq!(installed["state"], "active");
+    assert_eq!(bundle(&world, acme).await, StatusCode::OK);
+    assert_eq!(bundle(&world, globex).await, StatusCode::NOT_FOUND);
+    let (_, domains) = world
+        .admin(
+            globex,
+            &globex.administrator_token,
+            Method::GET,
+            "/trust-domains",
+            None,
+        )
+        .await;
+    assert_eq!(domains["items"], serde_json::json!([]));
+    let (status, installed) = install(&world, globex, &signed[1], &above).await;
+    assert_eq!(status, StatusCode::OK, "{installed}");
+    assert_eq!(bundle(&world, globex).await, StatusCode::OK);
+}

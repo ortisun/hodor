@@ -9,6 +9,7 @@ use super::{
     PageBody, Shared, authorize, bearer, body, failed, forbidden, not_authenticated, page_request,
     parameter, problem, respond, written,
 };
+use crate::problem::Problem;
 use crate::tenant::TenantSlug;
 use axum::Router;
 use axum::body::Bytes;
@@ -19,13 +20,43 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Extension, Json};
 use hodor_authorization::api::Permission;
-use hodor_kernel::{Actor, Caller, CorrelationId, DomainError, Page, TenantContext, UserId};
+use hodor_kernel::{
+    Actor, Caller, CorrelationId, DomainError, ErrorKind, Page, TenantContext, UserId,
+};
 use hodor_keys::api::{
     AuthorityId, AuthorityService, CertificateAuthority, IntermediateConstraints, IntermediateId,
     NameConstraints, NewAuthority, SignedIntermediate, to_pem,
 };
 use hodor_oauth::api::{ForwardedIdentity, ResourceAccessService, ResourceCaller};
 use serde::{Deserialize, Serialize};
+
+/// A refusal of the authority's operations. When it is about what the
+/// caller asked for, a request to sign, a certificate to install or the
+/// authority asked for, its problem's `detail` is the reason the keys
+/// context gives, such as the name outside the trust domains: the caller's
+/// own request, for the caller to read (`docs/api/admin-api.md`,
+/// "Intermediates"). Every other error is answered as everywhere else, its
+/// reason for the log alone.
+fn refused(error: DomainError) -> Box<Response> {
+    let about_the_request = error.code().starts_with("keys.intermediate_")
+        || matches!(
+            error.code(),
+            "keys.authority_certificate_unsuitable"
+                | "keys.authority_request_invalid"
+                | "keys.authority_trust_domain_invalid"
+        );
+    let status = match error.kind() {
+        ErrorKind::Invalid => Some(StatusCode::UNPROCESSABLE_ENTITY),
+        ErrorKind::Conflict => Some(StatusCode::CONFLICT),
+        _ => None,
+    };
+    match (about_the_request, status, error.detail()) {
+        (true, Some(status), Some(reason)) => {
+            Box::new(Problem::new(status, error.code(), reason).into_response())
+        }
+        _ => failed(error),
+    }
+}
 
 /// The audience an access token must name to sign intermediates.
 pub const CERTIFICATE_AUTHORITY_AUDIENCE: &str = "urn:hodor:certificate-authority";
@@ -80,6 +111,8 @@ struct AuthorityBody {
     lifetime_days: Option<u32>,
     intermediate_lifetime_days: u32,
     for_development: bool,
+    uri_constraints: bool,
+    additional_dns_names: Vec<String>,
     key: KeyBody,
     name_constraints: NameConstraints,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -120,6 +153,8 @@ impl AuthorityBody {
             lifetime_days: state.lifetime_days,
             intermediate_lifetime_days: state.intermediate_lifetime_days,
             for_development: state.for_development,
+            uri_constraints: state.uri_constraints,
+            additional_dns_names: state.additional_dns_names.clone(),
             key: KeyBody {
                 id: state.key.id,
                 provider: state.key.provider.clone(),
@@ -157,6 +192,9 @@ struct NewBody {
     common_name: Option<String>,
     lifetime_days: Option<u32>,
     intermediate_lifetime_days: Option<u32>,
+    uri_constraints: Option<bool>,
+    #[serde(default)]
+    additional_dns_names: Vec<String>,
 }
 
 #[derive(Deserialize)]
@@ -248,7 +286,7 @@ async fn read_authority(
     respond(
         async {
             authorize(&state, &tenant, &headers, "GET", "/certificate-authority").await?;
-            let found = service(&state)?.get(&tenant).await.map_err(failed)?;
+            let found = service(&state)?.get(&tenant).await.map_err(refused)?;
             Ok(Json(AuthorityBody::of(&found, &state.public_url, &slug)).into_response())
         }
         .await,
@@ -276,11 +314,13 @@ async fn create_authority(
                         common_name: asked.common_name,
                         lifetime_days: asked.lifetime_days,
                         intermediate_lifetime_days: asked.intermediate_lifetime_days,
+                        uri_constraints: asked.uri_constraints,
+                        additional_dns_names: asked.additional_dns_names,
                     },
                     caller,
                 )
                 .await
-                .map_err(failed)?;
+                .map_err(refused)?;
             Ok((
                 StatusCode::CREATED,
                 Json(AuthorityBody::of(&created, &state.public_url, &slug)),
@@ -312,7 +352,7 @@ async fn install_certificate(
             let installed = service(&state)?
                 .install(&tenant, &asked.certificate, &asked.chain, caller)
                 .await
-                .map_err(failed)?;
+                .map_err(refused)?;
             Ok(Json(AuthorityBody::of(&installed, &state.public_url, &slug)).into_response())
         }
         .await,
@@ -337,7 +377,7 @@ async fn remove_authority(
             service(&state)?
                 .remove(&tenant, caller)
                 .await
-                .map_err(failed)?;
+                .map_err(refused)?;
             Ok(StatusCode::NO_CONTENT.into_response())
         }
         .await,
@@ -405,7 +445,7 @@ async fn authorize_signing_token(
             forwarded,
         )
         .await
-        .map_err(failed)?;
+        .map_err(refused)?;
     let Ok(found) = found else {
         return Err(not_authenticated());
     };
@@ -421,13 +461,13 @@ async fn authorize_signing_token(
         Err(error) if error.code() == "identity.user_not_found" => {
             return Err(not_authenticated());
         }
-        Err(error) => return Err(failed(error)),
+        Err(error) => return Err(refused(error)),
     }
     let decision = state
         .authorization
         .check(tenant, workload, Permission::CertificateAuthoritySign)
         .await
-        .map_err(failed)?;
+        .map_err(refused)?;
     if !decision.is_allowed() {
         return Err(forbidden());
     }
@@ -487,7 +527,7 @@ async fn sign_intermediate(
                     caller,
                 )
                 .await
-                .map_err(failed)?;
+                .map_err(refused)?;
             Ok((
                 StatusCode::CREATED,
                 Json(IntermediateBody::of(&signed.intermediate, &signed.chain)),
@@ -518,7 +558,7 @@ async fn list_intermediates(
             let (found, chain) = service(&state)?
                 .intermediates(&tenant, &page)
                 .await
-                .map_err(failed)?;
+                .map_err(refused)?;
             let page = Page {
                 items: found
                     .items
@@ -554,7 +594,7 @@ async fn read_intermediate(
             let found = service(&state)?
                 .intermediate(&tenant, id)
                 .await
-                .map_err(failed)?;
+                .map_err(refused)?;
             Ok(Json(IntermediateBody::of(&found.intermediate, &found.chain)).into_response())
         }
         .await,
@@ -594,7 +634,7 @@ async fn withdraw_intermediate(
             let (withdrawn, chain) = service(&state)?
                 .withdraw(&tenant, id, &asked.reason, caller)
                 .await
-                .map_err(failed)?;
+                .map_err(refused)?;
             let first = withdrawn.first().ok_or_else(intermediate_not_found)?;
             Ok(Json(IntermediateBody::of(first, &chain)).into_response())
         }

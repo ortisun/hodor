@@ -75,6 +75,16 @@ keyProvider:
     # Milliseconds one request to OpenBao may take, 1 to 60000. A signature waits for it.
     timeoutMs: 5000
 
+# The certificate authority a tenant may have, which signs the intermediates of its meshes. Off unless
+# enabled. How it works: docs/architecture/contexts/keys.md, "The certificate authority of a tenant".
+certificateAuthority:
+  # true: a tenant's administrator may create the tenant's authority, whose key OpenBao makes and keeps
+  # (keyProvider.openbao). Without OpenBao, creating one is refused.
+  enabled: false
+  # true, with enabled: the local key provider is accepted too, and the key is kept where Hodor can read it.
+  # For a machine of one's own, never for an installation that serves anyone.
+  development: false
+
 # The messages Hodor sends: address verification and password recovery.
 mail:
   # false: no message is delivered, and they wait in the database.

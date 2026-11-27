@@ -1,0 +1,34 @@
+# Istio's intermediate, kept by cert-manager in the Secret cacerts and signed through Hodor by the tenant's
+# certificate authority, as docs/operations/hodor-cert-manager-issuer.md writes it for the trust domain of the
+# Istio cluster: 30 days, the authority's bound, renewed after 20.
+#
+#   python3 deploy/demo/certificate_authority.py applies it; see docs/operations/quick-start.md.
+
+apiVersion: hodor.ortisun.github.io/v1alpha1
+kind: HodorIssuer
+metadata:
+  name: hodor
+  namespace: istio-system
+spec: {}
+---
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: istio-intermediate
+  namespace: istio-system
+spec:
+  secretName: cacerts
+  duration: 720h
+  renewBefore: 240h
+  issuerRef:
+    group: hodor.ortisun.github.io
+    kind: HodorIssuer
+    name: hodor
+  commonName: Istio intermediate of east.acme.example
+  isCA: true
+  privateKey:
+    algorithm: ECDSA
+    size: 256
+  usages:
+    - cert sign
+    - crl sign

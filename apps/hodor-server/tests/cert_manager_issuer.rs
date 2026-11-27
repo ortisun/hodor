@@ -515,7 +515,8 @@ async fn the_issuers_client_signs_with_its_key_and_hodor_trusts_the_intermediate
         .expect("response");
     assert_eq!(response.status(), StatusCode::OK);
 
-    // A request Hodor refuses is named with its code, and nothing signed.
+    // A request Hodor refuses is named with its code and its reason, and
+    // nothing signed.
     let outside = MeshIntermediate::new(&MeshRequest {
         dns_names: vec!["identity.linkerd.other.example.com".to_owned()],
         ..MeshRequest::authority("identity.linkerd.other.example.com")
@@ -528,7 +529,11 @@ async fn the_issuers_client_signs_with_its_key_and_hodor_trusts_the_intermediate
         }) => {
             assert_eq!(status, 422);
             assert_eq!(code, "keys.intermediate_name_outside_trust_domains");
-            assert!(detail.contains("trust domain"), "{detail}");
+            // The reason: the name outside the trust domains.
+            assert!(
+                detail.contains("identity.linkerd.other.example.com"),
+                "{detail}"
+            );
         }
         other => panic!("refused, not {other:?}"),
     }

@@ -674,3 +674,108 @@ async fn an_authority_signs_nothing_until_it_is_active_and_another_tenant_has_no
         .expect_err("awaiting its certificate");
     assert_eq!(refused.code(), "keys.authority_not_active");
 }
+
+/// Whether `rustls-webpki` itself, given the authority's certificate as a
+/// trust anchor with all its name constraints, accepts a workload's path,
+/// as Linkerd's proxy checks a client's certificate.
+fn rustls_webpki_accepts(anchor: &[u8], intermediate: &[u8], leaf: &[u8]) -> bool {
+    use rustls_pki_types::{CertificateDer, UnixTime};
+    let anchor = webpki::anchor_from_trusted_cert(&CertificateDer::from(anchor))
+        .expect("an anchor")
+        .to_owned();
+    let leaf = CertificateDer::from(leaf);
+    webpki::EndEntityCert::try_from(&leaf)
+        .expect("a certificate")
+        .verify_for_usage(
+            webpki::ALL_VERIFICATION_ALGS,
+            &[anchor],
+            &[CertificateDer::from(intermediate)],
+            UnixTime::now(),
+            webpki::KeyUsage::client_auth(),
+            None,
+            None,
+        )
+        .is_ok()
+}
+
+#[tokio::test]
+async fn an_authority_that_leaves_uris_unconstrained_is_trusted_for_spiffe_workloads_by_rustls_webpki()
+ {
+    let workload = Leaf::uri(&format!("spiffe://{CLUSTER}/ns/shop/sa/web"));
+    let linkerd_workload = Leaf::dns(&format!(
+        "web.shop.serviceaccount.identity.linkerd.{CLUSTER}"
+    ));
+    for uri_constraints in [true, false] {
+        let world = world();
+        let authority = world
+            .service
+            .create(
+                &world.tenant,
+                NewAuthority {
+                    kind: "root".to_owned(),
+                    trust_domains: vec![CLUSTER.to_owned(), PROD.to_owned()],
+                    uri_constraints: Some(uri_constraints),
+                    ..NewAuthority::default()
+                },
+                Caller::system(),
+            )
+            .await
+            .expect("an authority");
+        assert_eq!(authority.snapshot().uri_constraints, uri_constraints);
+        let anchor = authority.certificate().expect("active").der.clone();
+        let (_, parsed) = X509Certificate::from_der(&anchor).expect("reads");
+        let ParsedExtension::NameConstraints(constraints) = extension(&parsed, |found| {
+            matches!(found, ParsedExtension::NameConstraints(_))
+        })
+        .parsed_extension() else {
+            unreachable!()
+        };
+        let uri_subtrees = constraints
+            .permitted_subtrees
+            .iter()
+            .flatten()
+            .filter(|subtree| matches!(subtree.base, GeneralName::URI(_)))
+            .count();
+        assert_eq!(uri_subtrees, if uri_constraints { 2 } else { 0 });
+
+        let mesh = MeshIntermediate::new(&MeshRequest::authority("istio-ca"));
+        let signed = world
+            .service
+            .sign(&world.tenant, mesh.request(), None, Caller::system())
+            .await
+            .expect("signed");
+        let intermediate = signed.intermediate.snapshot().certificate.clone();
+        let leaf = mesh.issue(&workload);
+        // Hodor's own chain checking, and OpenSSL, read URI constraints and
+        // accept the workload either way.
+        assert_eq!(
+            check_path(
+                &leaf,
+                std::slice::from_ref(&intermediate),
+                std::slice::from_ref(&anchor),
+                &[],
+                SystemClock.now(),
+            )
+            .ok(),
+            Some(0)
+        );
+        if let Some(verifies) =
+            openssl_verifies(&anchor, std::slice::from_ref(&intermediate), &leaf)
+        {
+            assert!(verifies, "OpenSSL, URI constraints {uri_constraints}");
+        }
+        // `rustls-webpki` refuses every URI under an authority that
+        // constrains URIs, and so does Linkerd's proxy: only an authority
+        // that leaves them unconstrained has its SPIFFE workloads trusted
+        // there. A Linkerd identity, a DNS name, is trusted either way.
+        assert_eq!(
+            rustls_webpki_accepts(&anchor, &intermediate, &leaf),
+            !uri_constraints
+        );
+        assert!(rustls_webpki_accepts(
+            &anchor,
+            &intermediate,
+            &mesh.issue(&linkerd_workload)
+        ));
+    }
+}

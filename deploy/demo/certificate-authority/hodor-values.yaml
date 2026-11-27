@@ -1,0 +1,40 @@
+# The chart's settings for the demonstration of Milestone 12: one server and one worker, small, in a namespace
+# injected with Istio's sidecar, beside the stand-ins of deploy/install/helm/evaluation.yaml. The image, the
+# key provider and the certificate authority are given on the command line, step by step. NOT FOR ANYTHING REAL.
+#
+#   python3 deploy/demo/certificate_authority.py installs it; see docs/operations/quick-start.md.
+
+# The address the workloads of both clusters name Hodor by; every tenant's issuer starts with it.
+publicUrl: http://hodor.hodor.svc:8080
+secret:
+  name: hodor-evaluation
+
+# Istio's sidecar connects to Hodor from 127.0.0.6 and writes the caller's certificate and its chain into
+# X-Forwarded-Client-Cert (forwarded-certificates.yaml), replacing any the caller sent.
+trustedProxies:
+  - 127.0.0.6
+forwardedHeader: none
+clientIdentityHeader: x-forwarded-client-cert
+
+server:
+  replicas: 1
+  passwordHashConcurrency: 1
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      memory: 512Mi
+  podDisruptionBudget:
+    enabled: false
+
+worker:
+  replicas: 1
+  resources:
+    requests:
+      cpu: 50m
+      memory: 128Mi
+    limits:
+      memory: 512Mi
+  podDisruptionBudget:
+    enabled: false

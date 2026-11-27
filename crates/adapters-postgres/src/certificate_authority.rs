@@ -19,8 +19,9 @@ pub struct PgAuthorityStore;
 const PRIMARY_KEY: &str = "certificate_authority_pkey";
 
 const COLUMNS: &str = "id, kind, state, trust_domains, common_name, lifetime_days,
-     intermediate_lifetime_days, for_development, key_id, provider, key_material, public_p256_x,
-     public_p256_y, certificate_signing_request, certificate, serial_number, not_before,
+     intermediate_lifetime_days, for_development, uri_constraints, additional_dns_names, key_id,
+     provider, key_material,
+     public_p256_x, public_p256_y, certificate_signing_request, certificate, serial_number, not_before,
      not_after, certificate_sha256, chain, created_at, activated_at, updated_at, version";
 
 #[derive(FromRow)]
@@ -33,6 +34,8 @@ struct Row {
     lifetime_days: Option<i32>,
     intermediate_lifetime_days: i32,
     for_development: bool,
+    uri_constraints: bool,
+    additional_dns_names: Vec<String>,
     key_id: Uuid,
     provider: String,
     key_material: Vec<u8>,
@@ -98,6 +101,8 @@ fn to_authority(row: Row) -> Result<CertificateAuthority, DomainError> {
             lifetime_days: row.lifetime_days.map(days).transpose()?,
             intermediate_lifetime_days: days(row.intermediate_lifetime_days)?,
             for_development: row.for_development,
+            uri_constraints: row.uri_constraints,
+            additional_dns_names: row.additional_dns_names,
             key: AuthorityKey {
                 id: KeyVersionId::from_uuid(row.key_id),
                 provider: row.provider,
@@ -172,12 +177,12 @@ impl AuthorityStore for PgAuthorityStore {
         let inserted = sqlx::query(
             "INSERT INTO keys.certificate_authority
                  (tenant_id, id, kind, state, trust_domains, common_name, lifetime_days,
-                  intermediate_lifetime_days, for_development, key_id, provider, key_material,
-                  public_p256_x, public_p256_y, certificate_signing_request, certificate,
-                  serial_number, not_before, not_after, certificate_sha256, chain, created_at,
-                  activated_at, updated_at, version)
+                  intermediate_lifetime_days, for_development, uri_constraints,
+                  additional_dns_names, key_id, provider, key_material, public_p256_x, public_p256_y,
+                  certificate_signing_request, certificate, serial_number, not_before, not_after,
+                  certificate_sha256, chain, created_at, activated_at, updated_at, version)
              VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17,
-                     $18, $19, $20, $21, $22, $23, $24, $25)",
+                     $18, $19, $20, $21, $22, $23, $24, $25, $26, $27)",
         )
         .bind(tenant.as_uuid())
         .bind(state.id.as_uuid())
@@ -188,6 +193,8 @@ impl AuthorityStore for PgAuthorityStore {
         .bind(whole(state.lifetime_days))
         .bind(whole(Some(state.intermediate_lifetime_days)))
         .bind(state.for_development)
+        .bind(state.uri_constraints)
+        .bind(&state.additional_dns_names)
         .bind(state.key.id.as_uuid())
         .bind(&state.key.provider)
         .bind(state.key.material.as_bytes())
