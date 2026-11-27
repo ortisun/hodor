@@ -71,14 +71,14 @@ use hodor_oauth::api::{
 use hodor_observability::{LogFormat, Telemetry};
 use hodor_protocol_http::{
     AdminState, ApiKeyAccess, AuthorizationApiState, AuthorizationState, ConsentState,
-    ConsoleState, DiscoveryState, ForwardedHeader, FrontChannel, Health, IdentityHeader, InteractionState,
-    InvitationState, Limits, LogoutState, Pages, ReadinessCheck, RegistrationState, ResolvedTenant,
-    ScimState, TenantResolver, TenantStatus as HttpTenantStatus, TokenState, TrustedProxies,
-    UserInfoState, admin_routes, authority_bundle_routes, authorization_api_routes,
-    authorization_routes, consent_routes, console_routes, discovery_routes, interaction_routes,
-    invitation_routes, key_set_routes, logout_routes, ops_router, parse_gateways, parse_ranges,
-    policy_agent_routes, public_router_behind, registration_routes, scim_routes, serve,
-    token_routes, userinfo_routes,
+    ConsoleState, DiscoveryState, ForwardedHeader, FrontChannel, Health, IdentityHeader,
+    InteractionState, InvitationState, Limits, LogoutState, Pages, ReadinessCheck,
+    RegistrationState, ResolvedTenant, ScimState, TenantResolver, TenantStatus as HttpTenantStatus,
+    TokenState, TrustedProxies, UserInfoState, admin_routes, authority_bundle_routes,
+    authorization_api_routes, authorization_routes, consent_routes, console_routes,
+    discovery_routes, interaction_routes, invitation_routes, key_set_routes, logout_routes,
+    ops_router, parse_gateways, parse_ranges, policy_agent_routes, public_router_behind,
+    registration_routes, scim_routes, serve, token_routes, userinfo_routes,
 };
 use hodor_provisioning::api::{ProvisioningPorts, ProvisioningService};
 use hodor_session::api::SessionService;

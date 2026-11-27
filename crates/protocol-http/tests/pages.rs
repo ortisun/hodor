@@ -7,8 +7,8 @@ use axum::http::{HeaderMap, Method, Request, StatusCode, header};
 use hodor_kernel::{DomainError, TenantContext, TenantId};
 use hodor_protocol_http::{
     CONSOLE_ASSETS_PATH, CONSOLE_CONTENT_SECURITY_POLICY, CONSOLE_PATHS, Limits, PAGE_PATHS,
-    PAGES_CONTENT_SECURITY_POLICY, Pages, ResolvedTenant, SIGNED_OUT_PAGE, TenantResolver, TenantStatus,
-    public_router,
+    PAGES_CONTENT_SECURITY_POLICY, Pages, ResolvedTenant, SIGNED_OUT_PAGE, TenantResolver,
+    TenantStatus, public_router,
 };
 use http_body_util::BodyExt as _;
 use std::path::{Path, PathBuf};

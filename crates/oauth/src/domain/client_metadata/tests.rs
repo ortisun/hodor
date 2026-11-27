@@ -617,7 +617,10 @@ fn a_front_channel_logout_address_is_kept_given_back_and_held_to_its_site() {
         "oauth.client_metadata_invalid"
     );
     assert_eq!(
-        code(read(with("frontchannel_logout_session_required", json!("yes")))),
+        code(read(with(
+            "frontchannel_logout_session_required",
+            json!("yes")
+        ))),
         "oauth.client_metadata_invalid"
     );
 }
