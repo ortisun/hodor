@@ -280,7 +280,7 @@ topologySpreadConstraints:
 {{- range $application.routes }}
 {{- $routes = append $routes (dict "methods" .methods "path" .path "resource_type" .resourceType "action" .action) -}}
 {{- end }}
-{{- $applications = append $applications (dict "destination" (required (printf "extAuthz.applications[%d].destination is required" $index) $application.destination) "client_id" (required (printf "extAuthz.applications[%d].clientId is required" $index) $application.clientId) "routes" $routes) -}}
+{{- $applications = append $applications (dict "destination" (required (printf "extAuthz.applications[%d].destination is required" $index) $application.destination) "client_id" (required (printf "extAuthz.applications[%d].clientId is required" $index) $application.clientId) "audience" (required (printf "extAuthz.applications[%d].audience is required: the audience of the application's resource server" $index) $application.audience) "routes" $routes) -}}
 {{- end }}
 {{- $_ := set $config "applications" $applications -}}
 {{- $config | toPrettyJson -}}

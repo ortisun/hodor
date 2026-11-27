@@ -275,11 +275,11 @@ impl World {
                 "hodor": { "url": url, "tenant": "acme", "issuer": self.issuer() },
                 "token": { "metadata": { "key": "hodor" } },
                 "applications": [
-                    { "destination": ORDERS, "client_id": self.orders_client, "routes": [
+                    { "destination": ORDERS, "client_id": self.orders_client, "audience": ORDERS_AUDIENCE, "routes": [
                         { "methods": ["GET"], "path": "/orders/{id}", "resource_type": "order", "action": "read" },
                         { "methods": ["POST"], "path": "/orders/{id}/approve", "resource_type": "order", "action": "approve" }
                     ] },
-                    { "destination": INVOICES, "client_id": self.invoices_client, "routes": [
+                    { "destination": INVOICES, "client_id": self.invoices_client, "audience": INVOICES_AUDIENCE, "routes": [
                         { "methods": ["GET"], "path": "/invoices/{id}", "resource_type": "order", "action": "read" }
                     ] }
                 ]
@@ -608,20 +608,32 @@ async fn its_decisions_are_the_ones_evaluate_gives() {
     let mut adapter = connect(address).await;
     let orders_token = world.token_of(&world.orders_client).await;
     let invoices_token = world.token_of(&world.invoices_client).await;
-    let claims = |user: &str| json!({ "iss": world.issuer(), "sub": user, "exp": later() });
+    let claims = |user: &str, audience: &str| json!({ "iss": world.issuer(), "aud": audience, "sub": user, "exp": later() });
 
     // (the check, the token evaluate is asked with, the same question, what
     // Hodor must decide)
     let cases = [
         (
-            check(WEB, ORDERS, "GET", "/orders/1", Some(&claims(&world.ana))),
+            check(
+                WEB,
+                ORDERS,
+                "GET",
+                "/orders/1",
+                Some(&claims(&world.ana, ORDERS_AUDIENCE)),
+            ),
             &orders_token,
             json!({ "subject": { "type": "user", "id": world.ana },
                     "resource": { "type": "order", "id": "1" }, "action": "read" }),
             true,
         ),
         (
-            check(WEB, ORDERS, "GET", "/orders/1", Some(&claims(&world.bob))),
+            check(
+                WEB,
+                ORDERS,
+                "GET",
+                "/orders/1",
+                Some(&claims(&world.bob, ORDERS_AUDIENCE)),
+            ),
             &orders_token,
             json!({ "subject": { "type": "user", "id": world.bob },
                     "resource": { "type": "order", "id": "1" }, "action": "read" }),
@@ -633,7 +645,7 @@ async fn its_decisions_are_the_ones_evaluate_gives() {
                 ORDERS,
                 "POST",
                 "/orders/1/approve",
-                Some(&claims(&world.ana)),
+                Some(&claims(&world.ana, ORDERS_AUDIENCE)),
             ),
             &orders_token,
             json!({ "subject": { "type": "user", "id": world.ana },
@@ -648,7 +660,7 @@ async fn its_decisions_are_the_ones_evaluate_gives() {
                 INVOICES,
                 "GET",
                 "/invoices/9",
-                Some(&claims(&world.bob)),
+                Some(&claims(&world.bob, INVOICES_AUDIENCE)),
             ),
             &invoices_token,
             json!({ "subject": { "type": "user", "id": world.bob },
@@ -661,7 +673,7 @@ async fn its_decisions_are_the_ones_evaluate_gives() {
                 INVOICES,
                 "GET",
                 "/invoices/9",
-                Some(&claims(&world.ana)),
+                Some(&claims(&world.ana, INVOICES_AUDIENCE)),
             ),
             &invoices_token,
             json!({ "subject": { "type": "user", "id": world.ana },
@@ -740,7 +752,8 @@ async fn every_failure_is_a_denial() {
     let world = world().await;
     let (address, _stop) = start_adapter(world.settings(&world.server.base), adapter_http()).await;
     let mut adapter = connect(address).await;
-    let ana = json!({ "iss": world.issuer(), "sub": world.ana, "exp": later() });
+    let ana =
+        json!({ "iss": world.issuer(), "aud": ORDERS_AUDIENCE, "sub": world.ana, "exp": later() });
     assert!(
         ask(
             &mut adapter,
@@ -777,7 +790,7 @@ async fn every_failure_is_a_denial() {
     }
     // A token of another tenant, for the same person's identifier, and
     // one that expired.
-    let globex = json!({ "iss": format!("{}/t/globex", world.server.base), "sub": world.ana, "exp": later() });
+    let globex = json!({ "iss": format!("{}/t/globex", world.server.base), "aud": ORDERS_AUDIENCE, "sub": world.ana, "exp": later() });
     assert!(
         !ask(
             &mut adapter,
@@ -785,11 +798,45 @@ async fn every_failure_is_a_denial() {
         )
         .await
     );
-    let expired = json!({ "iss": world.issuer(), "sub": world.ana, "exp": 1 });
+    let expired =
+        json!({ "iss": world.issuer(), "aud": ORDERS_AUDIENCE, "sub": world.ana, "exp": 1 });
     assert!(
         !ask(
             &mut adapter,
             check(WEB, ORDERS, "GET", "/orders/1", Some(&expired))
+        )
+        .await
+    );
+    // Ana holds a role on Orders, but these tokens were not issued for
+    // Orders: one for Invoices, replayed at Orders' proxy; one that named
+    // no resource server; one with no audience; and an ID token, whose
+    // audience is a client.
+    for aud in [
+        json!(INVOICES_AUDIENCE),
+        json!([INVOICES_AUDIENCE, world.issuer()]),
+        json!(world.issuer()),
+        Value::Null,
+        json!(world.orders_client),
+    ] {
+        let mut replayed = json!({ "iss": world.issuer(), "sub": world.ana, "exp": later() });
+        if !aud.is_null() {
+            replayed["aud"] = aud.clone();
+        }
+        assert!(
+            !ask(
+                &mut adapter,
+                check(WEB, ORDERS, "GET", "/orders/1", Some(&replayed))
+            )
+            .await,
+            "a token for {aud} at Orders"
+        );
+    }
+    // A token for both is good at each.
+    let both = json!({ "iss": world.issuer(), "aud": [INVOICES_AUDIENCE, ORDERS_AUDIENCE], "sub": world.ana, "exp": later() });
+    assert!(
+        ask(
+            &mut adapter,
+            check(WEB, ORDERS, "GET", "/orders/1", Some(&both))
         )
         .await
     );
@@ -865,7 +912,8 @@ async fn latency() {
     let (address, _stop) = start_adapter(settings, adapter_http()).await;
     let mut adapter = connect(address).await;
     let token = world.token_of(&world.orders_client).await;
-    let ana = json!({ "iss": world.issuer(), "sub": world.ana, "exp": later() });
+    let ana =
+        json!({ "iss": world.issuer(), "aud": ORDERS_AUDIENCE, "sub": world.ana, "exp": later() });
     let question = json!({ "subject": { "type": "user", "id": world.ana },
                            "resource": { "type": "order", "id": "1" }, "action": "read" });
     let http = Client::new();
