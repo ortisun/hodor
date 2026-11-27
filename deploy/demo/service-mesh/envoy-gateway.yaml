@@ -16,6 +16,11 @@ metadata:
   name: meshed
   namespace: envoy-gateway-system
 spec:
+  # The caller sends the claims of its token beside it, which hodor-ext-authz believes only once the token is
+  # checked: the JWT check comes first, which Envoy Gateway's own order of filters does not do.
+  filterOrder:
+    - name: envoy.filters.http.jwt_authn
+      before: envoy.filters.http.ext_authz
   provider:
     type: Kubernetes
     kubernetes:

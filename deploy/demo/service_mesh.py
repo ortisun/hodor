@@ -588,7 +588,14 @@ def at_orders(cluster, mesh, authority, token=None, claims=None, visitor="visito
         "resolve": {"orders.example.com": mesh.gateway_service}, "authority": authority})
 
 
-def through_the_gateway(cluster, mesh, authority, people, other_token):
+def last_decisions(admin):
+    """What Hodor last decided, to say why a request was not let through."""
+    items = admin.call("GET", "/decisions?limit=3")["items"]
+    return [{key: item.get(key) for key in ("subject", "namespace", "action", "resource", "effect", "reason")}
+            for item in items]
+
+
+def through_the_gateway(cluster, mesh, admin, authority, people, other_token):
     step(f"Through {mesh.gateway}, Orders as a person who holds its role and as one who does not")
     ana, bruno = people["ana"]["token"], people["bruno"]["token"]
     # Envoy Gateway checks the token and forwards it, but writes no header of
@@ -602,7 +609,13 @@ def through_the_gateway(cluster, mesh, authority, people, other_token):
         answer = at_orders(cluster, mesh, authority, ana, ana_claims)
         return answer if answer["status"] == 200 else None
 
-    answer = until("Ana's request let through, once the proxy has the tenant's keys", allowed, seconds=120)
+    try:
+        answer = until("Ana's request let through, once the proxy has the tenant's keys", allowed, seconds=120)
+    except Failed as failure:
+        answer = at_orders(cluster, mesh, authority, ana, ana_claims)
+        raise Failed(f"{failure}: answered {answer['status']} {answer['text'][:300]}; Hodor's last decisions: "
+                     f"{json.dumps(last_decisions(admin))}; Ana is {people['ana']['user']}, her token's sub "
+                     f"{claims_of(ana).get('sub')}") from failure
     check("GET /orders/42" in answer["text"], "Ana reads order 42: hodor-ext-authz asked Hodor, which allowed")
     answer = at_orders(cluster, mesh, authority, bruno, bruno_claims)
     check(answer["status"] == 403, f"Bruno is refused with 403 (answered {answer['status']})")
@@ -785,7 +798,7 @@ def in_one_mesh(name, state, suffix):
         protected(cluster, mesh, admin)
         their_tokens(setup, people)
         other_token = another_tenants_token(cluster, f"globex-{suffix}")
-        through_the_gateway(cluster, mesh, authority, people, other_token)
+        through_the_gateway(cluster, mesh, admin, authority, people, other_token)
         the_record(admin, people)
         hodor_stopped(cluster, mesh, authority, people, forwards)
         limited_apart(cluster, mesh, admin, people)

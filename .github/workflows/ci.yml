@@ -346,6 +346,12 @@ jobs:
           if [ "$MESH" = istio ]; then
             kubectl logs --namespace istio-system deployment/istio-ingressgateway --tail 100
             kubectl logs --namespace istio-system deployment/istiod --tail 100
+            kubectl get requestauthentications,authorizationpolicies --all-namespaces --output yaml
+            # The order of Orders' sidecar's filters, and what its JWT filter writes.
+            kubectl exec --namespace shop deployment/orders --container istio-proxy -- \
+              pilot-agent request GET config_dump \
+              | grep -o -e '"name": "envoy.filters.http[^"]*"' -e '"forward_payload_header": "[^"]*"' \
+                -e '"issuer": "[^"]*"' -e '"forward": [a-z]*' | head -60 || true
           else
             kubectl get gateways,httproutes,securitypolicies,referencegrants --all-namespaces --output yaml
             kubectl get pods --namespace envoy-gateway-system --output yaml

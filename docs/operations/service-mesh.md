@@ -497,7 +497,7 @@ spec:
 - **A request without a good token is refused by Envoy Gateway**, with `401`, before anything is asked, unless the `jwt` section says `optional: true`. Keep it required: the next point relies on it.
 - **A reference to a service of another namespace needs a `ReferenceGrant`** in the namespace `hodor`, from the `SecurityPolicy` of the namespace `shop`, as the Gateway API requires.
 
-**The claims reach `hodor-ext-authz` from the caller.** Envoy Gateway 1.10.0 checks the token and forwards it, and writes its claims into the request's metadata, but sends `hodor-ext-authz` none of that metadata, and writes no header of the claims as Istio does. So the caller sends the claims of the token it presents in `x-hodor-token-claims`, the token's middle part as it is, and `hodor-ext-authz` reads them with `token.header`. They are believed only when they are exactly the claims of the bearer token, which Envoy Gateway has just checked: a caller that sends another token's claims beside its own token is refused with `403`, and one that sends no token never reaches the check. This is sound only while the route's `SecurityPolicy` requires a token.
+**The claims reach `hodor-ext-authz` from the caller.** Envoy Gateway 1.10.0 checks the token and forwards it, and writes its claims into the request's metadata, but sends `hodor-ext-authz` none of that metadata, and writes no header of the claims as Istio does. So the caller sends the claims of the token it presents in `x-hodor-token-claims`, the token's middle part as it is, and `hodor-ext-authz` reads them with `token.header`. They are believed only when they are exactly the claims of the bearer token, which Envoy Gateway has just checked: a caller that sends another token's claims beside its own token is refused with `403`, and one that sends no token never reaches the check. This is sound only while the route's `SecurityPolicy` requires a token, and only once the token is checked before `hodor-ext-authz` is asked. **Envoy Gateway asks external authorization before it checks a token**, in its default order of filters: unchanged, Hodor would be asked, and would record a decision, about the claims of a token nobody has checked yet, and whether the answer is `403` or `401` would tell the caller what Hodor decided about them. Put the JWT check first with the `filterOrder` of the `EnvoyProxy`, as below.
 
 **At a gateway, the destination is the gateway's listener.** Envoy fills `destination.principal` from the certificate of the listener that received the request: its first URI name, or else its first DNS name. So the listener for Orders serves TLS, with a certificate for `orders.example.com`, and the application's entry in `hodor-ext-authz`'s configuration names `orders.example.com` as its `destination`. A listener without TLS gives no destination, and every check is denied. One application per listener, then, unless the route sends the resource and the action as context per route, `hodor_resource_type`, `hodor_action` and `hodor_resource_id`, which `hodor-ext-authz` reads in place of its rules; the `SecurityPolicy` of Envoy Gateway 1.10.0 has `contextExtensions` for it, which was not tried.
 
@@ -529,6 +529,10 @@ metadata:
   name: meshed
   namespace: envoy-gateway-system
 spec:
+  # The token is checked before hodor-ext-authz is asked.
+  filterOrder:
+    - name: envoy.filters.http.jwt_authn
+      before: envoy.filters.http.ext_authz
   provider:
     type: Kubernetes
     kubernetes:
@@ -541,6 +545,8 @@ spec:
             config.linkerd.io/skip-inbound-ports: "8080,8443"
 ```
 
+- **Check the token before asking `hodor-ext-authz`**, with `filterOrder`: Envoy Gateway's own order asks external authorization first.
+
 - **Leave the listeners' ports out of Linkerd's proxy on the way in**, with `config.linkerd.io/skip-inbound-ports`. Through the proxy, every client would reach Envoy from the pod's own address, and Envoy would forward that one address for everybody. Envoy listens on the listeners' own ports when they are 1024 or more; below, it adds 10000 unless `useListenerPortAsContainerPort` is set.
 - **Name the gateway's service account**, with `envoyServiceAccount`, so that its identity is known before it runs: here `edge-gateway.envoy-gateway-system.serviceaccount.identity.linkerd.cluster.local`, in `gatewayIdentities`. Otherwise Envoy Gateway makes up a name, which `kubectl get pod --namespace envoy-gateway-system <pod> --output jsonpath='{.spec.serviceAccountName}'` reads.
 - **Envoy adds the address it received the request from to `X-Forwarded-For`**, as Hodor needs.
@@ -550,7 +556,7 @@ Outside a mesh, name the range Envoy Gateway's pods get their addresses from in 
 
 | Example | What ran it |
 |---|---|
-| The `SecurityPolicy` with `jwt`, the key set inline, and `extAuth` to `hodor-ext-authz` | **Continuous integration**, by the demonstration of Milestone 11: a person who holds the role let through and one who does not refused with `403`; no token `401`; a token of another tenant `401`; another token's claims beside the bearer token `403`; Hodor stopped, `403` |
+| The `SecurityPolicy` with `jwt`, the key set inline, and `extAuth` to `hodor-ext-authz`, the token checked first by `filterOrder` | **Continuous integration**, by the demonstration of Milestone 11: a person who holds the role let through and one who does not refused with `403`; no token `401`; a token of another tenant `401`; another token's claims beside the bearer token `403`; Hodor stopped, `403` |
 | The destination named by the listener's certificate | **Continuous integration**, by the demonstration of Milestone 11 |
 | Envoy Gateway meshed by Linkerd in front of Hodor, named in `gatewayIdentities` | **Continuous integration**, by the demonstration of Milestone 11 |
 | `remoteJWKS`, context per route, Envoy Gateway outside a mesh or in front of Istio | **Not tried** |
@@ -575,7 +581,7 @@ helm install cert-manager oci://quay.io/jetstack/charts/cert-manager --namespace
 
 | Missing | Until then |
 |---|---|
-| Envoy Gateway handing `hodor-ext-authz` the claims it checked | The caller sends them in `x-hodor-token-claims`, believed only when they are the claims of the token Envoy Gateway checked ([Envoy Gateway](#envoy-gateway)) |
+| Envoy Gateway handing `hodor-ext-authz` the claims it checked | The caller sends them in `x-hodor-token-claims`, believed only when they are the claims of the token Envoy Gateway checked first, with the JWT check put before external authorization ([Envoy Gateway](#envoy-gateway)) |
 | A value of the chart for Consul and for Istio's ambient mode | `trustedProxies`, `clientIdentityHeader`, `gatewayIdentities`, the pod annotations and a network policy of your own |
 | The proxies checking a token's binding to a certificate | A bound token checked only by a proxy is a bearer token there. Hodor checks the binding wherever it accepts a token |
 | A revoked token refused by the proxies | They accept it until it expires, five minutes by default, as any resource server that checks tokens by itself does ([Decision 0004](../decisions/0004-token-formats.md)) |
