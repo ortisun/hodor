@@ -159,7 +159,7 @@ pub(crate) fn response_types_invalid(reason: &'static str) -> DomainError {
 /// Whether two `response_type` values name the same type: the same words
 /// in any order for a type Hodor offers, the same text otherwise.
 #[must_use]
-pub fn same_response_type(one: &str, other: &str) -> bool {
+pub(crate) fn same_response_type(one: &str, other: &str) -> bool {
     match (ResponseType::read(one), ResponseType::read(other)) {
         (ReadResponseType::Offered(one), ReadResponseType::Offered(other)) => one == other,
         _ => one == other,
