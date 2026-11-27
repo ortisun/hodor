@@ -192,6 +192,9 @@ jobs:
       - name: Run the demonstration of Milestone 9
         working-directory: .
         run: python3 deploy/demo/what_was_left_out.py
+      - name: Run the demonstration of Milestone 13
+        working-directory: .
+        run: python3 deploy/demo/requests_and_claims.py
       # Last: its second worker removes the ended sessions and delivered
       # messages of every tenant of the stack.
       - name: Run the demonstration of Milestone 6

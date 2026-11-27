@@ -5264,24 +5264,41 @@ async fn register_request_uri(
         .expect("registered");
 }
 
-/// A request object of `client` for `audience`, signed with `key`.
-fn request_object(client: &str, audience: &str, key: &[u8]) -> String {
+/// Seconds since 1970, as JSON Web Tokens write a time.
+fn now_seconds() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("after 1970")
+        .as_secs()
+}
+
+/// `claims` as a JSON Web Token signed with `ES256` by `key`, under the
+/// `kid` every client of this suite gives its key.
+fn es256(claims: &serde_json::Value, key: &[u8]) -> String {
     use aws_lc_rs::rand::SystemRandom;
     use aws_lc_rs::signature::{ECDSA_P256_SHA256_FIXED_SIGNING, EcdsaKeyPair};
     use base64::Engine as _;
     use base64::engine::general_purpose::URL_SAFE_NO_PAD;
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .expect("after 1970")
-        .as_secs();
-    let encode = |value: serde_json::Value| URL_SAFE_NO_PAD.encode(value.to_string());
+    let encode = |value: &serde_json::Value| URL_SAFE_NO_PAD.encode(value.to_string());
     let input = format!(
         "{}.{}",
-        encode(serde_json::json!({"alg": "ES256", "kid": "signing"})),
-        encode(serde_json::json!({
+        encode(&serde_json::json!({"alg": "ES256", "kid": "signing"})),
+        encode(claims)
+    );
+    let pair = EcdsaKeyPair::from_pkcs8(&ECDSA_P256_SHA256_FIXED_SIGNING, key).expect("pair");
+    let signature = pair
+        .sign(&SystemRandom::new(), input.as_bytes())
+        .expect("signature");
+    format!("{input}.{}", URL_SAFE_NO_PAD.encode(signature.as_ref()))
+}
+
+/// A request object of `client` for `audience`, signed with `key`.
+fn request_object(client: &str, audience: &str, key: &[u8]) -> String {
+    es256(
+        &serde_json::json!({
             "iss": client,
             "aud": audience,
-            "exp": now + 300,
+            "exp": now_seconds() + 300,
             "client_id": client,
             "response_type": "code",
             "redirect_uri": REDIRECT,
@@ -5289,13 +5306,9 @@ fn request_object(client: &str, audience: &str, key: &[u8]) -> String {
             "state": "inside",
             "code_challenge": hodor_oauth::api::s256_challenge(VERIFIER, &Sha256Digest),
             "code_challenge_method": "S256",
-        }))
-    );
-    let pair = EcdsaKeyPair::from_pkcs8(&ECDSA_P256_SHA256_FIXED_SIGNING, key).expect("pair");
-    let signature = pair
-        .sign(&SystemRandom::new(), input.as_bytes())
-        .expect("signature");
-    format!("{input}.{}", URL_SAFE_NO_PAD.encode(signature.as_ref()))
+        }),
+        key,
+    )
 }
 
 /// Where the authorization endpoint of `tenant` sends a signed-in browser
@@ -6886,6 +6899,15 @@ async fn one_tenants_registration_settings_and_initial_access_tokens_mean_nothin
 /// A first-party client of `tenant` with a secret, sent by `Basic`; its
 /// identifier and secret.
 async fn pushing_client(world: &World, tenant: &Tenant) -> (String, String) {
+    first_party_client_of_scopes(world, tenant, &["openid"]).await
+}
+
+/// As [`pushing_client`], allowed to ask for `scopes`.
+async fn first_party_client_of_scopes(
+    world: &World,
+    tenant: &Tenant,
+    scopes: &[&str],
+) -> (String, String) {
     use hodor_adapters_postgres::{PgApplicationStore, PgClientStore, PgResourceServerStore};
     use hodor_oauth::api::{
         ApplicationPorts, ApplicationService, ApplicationSettings, ClientSettings, ClientType,
@@ -6917,7 +6939,7 @@ async fn pushing_client(world: &World, tenant: &Tenant) -> (String, String) {
         vec![GrantType::AuthorizationCode],
         vec![REDIRECT.to_owned()],
     );
-    settings.allowed_scopes = vec!["openid".to_owned()];
+    settings.allowed_scopes = scopes.iter().map(|&scope| scope.to_owned()).collect();
     let (client, secret) = applications
         .create_client(
             &tenant.context,
@@ -7598,4 +7620,315 @@ async fn one_tenants_client_keys_at_an_address_are_never_used_for_another_tenant
         StatusCode::UNAUTHORIZED
     );
     assert!(endpoints.asked().is_empty(), "both sets are kept");
+}
+
+/// Pushes `object` as the request of `client` at `tenant`, the client
+/// proving who it is with an assertion signed by `key`: the status and the
+/// body.
+async fn push_object_at(
+    world: &World,
+    tenant: &Tenant,
+    client: &str,
+    key: &[u8],
+    object: &str,
+) -> (StatusCode, serde_json::Value) {
+    use base64::Engine as _;
+    let mut jti = [0_u8; 16];
+    aws_lc_rs::rand::fill(&mut jti).expect("random");
+    let assertion = es256(
+        &serde_json::json!({
+            "iss": client,
+            "sub": client,
+            "aud": format!("http://localhost:8080/t/{}", tenant.slug),
+            "exp": now_seconds() + 60,
+            "jti": base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(jti),
+        }),
+        key,
+    );
+    let response = Client::new()
+        .post(format!(
+            "{}/t/{}/oauth2/par",
+            world.server.base, tenant.slug
+        ))
+        .header("content-type", "application/x-www-form-urlencoded")
+        .body(
+            form_urlencoded::Serializer::new(String::new())
+                .extend_pairs([
+                    (
+                        "client_assertion_type",
+                        "urn:ietf:params:oauth:client-assertion-type:jwt-bearer",
+                    ),
+                    ("client_assertion", assertion.as_str()),
+                    ("request", object),
+                ])
+                .finish(),
+        )
+        .send()
+        .await
+        .expect("response");
+    let status = response.status();
+    (
+        status,
+        response.json().await.unwrap_or(serde_json::Value::Null),
+    )
+}
+
+#[tokio::test]
+async fn a_request_object_pushed_at_one_tenant_is_checked_with_that_tenants_keys_alone() {
+    let world = world_with(&[("HODOR_SECRET_KEYS", ROOT_KEY)]).await;
+    let (acme, globex) = (&world.acme, &world.globex);
+    let (acme_client, acme_key) = request_object_client(&world, acme).await;
+    let (globex_client, globex_key) = request_object_client(&world, globex).await;
+    let acme_issuer = "http://localhost:8080/t/acme";
+    let globex_issuer = "http://localhost:8080/t/globex";
+    let acme_object = request_object(&acme_client, acme_issuer, &acme_key);
+
+    // Acme's client, with its own assertion and object, is nobody at Globex.
+    let (status, body) =
+        push_object_at(&world, globex, &acme_client, &acme_key, &acme_object).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED, "{body}");
+    assert_eq!(body["error"], "invalid_client");
+
+    // Globex's client, proven, pushes Acme's object: not its own. Nor is an
+    // object that names Globex's client and its issuer, signed by Acme's
+    // client's key under the same `kid`. Each is answered at once, and
+    // nothing is kept.
+    let (status, body) =
+        push_object_at(&world, globex, &globex_client, &globex_key, &acme_object).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    assert_eq!(body["error"], "invalid_request_object");
+    assert!(body.get("request_uri").is_none(), "{body}");
+    let forged = request_object(&globex_client, globex_issuer, &acme_key);
+    let (status, body) = push_object_at(&world, globex, &globex_client, &globex_key, &forged).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    assert_eq!(body["error"], "invalid_request_object");
+    assert!(body.get("request_uri").is_none(), "{body}");
+
+    // Globex's client's own object, pushed at Globex, is the request there,
+    // and its reference means nothing at Acme.
+    let own = request_object(&globex_client, globex_issuer, &globex_key);
+    let (status, body) = push_object_at(&world, globex, &globex_client, &globex_key, &own).await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    let reference = body["request_uri"]
+        .as_str()
+        .expect("a reference")
+        .to_owned();
+    let mut at_acme = Browser::not_following(&world.server);
+    let (_, signed_in) = at_acme.sign_in(acme.slug, EMAIL, PASSWORD).await;
+    assert_eq!(signed_in["status"], "completed", "{signed_in}");
+    let (status, location) = with_reference(&mut at_acme, acme, &acme_client, &reference).await;
+    assert_eq!(status, StatusCode::FOUND);
+    assert!(
+        location
+            .as_deref()
+            .is_some_and(|to| to.contains("error=invalid_request_uri") && !to.contains("code=")),
+        "{location:?}"
+    );
+    let mut at_globex = Browser::not_following(&world.server);
+    let (_, signed_in) = at_globex.sign_in(globex.slug, EMAIL, PASSWORD).await;
+    assert_eq!(signed_in["status"], "completed", "{signed_in}");
+    let (status, location) =
+        with_reference(&mut at_globex, globex, &globex_client, &reference).await;
+    assert_eq!(status, StatusCode::FOUND);
+    assert!(
+        location.as_deref().is_some_and(|to| to.contains("code=")),
+        "{location:?}"
+    );
+
+    // At Acme, Acme's client pushes its own object, and it is the request.
+    let (status, body) = push_object_at(&world, acme, &acme_client, &acme_key, &acme_object).await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    let reference = body["request_uri"].as_str().expect("a reference");
+    let (_, location) = with_reference(&mut at_acme, acme, &acme_client, reference).await;
+    assert!(
+        location.as_deref().is_some_and(|to| to.contains("code=")),
+        "{location:?}"
+    );
+}
+
+#[tokio::test]
+async fn one_request_object_address_registered_in_two_tenants_vouches_for_neither_at_the_other() {
+    let web = ClientWebServer::start();
+    let world = world_with(&[
+        ("HODOR_SECRET_KEYS", ROOT_KEY),
+        ("HODOR_OUTBOUND_DEVELOPMENT_HOSTS", &web.host),
+    ])
+    .await;
+    let (acme, globex) = (&world.acme, &world.globex);
+    let (acme_client, acme_key) = request_object_client(&world, acme).await;
+    let (globex_client, globex_key) = request_object_client(&world, globex).await;
+    // Both clients keep their objects under the same address.
+    let shared = web.url("/shared/");
+    register_request_uri(&world, acme, &acme_client, &web, &shared).await;
+    register_request_uri(&world, globex, &globex_client, &web, &shared).await;
+    web.serve(
+        "/shared/acme",
+        Answer::content(request_object(
+            &acme_client,
+            "http://localhost:8080/t/acme",
+            &acme_key,
+        )),
+    );
+    web.serve(
+        "/shared/globex",
+        Answer::content(request_object(
+            &globex_client,
+            "http://localhost:8080/t/globex",
+            &globex_key,
+        )),
+    );
+
+    // At Globex, Acme's object is fetched, as the address is registered
+    // there too, and refused: no key of Globex's client signed it.
+    let mut at_globex = Browser::not_following(&world.server);
+    let (_, signed_in) = at_globex.sign_in(globex.slug, EMAIL, PASSWORD).await;
+    assert_eq!(signed_in["status"], "completed", "{signed_in}");
+    let (status, location) = with_reference(
+        &mut at_globex,
+        globex,
+        &globex_client,
+        &web.url("/shared/acme"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FOUND);
+    let location = location.expect("a redirect");
+    assert!(
+        location.contains("error=invalid_request_object") && !location.contains("code="),
+        "{location}"
+    );
+    let (_, location) = with_reference(
+        &mut at_globex,
+        globex,
+        &globex_client,
+        &web.url("/shared/globex"),
+    )
+    .await;
+    assert!(
+        location.as_deref().is_some_and(|to| to.contains("code=")),
+        "{location:?}"
+    );
+
+    // At Acme, the same holds the other way.
+    let mut at_acme = Browser::not_following(&world.server);
+    let (_, signed_in) = at_acme.sign_in(acme.slug, EMAIL, PASSWORD).await;
+    assert_eq!(signed_in["status"], "completed", "{signed_in}");
+    let (_, location) =
+        with_reference(&mut at_acme, acme, &acme_client, &web.url("/shared/globex")).await;
+    assert!(
+        location
+            .as_deref()
+            .is_some_and(|to| to.contains("error=invalid_request_object") && !to.contains("code=")),
+        "{location:?}"
+    );
+    let (_, location) =
+        with_reference(&mut at_acme, acme, &acme_client, &web.url("/shared/acme")).await;
+    assert!(
+        location.as_deref().is_some_and(|to| to.contains("code=")),
+        "{location:?}"
+    );
+    assert_eq!(
+        web.asked(),
+        [
+            "/shared/acme",
+            "/shared/globex",
+            "/shared/globex",
+            "/shared/acme"
+        ]
+    );
+}
+
+#[tokio::test]
+async fn claims_asked_through_the_claims_parameter_are_read_from_the_tenants_own_person() {
+    let world = world_with(&[("HODOR_SECRET_KEYS", ROOT_KEY)]).await;
+    let (acme, globex) = (&world.acme, &world.globex);
+    // The same address in both tenants, each with a nickname of its own.
+    for (tenant, name) in [(acme, "Ana of Acme"), (globex, "Ana of Globex")] {
+        let (status, answer) = world
+            .admin(
+                tenant,
+                &tenant.administrator_token,
+                Method::PUT,
+                &format!("/users/{}/claims", tenant.ana),
+                Some(serde_json::json!({ "nickname": name })),
+            )
+            .await;
+        assert_eq!(status, StatusCode::OK, "{answer}");
+    }
+    let asked = serde_json::json!({"id_token": {"nickname": null}, "userinfo": {"nickname": null}})
+        .to_string();
+    let challenge = hodor_oauth::api::s256_challenge(VERIFIER, &Sha256Digest);
+    let mut access_tokens = Vec::new();
+    for (tenant, name) in [(acme, "Ana of Acme"), (globex, "Ana of Globex")] {
+        let (client, secret) =
+            first_party_client_of_scopes(&world, tenant, &["openid", "profile"]).await;
+        let mut browser = Browser::not_following(&world.server);
+        let (_, signed_in) = browser.sign_in(tenant.slug, EMAIL, PASSWORD).await;
+        assert_eq!(signed_in["status"], "completed", "{signed_in}");
+        let query = form_urlencoded::Serializer::new(String::new())
+            .extend_pairs([
+                ("response_type", "code"),
+                ("client_id", client.as_str()),
+                ("redirect_uri", REDIRECT),
+                ("scope", "openid"),
+                ("state", "the state"),
+                ("code_challenge", challenge.as_str()),
+                ("code_challenge_method", "S256"),
+                ("claims", asked.as_str()),
+            ])
+            .finish();
+        let back = authorized(
+            &mut browser,
+            &format!("/t/{}/oauth2/authorize?{query}", tenant.slug),
+        )
+        .await;
+        let code = back.get("code").expect("a code");
+        let (status, tokens) = oauth_form(
+            &world,
+            tenant,
+            "token",
+            (&client, &secret),
+            &[
+                ("grant_type", "authorization_code"),
+                ("code", code),
+                ("redirect_uri", REDIRECT),
+                ("code_verifier", VERIFIER),
+            ],
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{tokens}");
+
+        // Each tenant gives the nickname its own person has, in the ID token
+        // and at UserInfo, as asked.
+        let identity = claims_of(tokens["id_token"].as_str().expect("an ID token"));
+        assert_eq!(identity["nickname"], name, "{identity}");
+        let access = tokens["access_token"]
+            .as_str()
+            .expect("an access token")
+            .to_owned();
+        let info: serde_json::Value = Client::new()
+            .get(format!(
+                "{}/t/{}/oauth2/userinfo",
+                world.server.base, tenant.slug
+            ))
+            .bearer_auth(&access)
+            .send()
+            .await
+            .expect("response")
+            .json()
+            .await
+            .expect("JSON");
+        assert_eq!(info["nickname"], name, "{info}");
+        access_tokens.push(access);
+    }
+
+    // The access token whose request asked for the nickname at UserInfo is
+    // refused by the other tenant's UserInfo, each way.
+    assert_eq!(
+        userinfo(&world, globex, &access_tokens[0]).await,
+        StatusCode::UNAUTHORIZED
+    );
+    assert_eq!(
+        userinfo(&world, acme, &access_tokens[1]).await,
+        StatusCode::UNAUTHORIZED
+    );
 }
