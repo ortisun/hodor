@@ -170,9 +170,9 @@ pub enum Reference<'a> {
     Absent,
     /// It has the shape of a reference Hodor makes.
     Pushed(&'a str),
-    /// An address of the client's, read when references at a client's
-    /// address are built.
-    Address,
+    /// An address, `https://` or `http://`, where the client may keep its
+    /// request object.
+    Address(&'a str),
     /// Anything else, or given twice.
     Unknown,
 }
@@ -185,7 +185,9 @@ impl AuthorizationParameters {
             Given::Absent => Reference::Absent,
             Given::Repeated => Reference::Unknown,
             Given::Once(value) if value.starts_with(REFERENCE_PREFIX) => Reference::Pushed(value),
-            Given::Once(value) if value.starts_with("https://") => Reference::Address,
+            Given::Once(value) if value.starts_with("https://") || value.starts_with("http://") => {
+                Reference::Address(value)
+            }
             Given::Once(_) => Reference::Unknown,
         }
     }
@@ -195,7 +197,7 @@ impl AuthorizationParameters {
 /// address outside when it is one of the client's, with the `state` beside
 /// it, in the response mode named beside it, otherwise Hodor's own page.
 /// Nothing of the request can be read.
-fn refused_reference(
+pub(crate) fn refused_reference(
     outside: &AuthorizationParameters,
     client: &Client,
     error: &'static str,
@@ -232,6 +234,7 @@ fn scopes(value: &str) -> BTreeSet<&str> {
 ///
 /// Returns the refusal: `invalid_request_uri` for a reference that cannot
 /// be used, `request_uri_not_supported` for an address of the client's,
+/// which only a service that cannot fetch one brings here,
 /// and `invalid_request` for `request` beside it, each at the redirect
 /// address outside when it is the client's, otherwise on Hodor's own page;
 /// `invalid_request` at the pushed request's redirect address when what
@@ -251,7 +254,7 @@ pub fn check_reference(
     }
     match outside.reference() {
         Reference::Pushed(_) => {}
-        Reference::Address => {
+        Reference::Address(_) => {
             return Err(refuse(
                 "request_uri_not_supported",
                 "references at a client's address are not supported",

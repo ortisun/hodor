@@ -367,3 +367,117 @@ pub(crate) fn base32(text: &str) -> Vec<u8> {
     }
     bytes
 }
+
+/// What the client's own web server answers at a path.
+#[derive(Clone)]
+pub(crate) struct Answer {
+    pub(crate) status: u16,
+    pub(crate) headers: Vec<(String, String)>,
+    pub(crate) body: Vec<u8>,
+    pub(crate) delay: std::time::Duration,
+}
+
+impl Answer {
+    pub(crate) fn content(body: impl Into<Vec<u8>>) -> Self {
+        Self {
+            status: 200,
+            headers: vec![(
+                "content-type".to_owned(),
+                "application/oauth-authz-req+jwt".to_owned(),
+            )],
+            body: body.into(),
+            delay: std::time::Duration::ZERO,
+        }
+    }
+}
+
+type Answers = Arc<std::sync::Mutex<std::collections::BTreeMap<String, Answer>>>;
+
+/// The client's own web server, where it keeps its request objects: on
+/// this machine, so reached through the development exception, as the
+/// other tests of fetched addresses are. Every path asked is kept, so that
+/// a test can say what was never fetched.
+pub(crate) struct ClientWebServer {
+    pub(crate) host: String,
+    answers: Answers,
+    asked: Arc<std::sync::Mutex<Vec<String>>>,
+}
+
+impl ClientWebServer {
+    pub(crate) fn start() -> Self {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("a port");
+        let host = listener.local_addr().expect("address").to_string();
+        let answers: Answers = Arc::default();
+        let asked: Arc<std::sync::Mutex<Vec<String>>> = Arc::default();
+        let (shared_answers, shared_asked) = (answers.clone(), asked.clone());
+        std::thread::spawn(move || {
+            for stream in listener.incoming().flatten() {
+                let (answers, asked) = (shared_answers.clone(), shared_asked.clone());
+                std::thread::spawn(move || answer(stream, &answers, &asked));
+            }
+        });
+        Self {
+            host,
+            answers,
+            asked,
+        }
+    }
+
+    pub(crate) fn url(&self, path: &str) -> String {
+        format!("http://{}{path}", self.host)
+    }
+
+    pub(crate) fn serve(&self, path: &str, answer: Answer) {
+        self.answers
+            .lock()
+            .expect("answers")
+            .insert(path.to_owned(), answer);
+    }
+
+    pub(crate) fn asked(&self) -> Vec<String> {
+        self.asked.lock().expect("asked").clone()
+    }
+}
+
+fn answer(
+    mut stream: std::net::TcpStream,
+    answers: &Answers,
+    asked: &std::sync::Mutex<Vec<String>>,
+) {
+    use std::io::{Read as _, Write as _};
+    let _ = stream.set_read_timeout(Some(std::time::Duration::from_secs(5)));
+    let mut received = Vec::new();
+    let mut chunk = [0_u8; 4096];
+    while !received.windows(4).any(|window| window == b"\r\n\r\n") {
+        match stream.read(&mut chunk) {
+            Ok(0) | Err(_) => return,
+            Ok(read) => received.extend_from_slice(&chunk[..read]),
+        }
+    }
+    let head = String::from_utf8_lossy(&received);
+    let path = head
+        .split_whitespace()
+        .nth(1)
+        .unwrap_or_default()
+        .to_owned();
+    asked.lock().expect("asked").push(path.clone());
+    let found = answers.lock().expect("answers").get(&path).cloned();
+    let answer = found.unwrap_or(Answer {
+        status: 404,
+        headers: Vec::new(),
+        body: Vec::new(),
+        delay: std::time::Duration::ZERO,
+    });
+    std::thread::sleep(answer.delay);
+    let mut written = format!(
+        "HTTP/1.1 {} Answer\r\ncontent-length: {}\r\nconnection: close\r\n",
+        answer.status,
+        answer.body.len()
+    );
+    for (name, value) in &answer.headers {
+        written.push_str(&format!("{name}: {value}\r\n"));
+    }
+    written.push_str("\r\n");
+    let _ = stream.write_all(written.as_bytes());
+    let _ = stream.write_all(&answer.body);
+}

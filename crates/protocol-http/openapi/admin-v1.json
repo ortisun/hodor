@@ -13912,6 +13912,7 @@
           "userinfo_signed_response_alg",
           "request_object_signing_alg",
           "require_pushed_authorization_requests",
+          "request_uris",
           "backchannel_logout_uri",
           "backchannel_logout_session_required",
           "subject_type",
@@ -14038,6 +14039,15 @@
           "require_pushed_authorization_requests": {
             "type": "boolean",
             "description": "Whether every request of the client must be pushed to the pushed authorization request endpoint first; a request that was not pushed is refused. `false` unless given; a tenant may require it of every client."
+          },
+          "request_uris": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "maxLength": 2000
+            },
+            "maxItems": 10,
+            "description": "Where the client keeps request objects that Hodor fetches when a request's `request_uri` starts with one of them (`request_uris` of OpenID Connect Registration): at most 10, only for a client with `authorization_code`, each an HTTPS address of at most 2000 characters with a path, at least `/`, and without a fragment, refused if it leads to a private network."
           },
           "backchannel_logout_uri": {
             "type": [
@@ -14318,6 +14328,16 @@
             "description": "Whether every request of the client must be pushed to the pushed authorization request endpoint first; a request that was not pushed is refused. `false` unless given; a tenant may require it of every client.",
             "default": false
           },
+          "request_uris": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "maxLength": 2000
+            },
+            "maxItems": 10,
+            "description": "Where the client keeps request objects that Hodor fetches when a request's `request_uri` starts with one of them (`request_uris` of OpenID Connect Registration): at most 10, only for a client with `authorization_code`, each an HTTPS address of at most 2000 characters with a path, at least `/`, and without a fragment, refused if it leads to a private network.",
+            "default": []
+          },
           "backchannel_logout_uri": {
             "type": "string",
             "maxLength": 2000,
@@ -14498,6 +14518,15 @@
           "require_pushed_authorization_requests": {
             "type": "boolean",
             "description": "Whether every request of the client must be pushed to the pushed authorization request endpoint first; a request that was not pushed is refused. `false` unless given; a tenant may require it of every client."
+          },
+          "request_uris": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "maxLength": 2000
+            },
+            "maxItems": 10,
+            "description": "Where the client keeps request objects that Hodor fetches when a request's `request_uri` starts with one of them (`request_uris` of OpenID Connect Registration): at most 10, only for a client with `authorization_code`, each an HTTPS address of at most 2000 characters with a path, at least `/`, and without a fragment, refused if it leads to a private network. Replaces the list."
           },
           "backchannel_logout_uri": {
             "type": [

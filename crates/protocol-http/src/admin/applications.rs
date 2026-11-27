@@ -412,6 +412,8 @@ struct ClientBody {
     request_object_signing_alg: Option<&'static str>,
     /// Whether every request of it must be pushed first.
     require_pushed_authorization_requests: bool,
+    /// Where it keeps request objects Hodor may fetch.
+    request_uris: Vec<String>,
     /// Where its logout tokens are sent, or `null`.
     backchannel_logout_uri: Option<String>,
     backchannel_logout_session_required: bool,
@@ -467,6 +469,7 @@ impl From<&Client> for ClientBody {
                 .request_object_algorithm
                 .map(RequestObjectAlgorithm::as_str),
             require_pushed_authorization_requests: settings.require_pushed_requests,
+            request_uris: settings.request_uris.clone(),
             backchannel_logout_uri: settings.backchannel_logout_uri.clone(),
             backchannel_logout_session_required: settings.backchannel_logout_session_required,
             subject_type: settings.subject_type.as_str(),
@@ -551,6 +554,7 @@ struct NewClientBody {
     userinfo_signed_response_alg: Option<String>,
     request_object_signing_alg: Option<String>,
     require_pushed_authorization_requests: Option<bool>,
+    request_uris: Option<Vec<String>>,
     backchannel_logout_uri: Option<String>,
     backchannel_logout_session_required: Option<bool>,
     subject_type: Option<String>,
@@ -603,6 +607,7 @@ struct ClientChangesBody {
     #[serde(default, deserialize_with = "present")]
     request_object_signing_alg: Option<Option<String>>,
     require_pushed_authorization_requests: Option<bool>,
+    request_uris: Option<Vec<String>>,
     /// Left out: unchanged; `null`: removed; an address: replaced.
     #[serde(default, deserialize_with = "present")]
     backchannel_logout_uri: Option<Option<String>>,
@@ -818,6 +823,7 @@ async fn create_client(
             }
             settings.require_pushed_requests =
                 new.require_pushed_authorization_requests.unwrap_or(false);
+            settings.request_uris = new.request_uris.unwrap_or_default();
             settings.backchannel_logout_uri = new.backchannel_logout_uri;
             settings.backchannel_logout_session_required =
                 new.backchannel_logout_session_required.unwrap_or(false);
@@ -963,6 +969,7 @@ async fn change_client(
                 require_pushed_requests: changes
                     .require_pushed_authorization_requests
                     .unwrap_or(now.require_pushed_requests),
+                request_uris: changes.request_uris.unwrap_or(now.request_uris),
                 backchannel_logout_uri: changes
                     .backchannel_logout_uri
                     .unwrap_or(now.backchannel_logout_uri),

@@ -21,10 +21,16 @@ use crate::domain::pushed::{
     ReferenceHash, check_pushed_request, check_reference, pushed_lifetime,
 };
 use crate::domain::request_object::RequestObjectCheck;
+use crate::domain::request_uri::{
+    FetchRefusal, REQUEST_OBJECT_ACCEPT, REQUEST_OBJECT_TIME_LIMIT, address_to_fetch,
+    fetched_object, refused_fetch, with_fetched_object,
+};
+use crate::domain::resource_server::ResourceServer;
 use crate::domain::token::TokenError;
 use hodor_kernel::{
-    Caller, Clock, Digest, DomainError, EventEnvelope, EventMetadata, RandomSource,
-    SignatureVerifier, TenantContext, Timestamp, UnitOfWork, UnitOfWorkFactory, UserId,
+    Caller, Clock, DestinationCheck, Digest, DomainError, EventEnvelope, EventMetadata, HttpClient,
+    HttpRequest, RandomSource, SignatureVerifier, TenantContext, Timestamp, UnitOfWork,
+    UnitOfWorkFactory, UserId,
 };
 use hodor_keys::api::KeyService;
 use std::sync::Arc;
@@ -99,12 +105,21 @@ fn unknown_code() -> DomainError {
     .with_detail("unknown")
 }
 
+/// What fetches a request object at a client's address: the guarded
+/// outbound client, which checks the destination and fetches it.
+#[derive(Clone)]
+struct RequestObjectFetch {
+    destinations: Arc<dyn DestinationCheck>,
+    http: Arc<dyn HttpClient>,
+}
+
 /// The use cases of the authorization endpoint.
 #[derive(Clone)]
 pub struct AuthorizationCodeService {
     ports: AuthorizationCodePorts,
     hints: Option<KeyService>,
     pairwise: Option<PairwiseSubjects>,
+    fetch: Option<RequestObjectFetch>,
 }
 
 impl std::fmt::Debug for AuthorizationCodeService {
@@ -122,6 +137,7 @@ impl AuthorizationCodeService {
             ports,
             hints: None,
             pairwise: None,
+            fetch: None,
         }
     }
 
@@ -140,6 +156,20 @@ impl AuthorizationCodeService {
     #[must_use]
     pub fn with_pairwise_subjects(mut self, pairwise: PairwiseSubjects) -> Self {
         self.pairwise = Some(pairwise);
+        self
+    }
+
+    /// Fetches request objects at a client's address through `http`, after
+    /// checking each address with `destinations`: the guarded outbound
+    /// client, limited to 16 kibibytes. Without them, an address a request
+    /// names is answered `request_uri_not_supported`.
+    #[must_use]
+    pub fn with_request_object_addresses(
+        mut self,
+        destinations: Arc<dyn DestinationCheck>,
+        http: Arc<dyn HttpClient>,
+    ) -> Self {
+        self.fetch = Some(RequestObjectFetch { destinations, http });
         self
     }
 
@@ -205,11 +235,28 @@ impl AuthorizationCodeService {
                 Ok((client, _)) => client,
                 Err(refusal) => return Ok(Err(refusal)),
             };
+            if let (Reference::Address(_), Some(fetch), Some(application)) =
+                (reference, &self.fetch, &application)
+            {
+                let servers = self.ports.resource_servers.list(uow.as_mut()).await?;
+                // Nothing is held in the database while the address is fetched.
+                uow.commit().await?;
+                return Ok(self
+                    .check_at_address(
+                        fetch,
+                        parameters,
+                        (client, application),
+                        &servers,
+                        issuer,
+                        policy.requires(Some(client)),
+                    )
+                    .await);
+            }
             let hash = match reference {
                 Reference::Pushed(value) => {
                     ReferenceHash::of_presented(value, self.ports.digest.as_ref())
                 }
-                Reference::Absent | Reference::Address | Reference::Unknown => None,
+                Reference::Absent | Reference::Address(_) | Reference::Unknown => None,
             };
             let taken = match hash {
                 Some(hash) => {
@@ -307,6 +354,60 @@ impl AuthorizationCodeService {
             Err(error) if error.code() == "oauth.pairwise_unavailable" => Ok(false),
             Err(error) => Err(error),
         }
+    }
+
+    /// Checks a request whose `request_uri` is an address of the client's:
+    /// the address must be one it registered, may be called, and must
+    /// answer a request object within the bounds, with the hash its
+    /// fragment gives; what it answered is then checked as a request object
+    /// given by value. See `docs/architecture/contexts/oauth.md`, "Request
+    /// objects at a client's address".
+    async fn check_at_address(
+        &self,
+        fetch: &RequestObjectFetch,
+        parameters: &AuthorizationParameters,
+        (client, application): (&Client, &crate::domain::application::Application),
+        servers: &[ResourceServer],
+        issuer: &str,
+        pushed_only: bool,
+    ) -> Result<AuthorizationRequest, AuthorizationRefusal> {
+        let address = address_to_fetch(parameters, client, pushed_only)?;
+        let unreachable = || refused_fetch(parameters, client, FetchRefusal::Unreachable);
+        // A name can resolve elsewhere since the address was registered,
+        // and the guarded client checks again on the resolution it
+        // connects with.
+        if fetch.destinations.check(address.url).await.is_err() {
+            return Err(unreachable());
+        }
+        let request = HttpRequest::get(address.url)
+            .header("accept", REQUEST_OBJECT_ACCEPT)
+            .within(REQUEST_OBJECT_TIME_LIMIT);
+        let response = match fetch.http.send(request).await {
+            Ok(response) => response,
+            Err(error) if error.code() == "http.response_too_large" => {
+                return Err(refused_fetch(parameters, client, FetchRefusal::TooLarge));
+            }
+            Err(_) => return Err(unreachable()),
+        };
+        let object = fetched_object(
+            response.status,
+            &response.body,
+            &address,
+            self.ports.digest.as_ref(),
+        )
+        .map_err(|refusal| refused_fetch(parameters, client, refusal))?;
+        check_request(
+            &with_fetched_object(parameters, object),
+            Some(client),
+            Some(application),
+            servers,
+            RequestObjectCheck {
+                issuer,
+                now: self.ports.clock.now(),
+                verifier: self.ports.verifier.as_ref(),
+            },
+            false,
+        )
     }
 
     /// Checks a request `client` pushed, the client that proved who it is

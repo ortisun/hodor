@@ -221,7 +221,7 @@ fn request_uri_says_which_kind_of_reference_it_is() {
     let kind = |given: &[(&str, &str)]| match parameters(given).reference() {
         Reference::Absent => "absent",
         Reference::Pushed(_) => "pushed",
-        Reference::Address => "address",
+        Reference::Address(_) => "address",
         Reference::Unknown => "unknown",
     };
     assert_eq!(kind(&[]), "absent");
@@ -234,6 +234,11 @@ fn request_uri_says_which_kind_of_reference_it_is() {
     );
     assert_eq!(
         kind(&[("request_uri", "http://client.example.com/request.jwt")]),
+        "address",
+        "plain HTTP, which only a host of the development exception can answer"
+    );
+    assert_eq!(
+        kind(&[("request_uri", "ftp://client.example.com/r")]),
         "unknown"
     );
     assert_eq!(

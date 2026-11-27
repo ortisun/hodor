@@ -651,9 +651,11 @@ pub fn discovery_document(issuer: &str, acr_values: &[&str], pushed_required: bo
         "request_parameter_supported": true,
         "request_object_signing_alg_values_supported":
             RequestObjectAlgorithm::ALL.map(RequestObjectAlgorithm::as_str),
-        // `request_uri` at a client's address; Hodor's own references to
-        // pushed requests are named by the two members after it.
-        "request_uri_parameter_supported": false,
+        // `request_uri` at an address the client registered, and only
+        // there; Hodor's own references to pushed requests are named by
+        // the members after them.
+        "request_uri_parameter_supported": true,
+        "require_request_uri_registration": true,
         "require_pushed_authorization_requests": pushed_required,
         "claims_parameter_supported": false,
         // Every client with a back-channel logout address is told when a

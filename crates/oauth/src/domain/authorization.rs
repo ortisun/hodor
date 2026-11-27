@@ -134,6 +134,21 @@ impl AuthorizationParameters {
         }
     }
 
+    /// The same parameters with the request object fetched from the
+    /// address `request_uri` named given as `request` in its place, to be
+    /// checked as one given by value.
+    #[must_use]
+    pub(crate) fn with_object(&self, object: String) -> Self {
+        let mut pairs: Vec<(String, String)> = self
+            .pairs
+            .iter()
+            .filter(|(name, _)| name != "request_uri")
+            .cloned()
+            .collect();
+        pairs.push(("request".to_owned(), object));
+        Self { pairs }
+    }
+
     /// The same parameters, naming `client` as `client_id`, whatever they
     /// named before: the client that proved who it is when it pushed them.
     #[must_use]

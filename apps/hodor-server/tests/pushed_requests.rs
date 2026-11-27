@@ -411,7 +411,7 @@ async fn a_pushed_request_is_brought_once_by_its_reference_to_a_code_and_tokens(
         format!("{}/oauth2/par", issuer("acme"))
     );
     assert_eq!(document["require_pushed_authorization_requests"], false);
-    assert_eq!(document["request_uri_parameter_supported"], false);
+    assert_eq!(document["request_uri_parameter_supported"], true);
 }
 
 #[tokio::test]

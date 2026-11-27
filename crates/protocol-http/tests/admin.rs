@@ -4950,6 +4950,141 @@ async fn a_client_may_be_required_to_push_its_requests() {
 }
 
 #[tokio::test]
+async fn a_client_registers_request_object_addresses_checked_as_it_would_be_called() {
+    let world = world().await;
+    let application = new_application(&world, "Billing", true).await;
+    let path = format!("/applications/{application}/clients");
+    let plain = world
+        .as_administrator(Method::POST, &path, Some(web_client()))
+        .await;
+    assert_eq!(plain.status, StatusCode::CREATED, "{}", plain.body);
+    assert_eq!(
+        plain.body["request_uris"],
+        serde_json::json!([]),
+        "none unless given"
+    );
+
+    let mut body = web_client();
+    body["request_uris"] = serde_json::json!([
+        "https://billing.example.com/requests/",
+        "https://billing.example.com/object.jwt?version=2"
+    ]);
+    let created = world
+        .as_administrator(Method::POST, &path, Some(body))
+        .await;
+    assert_eq!(created.status, StatusCode::CREATED, "{}", created.body);
+    assert_eq!(
+        created.body["request_uris"],
+        serde_json::json!([
+            "https://billing.example.com/requests/",
+            "https://billing.example.com/object.jwt?version=2"
+        ])
+    );
+    let client_path = format!("/clients/{}", created.body["id"].as_str().expect("id"));
+
+    for (address, code) in [
+        (
+            "https://localhost/requests/",
+            "oauth.client_request_uri_forbidden",
+        ),
+        (
+            "https://10.0.0.7/requests/",
+            "oauth.client_request_uri_forbidden",
+        ),
+        (
+            "https://nowhere.example/requests/",
+            "oauth.client_request_uri_unresolvable",
+        ),
+        (
+            "http://billing.example.com/requests/",
+            "oauth.client_request_uri_invalid",
+        ),
+        (
+            "https://billing.example.com",
+            "oauth.client_request_uri_invalid",
+        ),
+        (
+            "https://billing.example.com/requests/#hash",
+            "oauth.client_request_uri_invalid",
+        ),
+    ] {
+        let mut body = web_client();
+        body["request_uris"] = serde_json::json!([address]);
+        let refused = world
+            .as_administrator(Method::POST, &path, Some(body))
+            .await;
+        assert_eq!(
+            refused.status,
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "{address}"
+        );
+        assert_eq!(refused.body["code"], code, "{address}");
+        let changed = world
+            .as_administrator(
+                Method::PATCH,
+                &client_path,
+                Some(serde_json::json!({ "request_uris": [address] })),
+            )
+            .await;
+        assert_eq!(
+            changed.status,
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "{address}"
+        );
+        assert_eq!(changed.body["code"], code, "{address}");
+    }
+    let eleven: Vec<String> = (0..11)
+        .map(|index| format!("https://billing.example.com/{index}/"))
+        .collect();
+    let refused = world
+        .as_administrator(
+            Method::PATCH,
+            &client_path,
+            Some(serde_json::json!({ "request_uris": eleven })),
+        )
+        .await;
+    assert_eq!(refused.body["code"], "oauth.client_request_uri_invalid");
+
+    // Kept through a change of something else; replaced as a list.
+    let renamed = world
+        .as_administrator(
+            Method::PATCH,
+            &client_path,
+            Some(serde_json::json!({ "name": "Billing site" })),
+        )
+        .await;
+    assert_eq!(renamed.status, StatusCode::OK, "{}", renamed.body);
+    assert_eq!(renamed.body["request_uris"], created.body["request_uris"]);
+    let replaced = world
+        .as_administrator(
+            Method::PATCH,
+            &client_path,
+            Some(serde_json::json!({ "request_uris": ["https://billing.example.com/next/"] })),
+        )
+        .await;
+    assert_eq!(replaced.status, StatusCode::OK, "{}", replaced.body);
+    let read = world
+        .as_administrator(Method::GET, &client_path, None)
+        .await;
+    assert_eq!(
+        read.body["request_uris"],
+        serde_json::json!(["https://billing.example.com/next/"])
+    );
+
+    // A client of client credentials alone has none.
+    let mut machine = serde_json::json!({
+        "name": "Billing job",
+        "type": "confidential",
+        "grant_types": ["client_credentials"],
+    });
+    machine["request_uris"] = serde_json::json!(["https://billing.example.com/requests/"]);
+    let refused = world
+        .as_administrator(Method::POST, &path, Some(machine))
+        .await;
+    assert_eq!(refused.body["code"], "oauth.client_request_uri_invalid");
+}
+
+#[tokio::test]
 async fn an_administrator_manages_service_accounts_and_agents_and_binds_clients_to_them() {
     let world = world().await;
     let (ana, _) = world.person(&world.acme, "ana@example.com", &[]).await;

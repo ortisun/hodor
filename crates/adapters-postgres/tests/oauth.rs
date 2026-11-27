@@ -1056,6 +1056,71 @@ async fn the_database_keeps_request_object_algorithms_to_those_named() {
 }
 
 #[tokio::test]
+async fn the_database_keeps_request_object_addresses_to_their_rules() {
+    let database = TestDatabase::start().await;
+    let tenant = sqlx::types::Uuid::now_v7();
+    sqlx::query(
+        "INSERT INTO oauth.application VALUES ($1, $1, 'Billing', false, 'enabled', now(), now(), 0)",
+    )
+    .bind(tenant)
+    .execute(database.owner())
+    .await
+    .expect("application");
+    sqlx::query(
+        "INSERT INTO oauth.client VALUES ($1, $1, $1, 'Web', 'public', 'none',
+             ARRAY['authorization_code'], ARRAY['https://billing.example.com/callback'],
+             ARRAY[]::text[], true, 300, 300, 2592000, 604800, 'enabled', now(), now(), 0)",
+    )
+    .bind(tenant)
+    .execute(database.owner())
+    .await
+    .expect("client");
+    let addresses: Vec<String> =
+        sqlx::query_scalar("SELECT request_uris FROM oauth.client WHERE id = $1")
+            .bind(tenant)
+            .fetch_one(database.owner())
+            .await
+            .expect("read");
+    assert!(addresses.is_empty(), "a client made before it has none");
+    let insert = |grant: &'static str, addresses: Vec<String>| {
+        sqlx::query(
+            "INSERT INTO oauth.client (tenant_id, id, application_id, name, client_type,
+                 authentication_method, grant_types, redirect_uris, allowed_scopes, require_pkce,
+                 access_token_seconds, id_token_seconds, refresh_token_seconds,
+                 refresh_idle_seconds, status, created_at, updated_at, version, request_uris)
+             VALUES ($1, gen_random_uuid(), $1, 'Web', 'confidential', 'client_secret_basic',
+                 ARRAY[$2], CASE WHEN $2 = 'authorization_code'
+                     THEN ARRAY['https://billing.example.com/callback'] ELSE ARRAY[]::text[] END,
+                 ARRAY[]::text[], true, 300, 300, 2592000, 604800, 'enabled', now(), now(), 0,
+                 $3)",
+        )
+        .bind(tenant)
+        .bind(grant)
+        .bind(addresses)
+        .execute(database.owner())
+    };
+    let address = |index: usize| format!("https://billing.example.com/requests/{index}/");
+    insert("authorization_code", (0..10).map(address).collect())
+        .await
+        .expect("ten");
+    assert!(
+        insert("authorization_code", (0..11).map(address).collect())
+            .await
+            .is_err(),
+        "eleven"
+    );
+    insert("client_credentials", Vec::new())
+        .await
+        .expect("none without a code");
+    assert!(
+        insert("client_credentials", vec![address(0)])
+            .await
+            .is_err(),
+        "an address without a code"
+    );
+}
+
+#[tokio::test]
 async fn the_database_keeps_signing_algorithms_of_answers_to_those_named() {
     let database = TestDatabase::start().await;
     let tenant = sqlx::types::Uuid::now_v7();

@@ -163,7 +163,7 @@ randomness and hashing are passed in. Every module is `pub(crate)` in
   `RequestReference`, redacted; `PushedAuthorization` with `push(request,
   lifetime, now, random, digest)` and `is_live_at`;
   `AuthorizationParameters::reference()`, a `Reference` (`Absent`,
-  `Pushed`, `Address` for `https://`, `Unknown`); `check_reference(outside,
+  `Pushed`, `Address(value)` for `https://` and `http://`, `Unknown`); `check_reference(outside,
   client, taken, now)`, the pushed request as the request, with
   `invalid_request_uri`, `request_uri_not_supported` or `invalid_request`
   at the redirect address outside when it is the client's, in the
@@ -196,6 +196,23 @@ randomness and hashing are passed in. Every module is `pub(crate)` in
   `unchecked_claims` reads an object without trusting it, only to name its
   client and where an error may go. Its cases are in
   `request_object/tests.rs`.
+- `request_uri.rs`: request objects at a client's address (OpenID Connect
+  Core, section 6.2). `check_request_uri` (the form of a registered
+  address: as a back-channel logout address, and a path after the host;
+  `oauth.client_request_uri_invalid`), which `ClientSettings::checked`
+  applies to `request_uris`, at most `MAX_REQUEST_URIS` (10), only with
+  `authorization_code`; `is_registered(reference, client)` (the reference
+  before `#`, at most 2000 printable characters, starts with a registered
+  address); `address_to_fetch(outside, client, pushed_only)`, an
+  `AddressToFetch { url, fragment }` or the refusal (`invalid_request` for
+  `request` beside it or a client that must push, `invalid_request_uri`
+  for an unregistered address); `fetched_object(status, body, address,
+  digest)` (2xx, at most `MAX_REQUEST_OBJECT_BYTES`, the base64url SHA-256
+  of the body equal to the fragment, UTF-8 text without the spaces around
+  it) or a `FetchRefusal`; `refused_fetch`, `invalid_request_uri` where a
+  refused reference is answered (`pushed::refused_reference`); and
+  `with_fetched_object`, the parameters with the content as `request` in
+  place of `request_uri`. Its cases are in `request_uri/tests.rs`.
 - `openid.rs`: the OpenID Provider. `authentication_methods` (Hodor's
   method names as RFC 8176 `amr`, each once, in a fixed order, with `mfa`;
   `enrollment`, a factor set up during the sign-in, names nothing and counts

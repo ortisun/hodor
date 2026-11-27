@@ -1,4 +1,5 @@
-//! Request objects at the real server binary, against a real database:
+//! Request objects at the real server binary, against a real database, by
+//! value and at an address of the client's own web server:
 //! objects signed with keys of the test's own making carry the request
 //! through to its tokens, and those that must be refused are.
 
@@ -35,7 +36,9 @@ use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 mod support;
-use support::{Browser, MEMORY_KIBIBYTES, PASSES, Server, start_server_with};
+use support::{
+    Answer, Browser, ClientWebServer, MEMORY_KIBIBYTES, PASSES, Server, start_server_with,
+};
 
 const PASSWORD: &str = "correct horse battery staple";
 const REDIRECT: &str = "https://payroll.example.com/callback";
@@ -496,7 +499,7 @@ async fn a_request_object_signed_by_the_client_carries_the_request_to_its_tokens
         document["request_object_signing_alg_values_supported"],
         json!(["ES256", "RS256", "PS256", "none"])
     );
-    assert_eq!(document["request_uri_parameter_supported"], false);
+    assert_eq!(document["request_uri_parameter_supported"], true);
 }
 
 #[tokio::test]
@@ -603,4 +606,313 @@ async fn a_request_object_that_must_be_refused_is_refused() {
 /// first's.
 async fn client_of_its_own(tenant: &Tenant) -> (ClientId, Option<String>) {
     make_client(tenant, AuthenticationMethod::PrivateKeyJwt, None).await
+}
+
+/// A client with `private_key_jwt` whose request object addresses are
+/// `request_uris`, checked as the server checks them, with the development
+/// exception of `web`.
+async fn client_with_addresses(
+    tenant: &Tenant,
+    web: &ClientWebServer,
+    request_uris: &[String],
+) -> Result<ClientId, hodor_kernel::DomainError> {
+    let guarded =
+        hodor_adapters_http::GuardedHttpClient::new(hodor_adapters_http::OutboundPolicy {
+            development_hosts: vec![web.host.clone()],
+            ..hodor_adapters_http::OutboundPolicy::default()
+        })
+        .expect("guarded client");
+    let mut settings = ClientSettings::new(
+        "Payroll",
+        ClientType::Confidential,
+        vec![GrantType::AuthorizationCode],
+        vec![REDIRECT.to_owned()],
+    );
+    settings.authentication_method = AuthenticationMethod::PrivateKeyJwt;
+    settings.allowed_scopes = vec!["openid".to_owned(), "payroll:read".to_owned()];
+    settings.request_uris = request_uris.to_vec();
+    let (client, _) = tenant
+        .applications
+        .clone()
+        .with_destinations(Arc::new(guarded))
+        .create_client(
+            &tenant.context,
+            CreateClient {
+                application_id: tenant.application,
+                client_type: ClientType::Confidential,
+                settings,
+                secret_lifetime: None,
+            },
+            Caller::system(),
+        )
+        .await?;
+    Ok(client.id())
+}
+
+/// Sends a browser to the authorization endpoint with `reference` as
+/// `request_uri` and the parameters `outside`, and reads where it was sent
+/// back to.
+async fn authorize_by_reference(
+    browser: &mut Browser,
+    slug: &str,
+    client: ClientId,
+    reference: &str,
+    outside: &[(&str, &str)],
+) -> BTreeMap<String, String> {
+    let id = client.to_string();
+    let query = form_urlencoded::Serializer::new(String::new())
+        .extend_pairs([("client_id", id.as_str()), ("request_uri", reference)])
+        .extend_pairs(outside.iter().copied())
+        .finish();
+    let (status, location, body) = browser
+        .navigate(
+            Method::GET,
+            &format!("/t/{slug}/oauth2/authorize?{query}"),
+            None,
+        )
+        .await;
+    assert_eq!(status, StatusCode::FOUND, "{body}");
+    let location = location.expect("a redirect");
+    let (address, query) = location.split_once('?').expect("a query");
+    assert_eq!(address, REDIRECT, "only to the client's address");
+    form_urlencoded::parse(query.as_bytes())
+        .into_owned()
+        .collect()
+}
+
+fn sha256_fragment(content: &[u8]) -> String {
+    URL_SAFE_NO_PAD.encode(aws_lc_rs::digest::digest(
+        &aws_lc_rs::digest::SHA256,
+        content,
+    ))
+}
+
+#[tokio::test]
+async fn a_request_object_at_the_client_s_address_carries_the_request_to_its_tokens() {
+    let database = TestDatabase::start().await;
+    let acme = tenant(&database, "acme").await;
+    let web = ClientWebServer::start();
+    let client = client_with_addresses(&acme, &web, &[web.url("/requests/")])
+        .await
+        .expect("client");
+    let keys = give_keys(&acme, client).await;
+    let server = start_server_with(
+        &database,
+        &[
+            ("HODOR_SECRET_KEYS", ROOT_KEY),
+            ("HODOR_OUTBOUND_DEVELOPMENT_HOSTS", &web.host),
+        ],
+    )
+    .await;
+    let mut browser = Browser::not_following(&server);
+    browser.sign_in("acme", "ana@example.com", PASSWORD).await;
+
+    // Kept as a file is, with a line end, and named with its hash.
+    let object = format!(
+        "{}\n",
+        es256(&keys, &claims("acme", client, "nonce-at-address"))
+    );
+    web.serve("/requests/one", Answer::content(object.clone()));
+    let reference = format!(
+        "{}#{}",
+        web.url("/requests/one"),
+        sha256_fragment(object.as_bytes())
+    );
+    let answer = authorize_by_reference(
+        &mut browser,
+        "acme",
+        client,
+        &reference,
+        &[("response_type", "code"), ("scope", "openid payroll:read")],
+    )
+    .await;
+    assert_eq!(answer["state"], "inside", "{answer:?}");
+    let code = answer.get("code").expect("a code").clone();
+    let client_assertion = assertion("acme", client, &keys, "assertion-at-address");
+    let (status, tokens) = token(
+        &server,
+        "acme",
+        None,
+        &[
+            ("grant_type", "authorization_code"),
+            ("code", &code),
+            ("redirect_uri", REDIRECT),
+            ("code_verifier", VERIFIER),
+            ("client_assertion_type", ASSERTION_TYPE),
+            ("client_assertion", &client_assertion),
+        ],
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{tokens}");
+    let id_token = payload(tokens["id_token"].as_str().expect("an ID token"));
+    assert_eq!(id_token["nonce"], "nonce-at-address");
+    assert_eq!(
+        web.asked(),
+        ["/requests/one"],
+        "fetched once, without its fragment"
+    );
+
+    // Discovery says that registered addresses are fetched.
+    let document: Value = reqwest::get(format!(
+        "{}/t/acme/.well-known/openid-configuration",
+        server.base
+    ))
+    .await
+    .expect("discovery")
+    .json()
+    .await
+    .expect("JSON");
+    assert_eq!(document["request_uri_parameter_supported"], true);
+    assert_eq!(document["require_request_uri_registration"], true);
+}
+
+#[tokio::test]
+async fn a_request_object_at_an_address_that_must_be_refused_is_refused() {
+    let database = TestDatabase::start().await;
+    let acme = tenant(&database, "acme").await;
+    let web = ClientWebServer::start();
+    let client = client_with_addresses(&acme, &web, &[web.url("/requests/")])
+        .await
+        .expect("client");
+    let keys = give_keys(&acme, client).await;
+
+    // An address that leads to a private network is refused when it is
+    // registered.
+    let error = client_with_addresses(&acme, &web, &["https://10.255.255.1/requests/".to_owned()])
+        .await
+        .expect_err("a private address");
+    assert_eq!(error.code(), "oauth.client_request_uri_forbidden");
+    // One registered when its name led elsewhere, written here directly,
+    // is refused when it is to be fetched.
+    let moved = client_with_addresses(&acme, &web, &[web.url("/requests/")])
+        .await
+        .expect("client");
+    sqlx::query("UPDATE oauth.client SET request_uris = $2 WHERE id = $1")
+        .bind(moved.as_uuid())
+        .bind(vec!["https://10.255.255.1/requests/".to_owned()])
+        .execute(database.owner())
+        .await
+        .expect("written");
+
+    let server = start_server_with(
+        &database,
+        &[
+            ("HODOR_SECRET_KEYS", ROOT_KEY),
+            ("HODOR_OUTBOUND_DEVELOPMENT_HOSTS", &web.host),
+        ],
+    )
+    .await;
+    let mut browser = Browser::not_following(&server);
+    let outside = [("redirect_uri", REDIRECT), ("state", "outside")];
+    let object = es256(&keys, &claims("acme", client, "n"));
+    let refused = |answer: &BTreeMap<String, String>, what: &str| {
+        assert_eq!(answer["error"], "invalid_request_uri", "{what}: {answer:?}");
+        assert_eq!(answer["state"], "outside", "{what}");
+        assert!(!answer.contains_key("code"), "{what}");
+    };
+
+    // An address the client did not register is never fetched.
+    web.serve("/elsewhere/one", Answer::content(object.clone()));
+    let answer = authorize_by_reference(
+        &mut browser,
+        "acme",
+        client,
+        &web.url("/elsewhere/one"),
+        &outside,
+    )
+    .await;
+    refused(&answer, "unregistered");
+
+    // An address that resolves to a private network.
+    let answer = authorize_by_reference(
+        &mut browser,
+        "acme",
+        moved,
+        "https://10.255.255.1/requests/one",
+        &outside,
+    )
+    .await;
+    refused(&answer, "private");
+    assert!(
+        web.asked().is_empty(),
+        "nothing was fetched: {:?}",
+        web.asked()
+    );
+
+    // Content whose hash differs from the fragment.
+    web.serve("/requests/one", Answer::content(object.clone()));
+    let answer = authorize_by_reference(
+        &mut browser,
+        "acme",
+        client,
+        &format!(
+            "{}#{}",
+            web.url("/requests/one"),
+            sha256_fragment(b"another object")
+        ),
+        &outside,
+    )
+    .await;
+    refused(&answer, "hash");
+
+    // More than 16 kibibytes.
+    web.serve(
+        "/requests/large",
+        Answer::content(vec![b'a'; 16 * 1024 + 1]),
+    );
+    let answer = authorize_by_reference(
+        &mut browser,
+        "acme",
+        client,
+        &web.url("/requests/large"),
+        &outside,
+    )
+    .await;
+    refused(&answer, "large");
+
+    // A redirect, never followed.
+    web.serve(
+        "/requests/moved",
+        Answer {
+            status: 302,
+            headers: vec![("location".to_owned(), web.url("/requests/one"))],
+            body: Vec::new(),
+            delay: std::time::Duration::ZERO,
+        },
+    );
+    let before = web.asked().len();
+    let answer = authorize_by_reference(
+        &mut browser,
+        "acme",
+        client,
+        &web.url("/requests/moved"),
+        &outside,
+    )
+    .await;
+    refused(&answer, "redirect");
+    assert_eq!(web.asked()[before..], ["/requests/moved"], "not followed");
+
+    // No answer within 5 seconds.
+    let mut slow = Answer::content(object);
+    slow.delay = std::time::Duration::from_secs(8);
+    web.serve("/requests/slow", slow);
+    let started = std::time::Instant::now();
+    let answer = authorize_by_reference(
+        &mut browser,
+        "acme",
+        client,
+        &web.url("/requests/slow"),
+        &outside,
+    )
+    .await;
+    refused(&answer, "slow");
+    assert!(
+        started.elapsed() < std::time::Duration::from_secs(7),
+        "given up after 5 seconds: {:?}",
+        started.elapsed()
+    );
+    assert!(
+        !web.asked().contains(&"/elsewhere/one".to_owned()),
+        "the unregistered address was never fetched"
+    );
 }
