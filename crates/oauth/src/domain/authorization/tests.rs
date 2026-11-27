@@ -728,6 +728,21 @@ fn a_request_says_whether_its_application_is_first_party() {
 }
 
 #[test]
+fn a_client_that_registered_itself_is_never_first_party() {
+    let application = application(true);
+    let client = client_of(&application, ClientType::Public)
+        .registered_from(crate::domain::client::SelfRegistration { address_hash: None });
+    let servers = vec![server(&application, AUDIENCE, &["read"])];
+    let setting = Setting {
+        application,
+        client,
+        servers,
+    };
+    let request = check(&setting, good(&setting.client)).expect("accepted");
+    assert!(!request.first_party, "its person is always asked");
+}
+
+#[test]
 fn a_request_kept_before_consent_existed_reads_as_third_party() {
     let setting = setting();
     let request = check(&setting, good(&setting.client)).expect("accepted");

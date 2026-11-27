@@ -203,6 +203,109 @@ impl RequestObjectAlgorithm {
     }
 }
 
+/// A client's `application_type` of OpenID Connect Registration: what
+/// kind of application it is, which bounds its redirect addresses. See
+/// `docs/architecture/contexts/oauth.md`, "What a client may be".
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ApplicationType {
+    /// A web application: its redirect addresses are all HTTPS.
+    Web,
+    /// An application on the person's own device, which may use a
+    /// loopback address or a private-use scheme.
+    Native,
+}
+
+impl ApplicationType {
+    /// The name OpenID Connect Registration gives it.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Web => "web",
+            Self::Native => "native",
+        }
+    }
+
+    /// Reads a name.
+    ///
+    /// # Errors
+    ///
+    /// Returns `oauth.client_application_type_invalid` for any other name.
+    pub fn parse(value: &str) -> Result<Self, DomainError> {
+        match value {
+            "web" => Ok(Self::Web),
+            "native" => Ok(Self::Native),
+            _ => Err(application_type_invalid(
+                "the application type is `web` or `native`",
+            )),
+        }
+    }
+}
+
+fn application_type_invalid(reason: &'static str) -> DomainError {
+    DomainError::invalid(
+        "oauth.client_application_type_invalid",
+        "a client's application type is `web` or `native`, and a web client's redirect \
+         addresses are all HTTPS",
+    )
+    .with_detail(reason)
+}
+
+/// The longest address a person is shown.
+const MAX_DISPLAY_URI_LENGTH: usize = 2000;
+
+/// Checks one of the addresses a person is shown, `client_uri`,
+/// `logo_uri`, `policy_uri` or `tos_uri`, named `member`: one absolute
+/// HTTPS address with a host, without a name and password or a fragment.
+/// See `docs/architecture/contexts/oauth.md`, "Addresses a person is
+/// shown".
+fn check_display_uri(member: &str, value: &str) -> Result<(), DomainError> {
+    let invalid = |reason: &str| {
+        DomainError::invalid(
+            "oauth.client_display_uri_invalid",
+            "an address a person is shown is one HTTPS address of at most 2000 characters, with \
+             a host and without a name and password or a fragment",
+        )
+        .with_detail(format!("`{member}`: {reason}"))
+    };
+    if value.is_empty() || value.len() > MAX_DISPLAY_URI_LENGTH {
+        return Err(invalid("the address is empty or too long"));
+    }
+    if !value.bytes().all(|b| b.is_ascii_graphic()) {
+        return Err(invalid(
+            "the address has a space or a character outside ASCII",
+        ));
+    }
+    if value.contains('#') || value.contains('\\') {
+        return Err(invalid("the address has a fragment or a backslash"));
+    }
+    let Some(rest) = value.strip_prefix("https://") else {
+        return Err(invalid("the address is not HTTPS"));
+    };
+    let authority = rest.split(['/', '?']).next().unwrap_or_default();
+    if authority.contains('@') {
+        return Err(invalid("the address has a name and password"));
+    }
+    let (host, port) = if authority.starts_with('[') {
+        match authority.split_once(']') {
+            Some((inside, "")) => (inside.trim_start_matches('['), None),
+            Some((inside, after)) => (
+                inside.trim_start_matches('['),
+                Some(after.strip_prefix(':').unwrap_or("not a port")),
+            ),
+            None => ("", None),
+        }
+    } else {
+        match authority.split_once(':') {
+            Some((host, port)) => (host, Some(port)),
+            None => (authority, None),
+        }
+    };
+    if host.is_empty() || port.is_some_and(|p| !is_port(p)) {
+        return Err(invalid("the address has no usable host"));
+    }
+    Ok(())
+}
+
 /// Whether a client can keep a secret.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ClientType {
@@ -642,6 +745,17 @@ pub struct ClientSettings {
     /// bound to the certificate its requests come with: its
     /// `tls_client_certificate_bound_access_tokens` of RFC 8705.
     pub certificate_bound_access_tokens: bool,
+    /// What kind of application it is, its `application_type`, or `None`,
+    /// as for every client an administrator makes.
+    pub application_type: Option<ApplicationType>,
+    /// Its home page, its `client_uri`, shown to a person.
+    pub client_uri: Option<String>,
+    /// Its logo, its `logo_uri`, shown to a person.
+    pub logo_uri: Option<String>,
+    /// Its privacy policy, its `policy_uri`, shown to a person.
+    pub policy_uri: Option<String>,
+    /// Its terms of service, its `tos_uri`, shown to a person.
+    pub tos_uri: Option<String>,
 }
 
 /// Checks a client's defaults for a sign-in: see
@@ -879,7 +993,27 @@ impl ClientSettings {
             spiffe_id: None,
             linkerd_identity: None,
             certificate_bound_access_tokens: false,
+            application_type: None,
+            client_uri: None,
+            logo_uri: None,
+            policy_uri: None,
+            tos_uri: None,
         }
+    }
+
+    /// The addresses a person is shown, each with the name of its member,
+    /// when the client has it.
+    #[must_use]
+    pub fn display_uris(&self) -> Vec<(&'static str, &str)> {
+        [
+            ("client_uri", &self.client_uri),
+            ("logo_uri", &self.logo_uri),
+            ("policy_uri", &self.policy_uri),
+            ("tos_uri", &self.tos_uri),
+        ]
+        .into_iter()
+        .filter_map(|(member, value)| value.as_deref().map(|value| (member, value)))
+        .collect()
     }
 
     /// The settings, tidied, if they follow every rule for a client of
@@ -1000,6 +1134,23 @@ impl ClientSettings {
         }
         for uri in &redirect_uris {
             check_redirect_uri(uri, client_type)?;
+        }
+        if self.application_type == Some(ApplicationType::Web)
+            && redirect_uris.iter().any(|uri| !uri.starts_with("https://"))
+        {
+            return Err(application_type_invalid(
+                "a web client's redirect addresses are all HTTPS",
+            ));
+        }
+        for (member, uri) in [
+            ("client_uri", &self.client_uri),
+            ("logo_uri", &self.logo_uri),
+            ("policy_uri", &self.policy_uri),
+            ("tos_uri", &self.tos_uri),
+        ] {
+            if let Some(uri) = uri {
+                check_display_uri(member, uri)?;
+            }
         }
         let post_logout_redirect_uris = without_repeats(self.post_logout_redirect_uris);
         if post_logout_redirect_uris.len() > MAX_REDIRECT_URIS {
@@ -1125,8 +1276,24 @@ impl ClientSettings {
             spiffe_id: self.spiffe_id,
             linkerd_identity: self.linkerd_identity,
             certificate_bound_access_tokens: self.certificate_bound_access_tokens,
+            application_type: self.application_type,
+            client_uri: self.client_uri,
+            logo_uri: self.logo_uri,
+            policy_uri: self.policy_uri,
+            tos_uri: self.tos_uri,
         })
     }
+}
+
+/// What is kept of a client that registered itself at the registration
+/// endpoint. See `docs/architecture/contexts/oauth.md`, "A registered
+/// client".
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SelfRegistration {
+    /// The SHA-256 of the address it was registered from, as the client
+    /// address reads it, if it was known: what the bound of registrations
+    /// per address counts.
+    pub address_hash: Option<[u8; 32]>,
 }
 
 /// Everything stored about a client.
@@ -1152,6 +1319,9 @@ pub struct ClientSnapshot {
     pub updated_at: Timestamp,
     /// Incremented on every stored change, for optimistic locking.
     pub version: u32,
+    /// Set when it registered itself, and never changed: a registered
+    /// client is never first party.
+    pub self_registration: Option<SelfRegistration>,
 }
 
 /// A client of an application.
@@ -1205,9 +1375,24 @@ impl Client {
                 created_at: now,
                 updated_at: now,
                 version: 0,
+                self_registration: None,
             },
         };
         Ok((client, value))
+    }
+
+    /// Marks a new client as one that registered itself, from where.
+    #[must_use]
+    pub fn registered_from(mut self, registration: SelfRegistration) -> Self {
+        self.state.self_registration = Some(registration);
+        self
+    }
+
+    /// Whether it registered itself at the registration endpoint. Such a
+    /// client is never first party, whatever its application says.
+    #[must_use]
+    pub const fn is_registered(&self) -> bool {
+        self.state.self_registration.is_some()
     }
 
     /// Rebuilds a client from storage.

@@ -728,6 +728,21 @@ pub fn with_registration(mut document: Value, registration_open: bool) -> Value 
     document
 }
 
+/// The tenant's discovery document with its registration endpoint,
+/// `{issuer}/oauth2/register`, when clients may register themselves in the
+/// tenant; without it otherwise. See `docs/architecture/contexts/oauth.md`,
+/// "Discovery".
+#[must_use]
+pub fn with_registration_endpoint(mut document: Value, issuer: &str, enabled: bool) -> Value {
+    if enabled && let Some(members) = document.as_object_mut() {
+        members.insert(
+            "registration_endpoint".to_owned(),
+            json!(format!("{issuer}/oauth2/register")),
+        );
+    }
+    document
+}
+
 /// The header of a signed UserInfo answer: `alg` and `kid`, and no `typ`.
 /// The answer is not an ID token, and nothing that checks one, the
 /// end-session endpoint's hint among them, takes it for one. See
@@ -837,6 +852,18 @@ pub(crate) mod tests;
 #[cfg(test)]
 mod registration_tests {
     use super::*;
+
+    #[test]
+    fn the_registration_endpoint_is_named_only_while_registration_is_on() {
+        let issuer = "https://hodor.example.com/t/acme";
+        let off = with_registration_endpoint(discovery_document(issuer, &[], false), issuer, false);
+        assert!(off.get("registration_endpoint").is_none());
+        let on = with_registration_endpoint(discovery_document(issuer, &[], false), issuer, true);
+        assert_eq!(
+            on["registration_endpoint"],
+            "https://hodor.example.com/t/acme/oauth2/register"
+        );
+    }
 
     #[test]
     fn create_is_named_by_a_tenant_open_to_registration_only() {

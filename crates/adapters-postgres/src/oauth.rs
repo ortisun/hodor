@@ -6,11 +6,12 @@ use crate::uow::{connection, database_error};
 use hodor_kernel::{DomainError, Timestamp, UnitOfWork, UserId};
 use hodor_oauth::api::{
     Application, ApplicationId, ApplicationSettings, ApplicationSnapshot, ApplicationStore,
-    Audience, AuthenticationMethod, Client, ClientId, ClientKey, ClientSecret, ClientSecretHash,
-    ClientSecretId, ClientSettings, ClientSnapshot, ClientStore, ClientType, ExchangeRule,
-    GrantType, IdTokenAlgorithm, LinkerdIdentity, RequestObjectAlgorithm, ResourceServer,
-    ResourceServerId, ResourceServerSettings, ResourceServerSnapshot, ResourceServerStore,
-    ResponseType, ScopeDefinition, SpiffeId, Status, SubjectType, TokenPolicy, WorkloadIdentity,
+    ApplicationType, Audience, AuthenticationMethod, Client, ClientId, ClientKey, ClientSecret,
+    ClientSecretHash, ClientSecretId, ClientSettings, ClientSnapshot, ClientStore, ClientType,
+    ExchangeRule, GrantType, IdTokenAlgorithm, LinkerdIdentity, RequestObjectAlgorithm,
+    ResourceServer, ResourceServerId, ResourceServerSettings, ResourceServerSnapshot,
+    ResourceServerStore, ResponseType, ScopeDefinition, SelfRegistration, SpiffeId, Status,
+    SubjectType, TokenPolicy, WorkloadIdentity,
 };
 use sqlx::PgConnection;
 use sqlx::Row as _;
@@ -282,7 +283,8 @@ const CLIENT_COLUMNS: &str = "id, application_id, name, client_type, authenticat
      sector_identifier_uri, spiffe_id, linkerd_identity, request_object_signing_alg, \
      certificate_bound_access_tokens, default_max_age, default_acr_values, require_auth_time, \
      userinfo_signed_response_alg, require_pushed_authorization_requests, \
-     request_uris, jwks_uri, response_types";
+     request_uris, jwks_uri, response_types, application_type, client_uri, logo_uri, policy_uri, \
+     tos_uri, registered, registered_from";
 
 /// A client's default max age, as the column holds it.
 fn default_max_age_of(settings: &ClientSettings) -> Result<Option<i32>, DomainError> {
@@ -440,6 +442,17 @@ async fn load_client(
             certificate_bound_access_tokens: row
                 .try_get("certificate_bound_access_tokens")
                 .map_err(get)?,
+            application_type: row
+                .try_get::<Option<String>, _>("application_type")
+                .map_err(get)?
+                .map(|name| {
+                    ApplicationType::parse(&name).map_err(|_| corrupted("application type"))
+                })
+                .transpose()?,
+            client_uri: row.try_get("client_uri").map_err(get)?,
+            logo_uri: row.try_get("logo_uri").map_err(get)?,
+            policy_uri: row.try_get("policy_uri").map_err(get)?,
+            tos_uri: row.try_get("tos_uri").map_err(get)?,
         },
         secrets,
         keys,
@@ -447,7 +460,23 @@ async fn load_client(
         created_at: row.try_get("created_at").map_err(get)?,
         updated_at: row.try_get("updated_at").map_err(get)?,
         version: stored_version(row)?,
+        self_registration: self_registration_of(row)?,
     }))
+}
+
+/// What a client that registered itself keeps of it, if it did.
+fn self_registration_of(row: &PgRow) -> Result<Option<SelfRegistration>, DomainError> {
+    if !row.try_get::<bool, _>("registered").map_err(get)? {
+        return Ok(None);
+    }
+    let address_hash = row
+        .try_get::<Option<Vec<u8>>, _>("registered_from")
+        .map_err(get)?
+        .map(|hash| {
+            <[u8; 32]>::try_from(hash).map_err(|_| corrupted("registered address is not 32 bytes"))
+        })
+        .transpose()?;
+    Ok(Some(SelfRegistration { address_hash }))
 }
 
 /// Writes the secrets and keys of a client, which has none stored.
@@ -531,10 +560,12 @@ impl ClientStore for PgClientStore {
                   certificate_bound_access_tokens, default_max_age, default_acr_values,
                   require_auth_time, userinfo_signed_response_alg,
                   require_pushed_authorization_requests, request_uris, jwks_uri, response_types,
-                  version)
+                  application_type, client_uri, logo_uri, policy_uri, tos_uri, registered,
+                  registered_from, version)
              VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16,
                      $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28,
-                     $29, $30, $31, $32, $33, $34, $35, $36, $37, $38, 0)",
+                     $29, $30, $31, $32, $33, $34, $35, $36, $37, $38, $39, $40, $41, $42,
+                     $43, $44, $45, 0)",
         )
         .bind(tenant)
         .bind(state.id.as_uuid())
@@ -583,6 +614,18 @@ impl ClientStore for PgClientStore {
         .bind(&settings.request_uris)
         .bind(settings.jwks_uri.as_deref())
         .bind(response_type_names(settings))
+        .bind(settings.application_type.map(ApplicationType::as_str))
+        .bind(settings.client_uri.as_deref())
+        .bind(settings.logo_uri.as_deref())
+        .bind(settings.policy_uri.as_deref())
+        .bind(settings.tos_uri.as_deref())
+        .bind(state.self_registration.is_some())
+        .bind(
+            state
+                .self_registration
+                .and_then(|registered| registered.address_hash)
+                .map(|hash| hash.to_vec()),
+        )
         .execute(&mut *connection)
         .await;
         match inserted {
@@ -623,6 +666,8 @@ impl ClientStore for PgClientStore {
                  require_pushed_authorization_requests = $33, request_uris = $34,
                  jwks_uri = $35,
                  response_types = $36,
+                 application_type = $37, client_uri = $38, logo_uri = $39, policy_uri = $40,
+                 tos_uri = $41,
                  version = version + 1
              WHERE tenant_id = $1 AND id = $2 AND version = $17",
         )
@@ -671,6 +716,11 @@ impl ClientStore for PgClientStore {
         .bind(&settings.request_uris)
         .bind(settings.jwks_uri.as_deref())
         .bind(response_type_names(settings))
+        .bind(settings.application_type.map(ApplicationType::as_str))
+        .bind(settings.client_uri.as_deref())
+        .bind(settings.logo_uri.as_deref())
+        .bind(settings.policy_uri.as_deref())
+        .bind(settings.tos_uri.as_deref())
         .execute(&mut *connection)
         .await
         .map_err(get)?;
@@ -761,6 +811,48 @@ impl ClientStore for PgClientStore {
             clients.push(load_client(connection, tenant, row).await?);
         }
         Ok(clients)
+    }
+
+    async fn count_for_application(
+        &self,
+        uow: &mut dyn UnitOfWork,
+        application_id: ApplicationId,
+    ) -> Result<usize, DomainError> {
+        let tenant = uow.tenant().tenant_id().as_uuid();
+        let connection = connection(uow)?;
+        let count: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM oauth.client WHERE tenant_id = $1 AND application_id = $2",
+        )
+        .bind(tenant)
+        .bind(application_id.as_uuid())
+        .fetch_one(&mut *connection)
+        .await
+        .map_err(get)?;
+        usize::try_from(count).map_err(|_| corrupted("client count"))
+    }
+
+    async fn count_registered_since(
+        &self,
+        uow: &mut dyn UnitOfWork,
+        address_hash: Option<&[u8; 32]>,
+        since: Timestamp,
+    ) -> Result<usize, DomainError> {
+        let tenant = uow.tenant().tenant_id().as_uuid();
+        let connection = connection(uow)?;
+        // `IS NOT DISTINCT FROM`: registrations from addresses that were
+        // not known are counted together.
+        let count: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM oauth.client
+             WHERE tenant_id = $1 AND registered
+               AND registered_from IS NOT DISTINCT FROM $2 AND created_at >= $3",
+        )
+        .bind(tenant)
+        .bind(address_hash.map(|hash| hash.to_vec()))
+        .bind(since)
+        .fetch_one(&mut *connection)
+        .await
+        .map_err(get)?;
+        usize::try_from(count).map_err(|_| corrupted("registration count"))
     }
 }
 

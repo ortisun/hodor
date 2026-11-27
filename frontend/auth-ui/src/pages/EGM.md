@@ -146,7 +146,11 @@ address.
   names the application (`consentTitle`), one line per scope (OpenID
   Connect scopes worded by the page, a resource server's scope by its
   description and name, as text), `consentOffline` when offline access is
-  asked, and the two `Action`s "allow" (primary, first) and "deny".
+  asked, and the two `Action`s "allow" (primary, first) and "deny". For a
+  client that registered itself, `SelfDescribed` comes first: its logo
+  (`auth-consent-logo`, `alt=""`, `referrerPolicy="no-referrer"`),
+  `consentSelfNamed`, and external links to its home page, privacy policy
+  and terms of service, each when it named one.
   `client.answerConsent(decision)` answers where to go, given to `leave`;
   a 404 shows the "nothing to answer" frame.
 - `SignOutPage.tsx:SignOutPage(PageProps)` - the question an application's

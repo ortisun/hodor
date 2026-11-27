@@ -14,7 +14,7 @@ tenant and records its events in it.
 | Port | Methods |
 | --- | --- |
 | `ApplicationStore` | `insert`, `update` (version checked), `get`, `list` (oldest first) |
-| `ClientStore` | `insert` (`oauth.application_not_found` for an application the tenant does not have), `update` (version checked; replaces secrets and keys), `get`, `list_for_application` (oldest first), `bound_to` (the clients bound to a `WorkloadIdentity`, oldest first); `insert` and `update` refuse a client whose identity a client of another principal holds (`oauth.client_spiffe_id_taken`, `oauth.client_linkerd_identity_taken`, Decision 0058) |
+| `ClientStore` | `insert` (`oauth.application_not_found` for an application the tenant does not have), `update` (version checked; replaces secrets and keys), `get`, `list_for_application` (oldest first), `bound_to` (the clients bound to a `WorkloadIdentity`, oldest first), `count_for_application`, `count_registered_since(address_hash, since)` (registered clients of that address, or of unknown ones with `None`, made at `since` or later); `insert` and `update` refuse a client whose identity a client of another principal holds (`oauth.client_spiffe_id_taken`, `oauth.client_linkerd_identity_taken`, Decision 0058) |
 | `ResourceServerStore` | `insert` (`oauth.audience_taken`, `oauth.application_has_resource_server`, `oauth.application_not_found`), `update` (version checked; replaces the scopes), `get`, `find_by_audience` (exact), `find_by_application` (the application's one, if any), `list` (oldest first) |
 | `AuthorizationRequestStore` | `insert` (`oauth.client_not_found`), `get`, `remove` (answers whether this call removed it; never a pushed request), `answer` (records the answer of a request that waits for consent and has none; answers whether this call recorded it), `push(uow, pushed, keep)` (removes the oldest pushed requests of its client beyond `keep - 1`, then stores it; `oauth.client_not_found`), `take_pushed(uow, client, hash)` (removes and answers the pushed request of that client with that reference hash, only if this call removed it; an expired one too) |
 | `GrantStore` | `insert` (`oauth.client_not_found`), `get`, `update` (status and revocation; `oauth.grant_not_found`), `list_active_for(user, client)`, `list_active_of(user)` (every client, oldest first) |
@@ -208,6 +208,30 @@ with `lock_by_hash`, spent with `InitialAccessToken::spend` and stored with
 a token is `oauth.initial_access_token_invalid`, and no token where open
 registration is not allowed `oauth.initial_access_token_required`. It
 answers `Admission { settings, allowed_by }`; nothing is committed.
+`may_register(uow, presented)` decides the same without spending or
+recording anything, and `lock_settings(uow)` reads the settings with their
+row locked.
+
+### The registration endpoint (`service/registered.rs`)
+
+`ApplicationService::register_client(&registration, tenant,
+RegisterClient { body, initial_access_token, address_hash }, caller)`,
+specified in "The registration endpoint" of the OAuth context and
+Decision 0080. In order: `may_register` and the bound per address
+(`MOST_REGISTRATIONS_PER_ADDRESS` within `REGISTRATION_WINDOW`,
+`oauth.too_many_registrations`, `RateLimited` with a wait of 60 seconds) in
+a unit of work that is dropped uncommitted; a software statement refused
+(`oauth.software_statement_unapproved`); `read_client_metadata` against the
+policy's scopes; `Client::create` in the application of registered
+clients, each key by `ClientKey::parse` and `Client::add_key`, marked with
+`registered_from`; `check_redirect_hosts` then `check_registration`; the
+back-channel logout, key set, request object and sector identifier
+addresses through the destinations and sector documents, as `create_client` checks them; then,
+in one unit of work, `lock_settings`, the policy again, the application's
+bound (`oauth.too_many_registered_clients`, `Forbidden`) and the bound per
+address again, `admit`, `ClientStore::insert`, and the events of a new
+client with `oauth.client_registered`. A change of the settings'
+application meanwhile is `oauth.client_registration_modified_concurrently`.
 
 ### Claim mappers (`claim_mapper.rs`)
 

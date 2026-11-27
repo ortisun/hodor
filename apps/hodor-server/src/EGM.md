@@ -173,9 +173,15 @@ Adapters implemented here:
   `claim_mapping` wires both with `PgClaimMapperStore` into the
   `ClaimMapping` of the token endpoint and of UserInfo; `administration`
   gives `AdminState.claim_mappers` its `ClaimMapperService`, and
-  `AdminState.client_registration` its `ClientRegistrationService` on
-  `PgClientRegistrationStore`, `PgInitialAccessTokenStore` and
-  `PgApplicationStore`.
+  `AdminState.client_registration` its `ClientRegistrationService` from
+  `client_registration` (on `PgClientRegistrationStore`,
+  `PgInitialAccessTokenStore` and `PgApplicationStore`). `registration`
+  builds the `RegistrationState` of the registration endpoint, merged into
+  the `/oauth2` routes whether or not keys are set: an `ApplicationService`
+  whose destinations and sector documents are guarded outbound clients
+  with the development exception, the same `ClientRegistrationService`,
+  `HODOR_PUBLIC_URL` and SHA-256; `DiscoveryState.client_registration`
+  names the registration endpoint while a tenant's registration is on.
 
 Wiring functions: `interaction` (Argon2id hashing, identity, credential,
 WebAuthn with the relying party of `HODOR_PUBLIC_URL`, session, attempt

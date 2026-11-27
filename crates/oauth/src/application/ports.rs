@@ -126,6 +126,31 @@ pub trait ClientStore: Send + Sync {
         uow: &mut dyn UnitOfWork,
         application_id: ApplicationId,
     ) -> Result<Vec<Client>, DomainError>;
+
+    /// How many clients an application holds, whoever made them.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if storage fails.
+    async fn count_for_application(
+        &self,
+        uow: &mut dyn UnitOfWork,
+        application_id: ApplicationId,
+    ) -> Result<usize, DomainError>;
+
+    /// How many clients registered themselves in the tenant at `since` or
+    /// later from the address whose SHA-256 is `address_hash`, or, with
+    /// `None`, from an address that was not known.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if storage fails.
+    async fn count_registered_since(
+        &self,
+        uow: &mut dyn UnitOfWork,
+        address_hash: Option<&[u8; 32]>,
+        since: Timestamp,
+    ) -> Result<usize, DomainError>;
 }
 
 /// Stores resource servers.

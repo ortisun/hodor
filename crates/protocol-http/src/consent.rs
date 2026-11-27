@@ -163,6 +163,17 @@ struct QuestionBody {
     application: String,
     scopes: Vec<ScopeBody>,
     offline_access: bool,
+    /// Whether the client registered itself: `application` is then its own
+    /// name, which no administrator checked.
+    registered: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    client_uri: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    logo_uri: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    policy_uri: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    tos_uri: Option<String>,
     csrf_token: String,
 }
 
@@ -207,10 +218,17 @@ async fn describe(
                     },
                 })
                 .collect();
+            let registered = question.registered.is_some();
+            let described = question.registered.unwrap_or_default();
             Json(QuestionBody {
                 application: question.application,
                 scopes,
                 offline_access: question.offline_access,
+                registered,
+                client_uri: described.client_uri,
+                logo_uri: described.logo_uri,
+                policy_uri: described.policy_uri,
+                tos_uri: described.tos_uri,
                 csrf_token: person.csrf_token,
             })
             .into_response()

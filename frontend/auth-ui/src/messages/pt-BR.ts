@@ -125,6 +125,12 @@ export const ptBR: Messages = {
     resourceServer === "" ? description : `${description} (${resourceServer})`,
   consentAllow: "Permitir",
   consentDeny: "Negar",
+  consentSelfNamed:
+    "Este aplicativo escolheu sozinho este nome e esta imagem. Ninguém aqui verificou quem o mantém.",
+  consentHomePage: "A página do aplicativo",
+  consentPrivacyPolicy: "A política de privacidade do aplicativo",
+  consentTerms: "Os termos de uso do aplicativo",
+  opensInNewTab: "(abre em uma nova aba)",
   consentNothingTitle: "Nada para responder",
   consentNothing: "Nenhum aplicativo está esperando a sua resposta neste navegador.",
   goToAccount: "Ir para a sua conta",

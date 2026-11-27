@@ -45,6 +45,15 @@ body {
   gap: 0.5rem;
 }
 
+/* The logo of an application that registered itself, on the consent page:
+   small, whatever size the image is, and never wider than the page. */
+.auth-consent-logo {
+  inline-size: 4rem;
+  block-size: 4rem;
+  max-inline-size: 100%;
+  object-fit: contain;
+}
+
 /* A group of fields on the profile page: its legend reads as a heading, without a frame. */
 .auth-fieldset {
   margin: 0;

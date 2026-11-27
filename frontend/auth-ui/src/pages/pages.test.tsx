@@ -1012,6 +1012,53 @@ describe("the consent page", () => {
     });
   });
 
+  it("shows an application that registered itself in its own words, and says nobody checked them", async () => {
+    const { props } = page({
+      "GET /session": [session],
+      "GET /consent": [
+        json(200, {
+          application: "<i>Partner portal</i>",
+          scopes: [{ scope: "openid", kind: "openid" }],
+          offline_access: false,
+          registered: true,
+          logo_uri: "https://portal.partner.example/logo.png",
+          policy_uri: "https://portal.partner.example/privacy",
+          tos_uri: "javascript:alert(1)",
+          csrf_token: "of-the-session",
+        }),
+      ],
+    });
+    render(<ConsentPage {...props} />);
+    // Its own name, as text.
+    expect(
+      await screen.findByRole("heading", { name: en.consentTitle("<i>Partner portal</i>") }),
+    ).toBeTruthy();
+    expect(document.querySelector("main i")).toBeNull();
+    expect(screen.getByText(en.consentSelfNamed)).toBeTruthy();
+    const logo = document.querySelector("img.auth-consent-logo");
+    expect(logo?.getAttribute("src")).toBe("https://portal.partner.example/logo.png");
+    expect(logo?.getAttribute("referrerpolicy")).toBe("no-referrer");
+    expect(logo?.getAttribute("alt")).toBe("");
+    const policy = screen.getByRole("link", { name: new RegExp(en.consentPrivacyPolicy) });
+    expect(policy.getAttribute("href")).toBe("https://portal.partner.example/privacy");
+    expect(policy.getAttribute("target")).toBe("_blank");
+    expect(policy.getAttribute("rel")).toContain("noreferrer");
+    // An address that is not HTTPS is not linked to.
+    expect(screen.queryByRole("link", { name: new RegExp(en.consentTerms) })).toBeNull();
+    expect(screen.queryByRole("link", { name: new RegExp(en.consentHomePage) })).toBeNull();
+  });
+
+  it("shows nothing an application an administrator made chose", async () => {
+    const { props } = page({
+      "GET /session": [session],
+      "GET /consent": [question()],
+    });
+    render(<ConsentPage {...props} />);
+    expect(await screen.findByRole("heading", { name: en.consentTitle("Billing") })).toBeTruthy();
+    expect(screen.queryByText(en.consentSelfNamed)).toBeNull();
+    expect(document.querySelector("img")).toBeNull();
+  });
+
   it("sends a refusal and goes back to the application", async () => {
     const { props, sent, leave, user } = page({
       "GET /session": [session],

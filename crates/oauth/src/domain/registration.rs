@@ -505,6 +505,32 @@ pub fn check_registration(
     Ok(())
 }
 
+/// Checks the hosts of a registration's redirect addresses against the
+/// policy, before [`check_registration`] checks every address, so that the
+/// registration endpoint can answer a redirect address it refuses with
+/// `invalid_redirect_uri`, as RFC 7591 asks.
+///
+/// # Errors
+///
+/// `oauth.registration_redirect_host_not_allowed`, whose detail names the
+/// address.
+pub fn check_redirect_hosts(
+    policy: &RegistrationPolicy,
+    redirect_uris: &[String],
+) -> Result<(), DomainError> {
+    match redirect_uris
+        .iter()
+        .find(|address| !policy.allows_address(address))
+    {
+        Some(address) => Err(not_allowed(
+            "oauth.registration_redirect_host_not_allowed",
+            "the tenant's registration policy does not allow a redirect address of this host",
+            format!("`{address}`"),
+        )),
+        None => Ok(()),
+    }
+}
+
 /// What an administrator sets about client registration in a tenant.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RegistrationSettings {
